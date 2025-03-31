@@ -57,44 +57,60 @@ def _select_top_n(scores, n_top):
 ### Calculate average expression
 def computeAvgExpression(adata, groupby='Leiden', genes=None, groups=None):
     """
-    Computes average expression levels for the given data.
+    Computes the average expression levels of genes across cell groups.
 
-    Parameters:
-    - adata: AnnData object containing gene expression data.
-    - groupby (str, optional): The column name in adata.obs to group by. Default is 'Leiden'.
-    - genes (list, optional): List of genes to compute average expression for.
-    - groups (list, optional): List of groups to compute average expression for.
+    This function calculates the mean expression values of genes for each group 
+    of cells defined by `groupby`. It allows selection of specific genes and/or 
+    groups for computation.
 
-    Returns:
-    - DataFrame with average expression levels.
+    Parameters
+    ----------
+    adata : AnnData
+        The AnnData object containing gene expression data.
+    groupby : str, optional (default: 'Leiden')
+        The column name in `adata.obs` that defines the cell groups. 
+        Typically, this is a clustering column (e.g., 'Leiden', 'louvain', or 'cell_type').
+    genes : list of str, optional (default: None)
+        A list of gene names to compute the average expression for. 
+        If None, all genes in `adata.var_names` are included.
+    groups : list of str, optional (default: None)
+        A list of group labels to compute the average expression for. 
+        If None, all groups present in `adata.obs[groupby]` are included.
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame where:
+        - Rows correspond to groups (e.g., clusters or cell types).
+        - Columns correspond to genes.
+        - Values represent the mean expression of each gene in the respective group.
+
+    Raises
+    ------
+    ValueError
+        If `groupby` is not found in `adata.obs`.
+        If any gene in `genes` is not found in `adata.var_names`.
+        If any group in `groups` is not found in `adata.obs[groupby]`.
+
+    Examples
+    --------
+    Compute the average expression of all genes across all groups:
     
+    >>> avg_expr = computeAvgExpression(adata, groupby='Leiden')
+
+    Compute the average expression of specific genes across all groups:
     
-    ### For all the genes and all the clusters
-    avg_gene_expr=computeAvgExpression(adata,
-                          groupby='Leiden',
+    >>> avg_expr = computeAvgExpression(adata, groupby='Leiden', genes=['Gad1', 'Gad2'])
 
-                          )
+    Compute the average expression of all genes in selected groups:
+    
+    >>> avg_expr = computeAvgExpression(adata, groupby='Leiden', groups=['1', '2'])
 
-    ### For selected genes
-    avg_gene_expr=computeAvgExpression(adata,
-                          groupby='Leiden',
-                          genes=['Gad1', 'Gad2']
-                          )
-
-    ### For selected groups
-    avg_gene_expr=computeAvgExpression(adata,
-                          groupby='Leiden',
-                                         groups=['1','2']
-                          )
-
-    ### For selected genes and groups
-    avg_gene_expr=computeAvgExpression(adata,
-                          groupby='Leiden',
-                          genes=['Gad1', 'Gad2'],
-                                         groups=['1','2']
-                          )
+    Compute the average expression of selected genes in selected groups:
+    
+    >>> avg_expr = computeAvgExpression(adata, groupby='Leiden', genes=['Gad1', 'Gad2'], groups=['1', '2'])
     """
-    
+
     # Error checks
     if groupby not in adata.obs.columns:
         raise ValueError(f"'{groupby}' column not found in adata.obs. Please provide a valid column name.")
@@ -110,23 +126,23 @@ def computeAvgExpression(adata, groupby='Leiden', genes=None, groups=None):
     # Warning checks
     if not genes and not groups:
         import warnings
-        warnings.warn("No genes or groups specified; computing average expression for all genes and groups. This may be memory-intensive for large datasets.")
-    
-    # If only reading data and not modifying, no need for a copy
-    # If you modify data later, ensure to work on a copy to prevent unintended side-effects
-    adata_copy = adata  
+        warnings.warn("No genes or groups specified; computing average expression for all genes and groups. "
+                      "This may be memory-intensive for large datasets.")
     
     # Filter data based on provided genes and groups
+    adata_copy = adata.copy()
     if genes:
         adata_copy = adata_copy[:, adata_copy.var_names.isin(genes)]
     if groups:
         adata_copy = adata_copy[adata_copy.obs[groupby].isin(groups), :]
 
+    # Initialize result DataFrame with group names as index and genes as columns
     res = pd.DataFrame(columns=adata_copy.var_names, index=adata_copy.obs[groupby].cat.categories)
 
+    # Compute mean expression per group
     for group in adata_copy.obs[groupby].cat.categories:
         res.loc[group] = adata_copy[adata_copy.obs[groupby].isin([group]), :].X.mean(0)
-    
+
     return res
 
 ### Compute adjacency martix given the low-dimensional representations
@@ -447,11 +463,13 @@ def calculateZoneTalkScoreByCellType(
     adata,
     lr_adata,
     zonetalk_lr,
-    groupby='CellTypes',
-    mu=100,
-    expressed_pct=0.1,
-    remove_lowly_expressed=True,
-    mask_threhsold=1e-6
+    groupby:str='CellTypes',
+    use_rep_spatial: str = 'X_spatial', 
+    number_nearest_neighbors: int = 10, 
+    mu:float=100,
+    expressed_pct:float=0.1,
+    remove_lowly_expressed:bool=True,
+    mask_threhsold:float=1e-6
 
 ):
     
@@ -484,6 +502,11 @@ def calculateZoneTalkScoreByCellType(
     lr_adata_percentage.X.data = np.repeat(1, len(lr_adata_percentage.X.data))
     avg_gene_expr_lr = computeAvgExpression(lr_adata_percentage, groupby=groupby).T
     del lr_adata_percentage
+    ### Reorder the column names
+    # print(avg_gene_expr_lr.columns)
+    # print(gene_by_group_cosg.columns)
+    avg_gene_expr_lr=avg_gene_expr_lr.loc[:,gene_by_group_cosg.columns]
+    # print(avg_gene_expr_lr.columns)
 
     # Prepare DataFrame for results
     results = []
@@ -506,6 +529,7 @@ def calculateZoneTalkScoreByCellType(
             interaction_df = pd.DataFrame(interaction_matrix, index=gene_by_group_cosg.columns, columns=gene_by_group_cosg.columns) * 1
             
             # Add the information from the LR diffusion matrix
+            # print(lr_by_group_cosg_i.shape)
             lr_interaction_df = pd.DataFrame(np.outer(lr_by_group_cosg_i, lr_by_group_cosg_i),
                                              index=gene_by_group_cosg.columns, columns=gene_by_group_cosg.columns)
             # Combine these two interaction matrices
@@ -535,4 +559,350 @@ def calculateZoneTalkScoreByCellType(
     ## Change the score scale
     res_zonetalk['interaction_score']=res_zonetalk['interaction_score']*(0.1/np.mean(res_zonetalk['interaction_score'][:100]))
     
+    
+    ### Include the spatial cell type neighborhood information
+    cosg_lr_ctc=calculateSpecificityInSpatialCellTypeNeighborhood(
+        adata,
+        lr_adata,
+        groupby = groupby, 
+        use_rep_spatial = use_rep_spatial, 
+        number_nearest_neighbors = number_nearest_neighbors, 
+        mu = mu, 
+        remove_lowly_expressed = remove_lowly_expressed, 
+        expressed_pct = expressed_pct, 
+        return_by_group= True, 
+        key_added = 'cosg_lr', 
+        column_delimiter = '@@'
+    )
+    
+    ctc_cosg_scores=list()
+    for row in res_zonetalk.itertuples():
+        ctc_i=row.sending_celltype+'::'+row.receiving_celltype
+        lr_i=row.interaction_name
+        ctc_cosg_score_i=cosg_lr_ctc.loc[lr_i, ctc_i]
+        ctc_cosg_scores.append(ctc_cosg_score_i)
+
+    res_zonetalk['interaction_score']=res_zonetalk['interaction_score']*ctc_cosg_scores
+
+    res_zonetalk=res_zonetalk.sort_values('interaction_score', ascending=False, ignore_index=True)
+    
     return res_zonetalk
+
+
+
+### Include the cell type spatial distribution information
+import numpy as np
+import pandas as pd
+import scipy.sparse as sp
+from scipy.sparse import csr_matrix
+from sklearn.neighbors import kneighbors_graph
+from sklearn.metrics.pairwise import cosine_similarity
+import cosg
+from typing import Optional, Union, List, Tuple, Dict, Any
+
+    
+# Helper function for pairwise row multiplication
+def _pairwise_row_multiply_matrix(
+    sparse_matrix: sp.csr_matrix, 
+    cell_types: List[str], 
+    delimiter: str = "::"
+) -> Tuple[sp.csr_matrix, np.ndarray]:
+    """
+    Calculate element-wise multiplication between all pairs of rows in a sparse CSR matrix,
+    including self-interactions, and track the cell type combinations.
+
+    Parameters:
+    -----------
+    sparse_matrix : scipy.sparse.csr_matrix
+        Input sparse matrix of shape (N, M) where N is the number of cell types
+    cell_types : array-like
+        Array of cell type names, length N
+    delimiter : str, default="::"
+        Delimiter to use when joining cell type pair names
+
+    Returns:
+    --------
+    result : scipy.sparse.csr_matrix
+        Sparse matrix of shape (N*N, M) containing all pairwise multiplications
+    row_names : numpy.ndarray
+        Array of strings representing the cell type pairs for each row,
+        in the format "cell_type_i::cell_type_j"
+
+    Raises:
+    -------
+    ValueError
+        If length of cell_types doesn't match number of rows in sparse_matrix
+    TypeError
+        If sparse_matrix is not a sparse matrix
+    """
+    N, M = sparse_matrix.shape
+
+    # Validate input
+    if len(cell_types) != N:
+        raise ValueError(f"Length of cell_types ({len(cell_types)}) must match number of rows in matrix ({N})")
+
+    # Ensure the input is in CSR format for efficient row slicing
+    if not sp.isspmatrix_csr(sparse_matrix):
+        sparse_matrix = sparse_matrix.tocsr()
+
+    # Preallocate a list to store all the row products and row names
+    row_products = []
+    row_names = []
+
+    # Iterate through all pairs of rows (including self-pairs)
+    for i in range(N):
+        row_i = sparse_matrix[i]
+        cell_type_i = cell_types[i]
+
+        for j in range(N):  # Include all pairs, even when i == j
+            row_j = sparse_matrix[j]
+            cell_type_j = cell_types[j]
+
+            # Element-wise multiplication
+            product = row_i.multiply(row_j)
+            row_products.append(product)
+
+            # Create row name for this combination
+            row_name = f"{cell_type_i}{delimiter}{cell_type_j}"
+            row_names.append(row_name)
+
+    # Vertically stack all multiplied pairs
+    result = sp.vstack(row_products)
+
+    # Convert row names to numpy array
+    row_names = np.array(row_names)
+
+    return result, row_names
+### Include the cell type spatial distribution information
+def calculateSpecificityInSpatialCellTypeNeighborhood(
+    adata,
+    lr_adata,
+    groupby: str = 'CellTypes', 
+    use_rep_spatial: str = 'X_spatial', 
+    number_nearest_neighbors: int = 10, 
+    mu: float = 100, 
+    remove_lowly_expressed: bool = True, 
+    expressed_pct: float = 0.1, 
+    return_by_group: bool = True, 
+    key_added: str = 'cosg', 
+    column_delimiter: str = '@@'
+) -> pd.DataFrame:
+    """
+    Calculate cell type specificity scores for ligand-receptor interaction in spatial neighborhoods.
+    
+    
+    Parameters
+    ----------
+    adata : AnnData
+        Annotated data matrix containing spatial information and cell type annotations.
+        Must have `.obsm[use_rep_spatial]` containing spatial coordinates and `.obs[groupby]` with cell type annotations.
+    lr_adata : AnnData
+        Annotated data matrix containing ligand-receptor interaction scores at single-cell resolution.
+        Must have `.X` containing ligand-receptor interaction scores and `.var_names` with ligand-receptor pair identifiers.
+    groupby : str, default='CellTypes'
+        Key in adata.obs for cell type/group annotations.
+    use_rep_spatial : str, default='X_spatial'
+        Key in adata.obsm for spatial coordinates.
+    number_nearest_neighbors : int, default=10
+        Number of neighbors to consider in the spatial neighborhood. Must be positive.
+    mu : float, default=100
+        Regularization parameter for cosine similarity calculation. Must be non-negative.
+    remove_lowly_expressed : bool, default=True
+        Whether to filter out lowly expressed genes.
+    expressed_pct : float, default=0.1
+        Minimum percentage of cells in a group that must express a gene. Must be between 0 and 1.
+    return_by_group : bool, default=True
+        Whether to return results organized by group.
+    key_added : str, default='cosg'
+        Key to add to adata.uns for storing results.
+    column_delimiter : str, default='@@'
+        Delimiter for column names in the returned DataFrame.
+        
+    Returns
+    -------
+    pandas.DataFrame
+        DataFrame containing gene-wise specificity scores normalized across all cell types.
+    
+    Raises
+    ------
+    ValueError
+        If parameters have invalid values or required data is missing from AnnData objects.
+    TypeError
+        If parameters have incorrect types.
+    
+    Notes
+    -----
+    The function adds results to lr_adata.uns[key_added] and returns a DataFrame of normalized scores.
+    """
+   
+    
+    # Check if required data exists in AnnData objects
+    if groupby not in adata.obs:
+        raise ValueError(f"'{groupby}' not found in adata.obs")
+    if use_rep_spatial not in adata.obsm:
+        raise ValueError(f"'{use_rep_spatial}' not found in adata.obsm")
+
+    
+    # Get group information
+    group_info = adata.obs[groupby].copy()
+    n_cell = adata.n_obs
+    
+    # Determine group order
+    if hasattr(group_info, "cat"):
+        groups_order = list(group_info.cat.categories)
+    else:
+        unique_values = group_info.unique()
+        # Helper function to check if all values are numeric
+        def _is_all_numeric(groups):
+            try:
+                [float(x) for x in groups]
+                return True
+            except ValueError:
+                return False
+
+        if _is_all_numeric(unique_values):
+            groups_order = sorted(unique_values, key=lambda x: float(x))
+        else:
+            groups_order = sorted(unique_values)
+    
+    n_cluster = len(groups_order)
+    
+    # Create sparse matrix for cluster membership
+    group_to_row = {group: i for i, group in enumerate(groups_order)}
+    row_indices = np.array([group_to_row[group] for group in group_info])
+    col_indices = np.arange(n_cell)
+    data = np.ones_like(col_indices, dtype=int)
+    cluster_mat = csr_matrix((data, (row_indices, col_indices)), shape=(n_cluster, n_cell))
+    
+    # Create spatial neighborhood graph
+    X_spatial = adata.obsm[use_rep_spatial].copy()
+    cellxcell = kneighbors_graph(X_spatial, n_neighbors=number_nearest_neighbors, 
+                                mode='distance', include_self=False)
+    cellxcell.data = 1 / np.exp(cellxcell.data / (np.mean(cellxcell.data) / 2))
+    
+    # Calculate first-order neighborhood composition
+    order1 = cluster_mat @ cellxcell.T
+    
+    
+    
+    # Get cell type pair interactions
+    ctXct_cell, ctXct = _pairwise_row_multiply_matrix(order1, cell_types=groups_order)
+    
+    # Calculate cosine similarity between genes and cell type pairs
+    cosine_sim = cosine_similarity(
+        X=lr_adata.X.T, 
+        Y=ctXct_cell, 
+        dense_output=False
+    )
+    
+    # Apply regularization to cosine similarity
+    genexlambda = cosine_sim.copy()
+    genexlambda.data = np.multiply(genexlambda.data, genexlambda.data)
+    e_power2_sum = np.array(genexlambda.sum(axis=1)).flatten()  
+    
+    if mu == 1:
+        genexlambda.data = genexlambda.data / np.repeat(e_power2_sum, np.diff(genexlambda.indptr))
+    else:
+        genexlambda.data = genexlambda.data / ((1 - mu) * genexlambda.data + mu * np.repeat(e_power2_sum, np.diff(genexlambda.indptr)))
+    
+    genexlambda.data = np.multiply(genexlambda.data, cosine_sim.data)
+    
+   
+    
+    # Set up storage for results
+
+        
+    if key_added is None:
+        key_added = 'cosg'
+        
+    lr_adata.uns[key_added] = {}
+    lr_adata.uns[key_added]['params'] = dict(
+        groupby=groupby,
+        method='COSG',
+        mu=mu,
+    )
+    
+    # Get gene expression matrix
+    cellxgene = lr_adata.X.copy()
+    
+    # Helper function for counting non-zeros
+    if sp.issparse(cellxgene):
+        cellxgene.eliminate_zeros()
+        get_nonzeros = lambda X: X.getnnz(axis=0)
+    else:
+        get_nonzeros = lambda X: np.count_nonzero(X, axis=0)
+    
+    # Process each cell type
+    rank_stats = None
+    order_i = 0
+    
+    for group_i in ctXct:    
+        # Create boolean mask for cells in this group
+        idx_i = group_info == group_i 
+        idx_i = idx_i.values  # Convert to numpy array
+        
+        # Get specificity scores
+        if sp.issparse(cellxgene):
+            scores = genexlambda[:, order_i].toarray()[:, 0]
+        else:
+            scores = genexlambda[:, order_i]
+        
+        # Filter lowly expressed genes if requested
+        if remove_lowly_expressed:
+            n_cells_expressed = get_nonzeros(cellxgene[idx_i])
+            n_cells_i = np.sum(idx_i)
+            scores[n_cells_expressed < n_cells_i * expressed_pct] = -1
+        
+        # Select top genes
+        global_indices = _select_top_n(scores, lr_adata.n_vars)
+        
+        # Initialize DataFrame if needed
+        if rank_stats is None:
+            rank_stats = pd.DataFrame()
+        
+        # Prepare data for new columns
+        columns_data = {
+            (group_i, 'names'): lr_adata.var_names.values[global_indices],
+            (group_i, 'scores'): scores[global_indices]
+        }
+        
+        # Create and concatenate new data
+        new_data = pd.DataFrame(columns_data)
+        rank_stats = pd.concat([rank_stats, new_data], axis=1)
+        
+        order_i = order_i + 1
+    
+    # Create by-group results if requested
+    if return_by_group:
+        # Swap levels to ensure attribute comes first, then cell group
+        rank_stats_swapped = rank_stats.copy()
+        rank_stats_swapped.columns = rank_stats_swapped.columns.swaplevel()
+        
+        # Create flattened column names
+        flattened_columns = [column_delimiter.join(map(str, col)) for col in rank_stats_swapped.columns]
+        cosg_results = rank_stats_swapped.copy()
+        cosg_results.columns = flattened_columns
+        
+        lr_adata.uns[key_added]['COSG'] = cosg_results
+    
+    # Store results in lr_adata
+    dtypes = {
+        'names': 'O',
+        'scores': 'float32',
+        'logfoldchanges': 'float32',
+    }
+    
+    rank_stats.columns = rank_stats.columns.swaplevel()
+    for col in rank_stats.columns.levels[0]:
+        lr_adata.uns[key_added][col] = rank_stats[col].to_records(
+            index=False, column_dtypes=dtypes[col]
+        )
+    
+    # Process and return normalized results
+    cosg_lr_ctc = cosg.indexByGene(
+        lr_adata.uns[key_added]['COSG'],
+        column_delimiter=column_delimiter,               
+    )
+    cosg_lr_ctc = cosg.iqrLogNormalize(cosg_lr_ctc)
+    
+    return cosg_lr_ctc
