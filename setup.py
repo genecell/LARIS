@@ -1,9 +1,9 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='ZoneTalk',
+    name='LARIS',
     version='0.1.0',
-    description='A Python package for facilitating zone-based communications.',
+    description='LARIS for inference of Ligand And Receptor Interaction In Spatial transcriptomics.',
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
     author='Min Dai, Tivadar Török, Dawei Sun',
