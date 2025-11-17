@@ -85,6 +85,14 @@ pos_cmap = colors.ListedColormap(newcolors)
 # HEATMAP FUNCTIONS
 # ============================================================================
 
+# Added imports for clustering
+try:
+    from scipy.cluster.hierarchy import linkage, leaves_list
+    from scipy.spatial.distance import pdist
+    SCIPY_AVAILABLE = True
+except ImportError:
+    SCIPY_AVAILABLE = False
+
 def plotCCCHeatmap(
     laris_results, 
     cmap, 
@@ -94,14 +102,21 @@ def plotCCCHeatmap(
     tick_fontsize=12,
     cbar_label_fontsize=16,
     cbar_tick_fontsize=12,
-    filter_significant=False
+    filter_significant=False,
+    p_value_col='p_value',
+    threshold=0.05,
+    show_borders=False, # --- DEFAULT CHANGED TO False ---
+    cluster=False,      # --- NEW PARAMETER ---
+    # --- New Parameters Below ---
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01
 ):
     """
     Create a heatmap showing the number of cell-cell communication interactions.
     
     This function visualizes the frequency of interactions between sending and 
-    receiving cell types as a heatmap, where color intensity represents the 
-    number of interactions.
+    receiving cell types as a heatmap. It ensures the row and column orders
+    are identical to maintain the self-interaction diagonal.
     
     Parameters
     ----------
@@ -109,13 +124,15 @@ def plotCCCHeatmap(
         DataFrame containing LARIS results with columns:
         - 'sender' : str, cell type sending the signal
         - 'receiver' : str, cell type receiving the signal
-        - 'significant' : bool (optional), significance flag
+        - 'significant' : bool (optional), fallback significance flag
+        - p_value_col : str (optional), column name for p-values
         
     cmap : str or matplotlib.colors.Colormap
         Colormap to use for the heatmap (e.g., 'viridis', 'RdBu_r')
         
     n_top : int, default=3000
-        Number of top-ranked interactions to include in the plot
+        Number of top-ranked interactions to include if filter_significant=False
+        or if significance columns are missing.
         
     fig_size : tuple, default=(12, 10)
         Figure size as (width, height) in inches
@@ -133,7 +150,30 @@ def plotCCCHeatmap(
         Font size for colorbar tick labels
         
     filter_significant : bool, default=False
-        If True, only plot significant interactions (requires 'significant' column)
+        If True, filters interactions based on p_value_col and threshold.
+        Falls back to 'significant' column if p_value_col is missing.
+        
+    p_value_col : str, default='p_value'
+        Column name to use for p-value filtering when filter_significant=True.
+        
+    threshold : float, default=0.05
+        P-value cutoff to use for filtering (interactions with p < threshold are kept).
+        
+    show_borders : bool, default=False
+        If True, draws light grey border lines between each heatmap cell.
+        Default is False (no lines).
+        
+    cluster : bool, default=False
+        If True, performs hierarchical clustering on senders and applies the
+        same order to receivers to maintain the self-interaction diagonal.
+        Requires scipy.
+    
+    filter_by_interaction_score : bool, default=True
+        If True, filters interactions based on the 'interaction_score' column.
+        
+    threshold_interaction_score : float, default=0.01
+        Cutoff to use for score filtering. Assumes keeping interactions
+        where 'interaction_score' > threshold_interaction_score.
     
     Returns
     -------
@@ -142,57 +182,151 @@ def plotCCCHeatmap(
     
     Examples
     --------
+    >>> # Example with clustering (requires scipy)
     >>> lr.pl.plotCCCHeatmap(
     ...     laris_results,
     ...     cmap='viridis',
-    ...     n_top=1000,
-    ...     filter_significant=True
+    ...     filter_significant=True,
+    ...     cluster=True
+    ... )
+    
+    >>> # Example with alphabetical order and no borders
+    >>> lr.pl.plotCCCHeatmap(
+    ...     laris_results,
+    ...     cmap='RdBu_r'
     ... )
     
     Notes
     -----
-    - If filter_significant=True but 'significant' column is missing, 
-      falls back to using n_top parameter
-    - Heatmap values represent counts of interactions, not scores
+    - Filtering logic:
+      - If `filter_significant` is True, filters by `p_value_col` or 'significant' column.
+      - If `filter_by_interaction_score` is True, filters by 'interaction_score' > `threshold_interaction_score`.
+      - Both filters can be applied.
+      - If *no* filters are applied (either set to False or if specified
+        columns are missing), the plot will default to using `n_top` interactions.
     """
-    # Check if significant filtering is requested
-    if filter_significant:
-        if 'significant' in laris_results.columns:
-            laris_results_subset = laris_results[laris_results['significant']]
-        else:
-            print("'significant' column is missing. Run significance testing first to plot "
-                  "significant interactions. Using manual cutoff (n_top) for now.")
-            laris_results_subset = laris_results.iloc[:n_top]
-    else:
-        laris_results_subset = laris_results.iloc[:n_top]
+    
+    laris_results_subset = laris_results.copy()
+    did_filter = False
 
-    # Create a pivot table to count occurrences of interactions
-    heatmap_data = laris_results_subset.pivot_table(
+    # --- Updated filtering logic ---
+    
+    # 1. Try significance filter
+    if filter_significant:
+        if p_value_col in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset[p_value_col] < threshold]
+            did_filter = True
+        elif 'significant' in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset['significant']]
+            did_filter = True
+        else:
+            print(f"Warning: 'filter_significant' is True but '{p_value_col}' and 'significant' "
+                  "columns are missing. Skipping significance filter.")
+
+    # 2. Try interaction score filter
+    if filter_by_interaction_score:
+        score_col = 'interaction_score' # Assuming this column name
+        if score_col in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset[score_col] > threshold_interaction_score]
+            did_filter = True
+        else:
+            print(f"Warning: 'filter_by_interaction_score' is True but "
+                  f"'{score_col}' column is missing. Skipping score filter.")
+
+    # 3. Fallback to n_top if no other filter was successfully applied
+    if not did_filter:
+        print(f"No filters were applied (or failed due to missing columns). "
+              f"Defaulting to top {n_top} interactions.")
+        laris_results_subset = laris_results_subset.iloc[:n_top]
+
+
+    if laris_results_subset.empty:
+        print("No interactions found matching the criteria. Cannot plot heatmap.")
+        return None
+
+    # --- Create pivot table ---
+    heatmap_data_raw = laris_results_subset.pivot_table(
         index='sender',
         columns='receiver',
         aggfunc='size',
         fill_value=0
     )
 
-    # Plot the heatmap
+    # --- Ensure square matrix with identical row/col order ---
+    # 1. Get all unique cell types from both senders and receivers
+    all_cell_types = sorted(
+        list(
+            set(heatmap_data_raw.index) | set(heatmap_data_raw.columns)
+        )
+    )
+    
+    # 2. Reindex the DataFrame to make it square (alphabetical order by default)
+    heatmap_data = heatmap_data_raw.reindex(
+        index=all_cell_types, 
+        columns=all_cell_types, 
+        fill_value=0
+    )
+    
+    # --- NEW: Apply clustering if requested ---
+    if cluster:
+        if SCIPY_AVAILABLE:
+            try:
+                # Calculate linkage on rows (senders)
+                row_linkage = linkage(pdist(heatmap_data, metric='euclidean'), method='average')
+                # Get the order from the clustering
+                new_order_indices = leaves_list(row_linkage)
+                # Get the labels for that order
+                new_order_labels = heatmap_data.index[new_order_indices]
+                
+                # Re-apply this order to BOTH rows and columns
+                heatmap_data = heatmap_data.reindex(
+                    index=new_order_labels, 
+                    columns=new_order_labels
+                )
+            except Exception as e:
+                print(f"Clustering failed: {e}. Falling back to alphabetical order.")
+        else:
+            print("Clustering requires scipy. Please install scipy to use this feature.")
+            print("Falling back to alphabetical order.")
+    # --- End of clustering logic ---
+
+
+    # --- Set border parameters based on user request ---
+    if show_borders:
+        line_width_val = 0.5
+        line_color_val = 'lightgrey'
+    else:
+        line_width_val = 0       # Default is now 0
+        line_color_val = 'none'
+
+    # --- Plot the heatmap ---
     plt.figure(figsize=fig_size)
-    ax = sns.heatmap(heatmap_data, cmap=cmap, annot=False, cbar=True)
+    ax = sns.heatmap(
+        heatmap_data, 
+        cmap=cmap, 
+        annot=False, 
+        cbar=True,
+        linewidths=line_width_val,  # Use new border width
+        linecolor=line_color_val, # Use new border color
+        square=True # Often looks better for this type of matrix
+    )
 
     # Set axis labels
     plt.xlabel('Receiver', fontsize=axis_label_fontsize)
     plt.ylabel('Sender', fontsize=axis_label_fontsize)
 
     # Set tick label sizes
-    plt.xticks(fontsize=tick_fontsize)
+    plt.xticks(fontsize=tick_fontsize, rotation=90)
     plt.yticks(fontsize=tick_fontsize)
 
     # Set colorbar properties
     cbar = ax.collections[0].colorbar
     cbar.set_label("Number of interactions", fontsize=cbar_label_fontsize)
     cbar.ax.tick_params(labelsize=cbar_tick_fontsize)
-
+    
+    plt.tight_layout() # Adjust plot to prevent labels from being cut off
     plt.show()
-
+    return None
 
 # ============================================================================
 # NETWORK VISUALIZATION FUNCTIONS
