@@ -107,8 +107,8 @@ def plotCCCHeatmap(
     ----------
     laris_results : pd.DataFrame
         DataFrame containing LARIS results with columns:
-        - 'sending_celltype' : str, cell type sending the signal
-        - 'receiving_celltype' : str, cell type receiving the signal
+        - 'sender' : str, cell type sending the signal
+        - 'receiver' : str, cell type receiving the signal
         - 'significant' : bool (optional), significance flag
         
     cmap : str or matplotlib.colors.Colormap
@@ -168,8 +168,8 @@ def plotCCCHeatmap(
 
     # Create a pivot table to count occurrences of interactions
     heatmap_data = laris_results_subset.pivot_table(
-        index='sending_celltype',
-        columns='receiving_celltype',
+        index='sender',
+        columns='receiver',
         aggfunc='size',
         fill_value=0
     )
@@ -179,8 +179,8 @@ def plotCCCHeatmap(
     ax = sns.heatmap(heatmap_data, cmap=cmap, annot=False, cbar=True)
 
     # Set axis labels
-    plt.xlabel('Receiving Cell Type', fontsize=axis_label_fontsize)
-    plt.ylabel('Sending Cell Type', fontsize=axis_label_fontsize)
+    plt.xlabel('Receiver', fontsize=axis_label_fontsize)
+    plt.ylabel('Sender', fontsize=axis_label_fontsize)
 
     # Set tick label sizes
     plt.xticks(fontsize=tick_fontsize)
@@ -226,8 +226,8 @@ def plotCCCNetwork(
     ----------
     laris_results : pd.DataFrame
         DataFrame containing LARIS results with columns:
-        - 'sending_celltype' : str
-        - 'receiving_celltype' : str
+        - 'sender' : str
+        - 'receiver' : str
         - 'interaction_score' : float
         
     cell_type_of_interest : str
@@ -310,9 +310,9 @@ def plotCCCNetwork(
     
     # Filter for the cell type of interest based on direction
     if interaction_direction == "sending":
-        df_filtered = df_subset[df_subset['sending_celltype'] == cell_type_of_interest]
+        df_filtered = df_subset[df_subset['sender'] == cell_type_of_interest]
     elif interaction_direction == "receiving":
-        df_filtered = df_subset[df_subset['receiving_celltype'] == cell_type_of_interest]
+        df_filtered = df_subset[df_subset['receiver'] == cell_type_of_interest]
     else:
         raise ValueError("interaction_direction must be either 'sending' or 'receiving'")
     
@@ -321,15 +321,15 @@ def plotCCCNetwork(
     
     # Step 2: Group by cell type pairs and sum interaction scores
     df_grouped = df_filtered.groupby(
-        ['sending_celltype', 'receiving_celltype'],
+        ['sender', 'receiver'],
         as_index=False
     ).agg({'interaction_score': 'sum'})
     
     # Step 3: Build the network graph
     G = nx.from_pandas_edgelist(
         df_grouped,
-        source='sending_celltype',
-        target='receiving_celltype',
+        source='sender',
+        target='receiver',
         edge_attr='interaction_score',
         create_using=nx.DiGraph()
     )
@@ -523,7 +523,7 @@ def plotCCCNetworkCumulative(
         # Aggregate by counting interactions
         df_agg = (
             df_subset
-            .groupby(['sending_celltype', 'receiving_celltype'])
+            .groupby(['sender', 'receiver'])
             .size()
             .reset_index(name='interaction_count')
         )
@@ -534,7 +534,7 @@ def plotCCCNetworkCumulative(
         # Aggregate by summing scores
         df_agg = (
             df_subset
-            .groupby(['sending_celltype', 'receiving_celltype'], as_index=False)
+            .groupby(['sender', 'receiver'], as_index=False)
             ['interaction_score']
             .sum()
         )
@@ -544,8 +544,8 @@ def plotCCCNetworkCumulative(
     # Step 2: Build network graph
     G = nx.from_pandas_edgelist(
         df_agg,
-        source='sending_celltype',
-        target='receiving_celltype',
+        source='sender',
+        target='receiver',
         edge_attr=edge_attr_field,
         create_using=nx.DiGraph()
     )
@@ -717,8 +717,8 @@ def plotCCCDotPlot(
     # Build mask for specified sender-receiver pairs
     mask_cell_pairs = None
     for sender, receiver in zip(sender_celltypes, receiver_celltypes):
-        current_mask = ((laris_results['sending_celltype'] == sender) & 
-                       (laris_results['receiving_celltype'] == receiver))
+        current_mask = ((laris_results['sender'] == sender) & 
+                       (laris_results['receiver'] == receiver))
         if mask_cell_pairs is None:
             mask_cell_pairs = current_mask
         else:
@@ -750,8 +750,8 @@ def plotCCCDotPlot(
         df_filtered['bubble_size_plot'] = bubble_size
 
     # Create cell type pair labels
-    df_filtered['cell_type_pair'] = (df_filtered['sending_celltype'] + ' -> ' + 
-                                      df_filtered['receiving_celltype'])
+    df_filtered['cell_type_pair'] = (df_filtered['sender'] + ' -> ' + 
+                                      df_filtered['receiver'])
 
     # Define expected cell pairs in order
     all_cell_pairs = [f"{s} -> {r}" for s, r in zip(sender_celltypes, receiver_celltypes)]
@@ -937,32 +937,32 @@ def plotCCCDotPlotFacet(
     
     # Subset based on user selections
     if sender_celltypes is not None:
-        data = data[data["sending_celltype"].isin(sender_celltypes)]
+        data = data[data["sender"].isin(sender_celltypes)]
     
     if receiver_celltypes is not None:
-        data = data[data["receiving_celltype"].isin(receiver_celltypes)]
+        data = data[data["receiver"].isin(receiver_celltypes)]
     
     if interactions_to_plot is not None:
         data = data[data["interaction_name"].isin(interactions_to_plot)]
     
     # Convert to categorical with specified order
     if sender_celltypes is not None:
-        data["sending_celltype"] = pd.Categorical(
-            data["sending_celltype"],
+        data["sender"] = pd.Categorical(
+            data["sender"],
             categories=sender_celltypes,
             ordered=False
         )
     else:
-        data["sending_celltype"] = data["sending_celltype"].astype("category")
+        data["sender"] = data["sender"].astype("category")
     
     if receiver_celltypes is not None:
-        data["receiving_celltype"] = pd.Categorical(
-            data["receiving_celltype"],
+        data["receiver"] = pd.Categorical(
+            data["receiver"],
             categories=receiver_celltypes,
             ordered=False
         )
     else:
-        data["receiving_celltype"] = data["receiving_celltype"].astype("category")
+        data["receiver"] = data["receiver"].astype("category")
     
     if interactions_to_plot is not None:
         data["interaction_name"] = pd.Categorical(
@@ -995,7 +995,7 @@ def plotCCCDotPlotFacet(
     # Create FacetGrid
     g = sns.FacetGrid(
         data_plot,
-        col="sending_celltype",
+        col="sender",
         col_order=sender_celltypes,
         sharey=True,
         sharex=False,
@@ -1007,7 +1007,7 @@ def plotCCCDotPlotFacet(
     def facet_scatter(data, **kwargs):
         sns.scatterplot(
             data=data,
-            x="receiving_celltype",
+            x="receiver",
             y="interaction_name",
             hue="interaction_score",
             palette=cmap,
@@ -1020,7 +1020,7 @@ def plotCCCDotPlotFacet(
     g.map_dataframe(facet_scatter)
     
     # Add padding
-    xcats = data["receiving_celltype"].cat.categories
+    xcats = data["receiver"].cat.categories
     ycats = data["interaction_name"].cat.categories
     
     for ax in g.axes.flatten():
