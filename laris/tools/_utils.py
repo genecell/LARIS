@@ -614,28 +614,36 @@ def _calculate_ligand_receptor_specificity(
         n_genes_user=lr_gene_adata.n_vars,
         groupby=groupby
     )
+    ### Normalize the COSG scores
+    cosg_scores=cosg.indexByGene(
+        lr_gene_adata.uns['cosg']['COSG'],
+        # gene_key="names", score_key="scores",
+        set_nan_to_zero=True,
+        convert_negative_one_to_zero=True
+    )
+    gene_by_group_cosg=cosg.iqrLogNormalize(cosg_scores)
 
-    # Process COSG result and prepare to populate the DataFrame
-    names = pd.DataFrame(lr_gene_adata.uns['cosg']['names']).T
-    scores = pd.DataFrame(lr_gene_adata.uns['cosg']['scores']).T
-    cell_types = names.index.values
+    # # Process COSG result and prepare to populate the DataFrame
+    # names = pd.DataFrame(lr_gene_adata.uns['cosg']['names']).T
+    # scores = pd.DataFrame(lr_gene_adata.uns['cosg']['scores']).T
+    # cell_types = names.index.values
 
-    # Initialize DataFrame for results
-    flat_genes = np.unique(np.concatenate(names.values))
-    gene_by_group_cosg = pd.DataFrame(index=flat_genes, columns=cell_types)
+    # # Initialize DataFrame for results
+    # flat_genes = np.unique(np.concatenate(names.values))
+    # gene_by_group_cosg = pd.DataFrame(index=flat_genes, columns=cell_types)
 
-    # Fill the DataFrame with scores
-    for cell_type in cell_types:
-        gene_names = names.loc[cell_type].values
-        gene_scores = scores.loc[cell_type].values
-        gene_by_group_cosg.loc[gene_names, cell_type] = gene_scores
+    # # Fill the DataFrame with scores
+    # for cell_type in cell_types:
+    #     gene_names = names.loc[cell_type].values
+    #     gene_scores = scores.loc[cell_type].values
+    #     gene_by_group_cosg.loc[gene_names, cell_type] = gene_scores
 
-    # Mask and normalize
-    mask_tiny = gene_by_group_cosg < mask_threshold
-    gene_by_group_cosg[mask_tiny] = 0
-    gene_by_group_cosg = normalize(gene_by_group_cosg, norm="l1", axis=0)
-    gene_by_group_cosg = pd.DataFrame(gene_by_group_cosg, columns=cell_types, index=flat_genes)
-    gene_by_group_cosg[mask_tiny] = 0
+    # # Mask and normalize
+    # mask_tiny = gene_by_group_cosg < mask_threshold
+    # gene_by_group_cosg[mask_tiny] = 0
+    # gene_by_group_cosg = normalize(gene_by_group_cosg, norm="l1", axis=0)
+    # gene_by_group_cosg = pd.DataFrame(gene_by_group_cosg, columns=cell_types, index=flat_genes)
+    # gene_by_group_cosg[mask_tiny] = 0
 
     return gene_by_group_cosg
 
@@ -700,40 +708,50 @@ def _calculate_diffused_lr_specificity(
         groupby=groupby
     )
 
-    # Retrieve names and scores from COSG results
-    names = pd.DataFrame(lr_adata.uns['cosg']['names']).T
-    scores = pd.DataFrame(lr_adata.uns['cosg']['scores']).T
-    cell_types = names.index.values
 
-    # Initialize lists to store the ordered gene names and scores
-    ordered_genes = []
-    ordered_scores = []
+    ### Normalize the COSG scores
+    cosg_scores=cosg.indexByGene(
+        lr_adata.uns['cosg']['COSG'],
+        # gene_key="names", score_key="scores",
+        set_nan_to_zero=True,
+        convert_negative_one_to_zero=True
+    )
+    lr_by_group_cosg=cosg.iqrLogNormalize(cosg_scores)
 
-    # Collect genes and scores per cell type
-    for cell_type in cell_types:
-        gene_names = names.loc[cell_type].values
-        gene_scores = scores.loc[cell_type].values
-        ordered_genes.append(gene_names)
-        ordered_scores.append(gene_scores)
+    # # Retrieve names and scores from COSG results
+    # names = pd.DataFrame(lr_adata.uns['cosg']['names']).T
+    # scores = pd.DataFrame(lr_adata.uns['cosg']['scores']).T
+    # cell_types = names.index.values
 
-    # Create a flat list of unique gene names
-    flat_genes = np.unique(np.concatenate(ordered_genes))
+    # # Initialize lists to store the ordered gene names and scores
+    # ordered_genes = []
+    # ordered_scores = []
 
-    # Initialize a DataFrame to hold the final results
-    df = pd.DataFrame(index=flat_genes, columns=cell_types)
+    # # Collect genes and scores per cell type
+    # for cell_type in cell_types:
+    #     gene_names = names.loc[cell_type].values
+    #     gene_scores = scores.loc[cell_type].values
+    #     ordered_genes.append(gene_names)
+    #     ordered_scores.append(gene_scores)
 
-    # Populate the DataFrame with scores
-    for i, cell_type in enumerate(cell_types):
-        gene_names = ordered_genes[i]
-        gene_scores = ordered_scores[i]
-        df.loc[gene_names, cell_type] = gene_scores
+    # # Create a flat list of unique gene names
+    # flat_genes = np.unique(np.concatenate(ordered_genes))
 
-    # Normalize and handle tiny values
-    df.fillna(0, inplace=True)
-    df[df < mask_threshold] = 0
-    df = (df - df.min(axis=0)) / (df.max(axis=0) - df.min(axis=0))
+    # # Initialize a DataFrame to hold the final results
+    # df = pd.DataFrame(index=flat_genes, columns=cell_types)
 
-    return df
+    # # Populate the DataFrame with scores
+    # for i, cell_type in enumerate(cell_types):
+    #     gene_names = ordered_genes[i]
+    #     gene_scores = ordered_scores[i]
+    #     df.loc[gene_names, cell_type] = gene_scores
+
+    # # Normalize and handle tiny values
+    # df.fillna(0, inplace=True)
+    # df[df < mask_threshold] = 0
+    # df = (df - df.min(axis=0)) / (df.max(axis=0) - df.min(axis=0))
+
+    return lr_by_group_cosg
 
 
 def _calculate_specificity_in_spatial_neighborhood(
@@ -1040,7 +1058,8 @@ def _calculate_laris_score_by_celltype(
     chunk_size: int = 50000,
     prefilter_fdr: bool = True,
     prefilter_threshold: float = 0.0,
-    score_threshold: float = 1e-6
+    score_threshold: float = 1e-6,
+    spatial_weight: float = 1.0
 ) -> pd.DataFrame:
     """
     Calculate LARIS interaction scores for all sender-receiver cell type pairs with 
@@ -1098,6 +1117,14 @@ def _calculate_laris_score_by_celltype(
     score_threshold : float, default=1e-6
         Minimum threshold for interaction scores. Values below this are set to 
         exactly 0.0 to avoid numerical precision issues in p-value calculation.
+    spatial_weight : float, default=1.0
+        Exponent applied to the spatial specificity score from runLARIS().
+        Controls the influence of spatial specificity on final interaction scores.
+        - spatial_weight = 0: Ignore spatial specificity (weight becomes 1)
+        - spatial_weight = 1: Linear influence (current default)
+        - spatial_weight > 1: Stronger emphasis on spatial specificity
+        - spatial_weight < 1: Weaker emphasis on spatial specificity
+        Formula: interaction_matrix = outer(L, R) * (spatial_score ** spatial_weight)
         
     Returns
     -------
@@ -1131,6 +1158,18 @@ def _calculate_laris_score_by_celltype(
     ...     n_permutations=1000
     ... )
     >>> 
+    >>> # With stronger spatial specificity emphasis
+    >>> laris_celltype_strong = la.tl._calculate_laris_score_by_celltype(
+    ...     adata, lr_adata, laris_lr,
+    ...     spatial_weight=2.0  # Square the spatial specificity score
+    ... )
+    >>> 
+    >>> # With weaker spatial specificity emphasis
+    >>> laris_celltype_weak = la.tl._calculate_laris_score_by_celltype(
+    ...     adata, lr_adata, laris_lr,
+    ...     spatial_weight=0.5  # Square root of spatial specificity score
+    ... )
+    >>> 
     >>> # View top significant interactions
     >>> significant = laris_celltype[laris_celltype['p_value_fdr'] < 0.05]
     >>> print(significant.head(20))
@@ -1151,12 +1190,28 @@ def _calculate_laris_score_by_celltype(
     -----
     The interaction score integrates multiple signals:
     - L and R gene cell type specificity (outer product)
-    - Spatial specificity score from `runLARIS()`
+    - Spatial specificity score from `runLARIS()` (raised to spatial_weight power)
     - Diffused LR score cell type distribution
     - Spatial co-localization of sending and receiving cell types
     
     Higher scores indicate stronger, more specific interactions between
     the sender and receiver cell types in the spatial context.
+    
+    Spatial Weight Parameter:
+    The spatial_weight parameter allows flexible control over how much the
+    spatial specificity score influences the final result. Since all components
+    are combined multiplicatively, using a power transformation is the most
+    natural way to adjust influence:
+    
+    - spatial_weight = 0: Makes spatial score = 1 (no influence)
+    - spatial_weight = 1: Linear influence (default, balanced)
+    - spatial_weight = 2: Quadratic influence (strong spatial pairs dominate)
+    - spatial_weight = 4: Was the previous default (very strong emphasis)
+    
+    Recommended values:
+    - Use 0.5-1.0 for exploratory analysis
+    - Use 1.0-2.0 for standard analysis (default is 1.0)
+    - Use 2.0-4.0 to focus on strongly spatially-specific interactions
     
     Statistical Testing:
     The permutation testing approach compares each observed ligand-receptor
@@ -1179,7 +1234,7 @@ def _calculate_laris_score_by_celltype(
     rather than nested loops, providing significant speedup (~10-50x faster).
     
     A score_threshold is applied to clean up numerical precision artifacts,
-    ensuring that very small scores (e.g., < 1e-10) are treated as exactly
+    ensuring that very small scores (e.g., < 1e-6) are treated as exactly
     zero in statistical testing. This prevents spurious significance for
     interactions with negligible biological signal.
     
@@ -1221,7 +1276,7 @@ def _calculate_laris_score_by_celltype(
     # =========================================================================
     # STEP 3: Compute Interaction Scores for All Sender-Receiver Pairs
     # =========================================================================
-    print("\n--- Step 3: Computing interaction scores for all sender-receiver pairs ---")
+    print(f"\n--- Step 3: Computing interaction scores (spatial_weight={spatial_weight}) ---")
     
     results = []
     
@@ -1239,7 +1294,17 @@ def _calculate_laris_score_by_celltype(
         if ligand in gene_by_group_cosg.index and receptor in gene_by_group_cosg.index:
             ligand_scores = gene_by_group_cosg.loc[ligand, :]
             receptor_scores = gene_by_group_cosg.loc[receptor, :]
-            interaction_matrix = np.outer(ligand_scores, receptor_scores) * np.power(interaction_score, 4)
+            
+            # Apply spatial weight via power transformation
+            # This allows flexible control over spatial specificity influence
+            if spatial_weight == 0:
+                # When spatial_weight is 0, ignore spatial specificity (set to 1)
+                spatial_factor = 1.0
+            else:
+                # Otherwise, apply the power transformation
+                spatial_factor = np.power(interaction_score, spatial_weight)
+            
+            interaction_matrix = np.outer(ligand_scores, receptor_scores) * spatial_factor
 
             interaction_df = pd.DataFrame(
                 interaction_matrix, 
