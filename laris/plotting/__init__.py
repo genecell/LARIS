@@ -69,7 +69,7 @@ import networkx as nx
 import itertools
 from matplotlib.patches import FancyArrowPatch
 from collections import OrderedDict
-from scipy.sparse import csr_matrix, issparse
+from scipy.sparse import csr_matrix, issparse, hstack  # <-- ADDED hstack
 from typing import Optional, Union, List, Tuple
 
 
@@ -347,7 +347,13 @@ def plotCCCNetwork(
     margins=0.2,
     label_font_size=16,
     node_size=1100,
+    # --- UPDATED PARAMETERS ---
+    p_value_col='p_value',
+    threshold=0.05,
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01,
     filter_significant=False
+    # --- END UPDATED PARAMETERS ---
 ):
     """
     Plot an interaction network for a specific cell type.
@@ -376,7 +382,7 @@ def plotCCCNetwork(
         AnnData object containing cell type information for coloring nodes
         
     n_top : int, default=3000
-        Number of top interactions to consider
+        Number of top interactions to consider if no filters are applied
         
     interaction_multiplier : float, default=250
         Scaling factor for edge thickness based on interaction score
@@ -405,9 +411,21 @@ def plotCCCNetwork(
     node_size : int, default=1100
         Size of network nodes
         
+    p_value_col : str, default='p_value'
+        Column name for p-value filtering.
+        
+    threshold : float, default=0.05
+        P-value cutoff for significance.
+        
+    filter_by_interaction_score : bool, default=True
+        If True, filter by 'interaction_score' > threshold_interaction_score.
+        
+    threshold_interaction_score : float, default=0.01
+        Cutoff for interaction score.
+        
     filter_significant : bool, default=False
-        If True, only use significant interactions
-    
+        If True, apply significance filtering.
+        
     Returns
     -------
     fig : matplotlib.figure.Figure
@@ -421,7 +439,9 @@ def plotCCCNetwork(
     ...     laris_results,
     ...     cell_type_of_interest='B_cell',
     ...     interaction_direction='sending',
-    ...     adata=adata
+    ...     adata=adata,
+    ...     filter_significant=True,
+    ...     p_value_col='adj_p_value'
     ... )
     
     Notes
@@ -431,16 +451,40 @@ def plotCCCNetwork(
     - Node colors match cell type colors from AnnData if available
     - Self-loops are automatically excluded
     """
-    # Step 1: Subset and filter the DataFrame
+    # --- UPDATED FILTERING LOGIC ---
+    laris_results_subset = laris_results.copy()
+    did_filter = False
+
+    # 1. Try significance filter
     if filter_significant:
-        if 'significant' in laris_results.columns:
-            df_subset = laris_results[laris_results['significant']]
+        if p_value_col in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset[p_value_col] < threshold]
+            did_filter = True
+        elif 'significant' in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset['significant']]
+            did_filter = True
         else:
-            print("'significant' column is missing. Run significance testing first. "
-                  "Using manual cutoff for now.")
-            df_subset = laris_results.iloc[:n_top]
-    else:
-        df_subset = laris_results.iloc[:n_top]
+            print(f"Warning: 'filter_significant' is True but '{p_value_col}' and 'significant' "
+                  "columns are missing. Skipping significance filter.")
+
+    # 2. Try interaction score filter
+    if filter_by_interaction_score:
+        score_col = 'interaction_score' # Assuming this column name
+        if score_col in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset[score_col] > threshold_interaction_score]
+            did_filter = True
+        else:
+            print(f"Warning: 'filter_by_interaction_score' is True but "
+                  f"'{score_col}' column is missing. Skipping score filter.")
+
+    # 3. Fallback to n_top if no other filter was successfully applied
+    if not did_filter:
+        print(f"No filters were applied (or failed due to missing columns). "
+              f"Defaulting to top {n_top} interactions.")
+        laris_results_subset = laris_results_subset.iloc[:n_top]
+    
+    df_subset = laris_results_subset
+    # --- END UPDATED FILTERING LOGIC ---
     
     # Filter for the cell type of interest based on direction
     if interaction_direction == "sending":
@@ -452,6 +496,10 @@ def plotCCCNetwork(
     
     # Apply interaction cutoff
     df_filtered = df_filtered[df_filtered['interaction_score'] >= interaction_cutoff]
+    
+    if df_filtered.empty:
+        print("No interactions found matching the criteria. Cannot plot network.")
+        return plt.subplots(figsize=figure_size)
     
     # Step 2: Group by cell type pairs and sum interaction scores
     df_grouped = df_filtered.groupby(
@@ -499,11 +547,11 @@ def plotCCCNetwork(
     ax.margins(margins)
     
     node_collection = nx.draw_networkx_nodes(G, pos, node_size=node_size, 
-                                              node_color=node_colors, ax=ax)
+                                             node_color=node_colors, ax=ax)
     node_collection.set_zorder(1)
     
     labels = nx.draw_networkx_labels(G, pos, font_size=label_font_size, 
-                                      font_family="sans-serif", ax=ax)
+                                     font_family="sans-serif", ax=ax)
     for label in labels.values():
         label.set_zorder(3)
     
@@ -551,7 +599,13 @@ def plotCCCNetworkCumulative(
     label_font_size=16,
     node_size=1100,
     interaction_multiplier=5,
+    # --- UPDATED PARAMETERS ---
+    p_value_col='p_value',
+    threshold=0.05,
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01,
     filter_significant=False,
+    # --- END UPDATED PARAMETERS ---
     edge_thickness_by_numbers=False,
     total_edge_thickness=100
 ):
@@ -576,7 +630,7 @@ def plotCCCNetworkCumulative(
         - If edge_thickness_by_numbers=True: minimum interaction count
         
     n_top : int, default=3000
-        Number of top interactions to aggregate
+        Number of top interactions to aggregate if no filters are applied
         
     cell_type : str, default='cell_type'
         Column in adata.obs containing cell type labels
@@ -602,8 +656,20 @@ def plotCCCNetworkCumulative(
     interaction_multiplier : float, default=5
         Scaling factor for edge thickness (when using scores)
         
+    p_value_col : str, default='p_value'
+        Column name for p-value filtering.
+        
+    threshold : float, default=0.05
+        P-value cutoff for significance.
+        
+    filter_by_interaction_score : bool, default=True
+        If True, filter by 'interaction_score' > threshold_interaction_score.
+        
+    threshold_interaction_score : float, default=0.01
+        Cutoff for interaction score.
+        
     filter_significant : bool, default=False
-        If True, only include significant interactions
+        If True, apply significance filtering.
         
     edge_thickness_by_numbers : bool, default=False
         If True, edge thickness represents interaction count rather than 
@@ -643,15 +709,41 @@ def plotCCCNetworkCumulative(
     - All cell types from adata are included as nodes, even if they have no edges
     - Edge colors match the sender cell type color
     """
-    # Step 1: Subset and aggregate data
+    # --- UPDATED FILTERING LOGIC ---
+    laris_results_subset = laris_results.copy()
+    did_filter = False
+
+    # 1. Try significance filter
     if filter_significant:
-        if 'significant' in laris_results.columns:
-            df_subset = laris_results[laris_results['significant']]
+        if p_value_col in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset[p_value_col] < threshold]
+            did_filter = True
+        elif 'significant' in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset['significant']]
+            did_filter = True
         else:
-            print("'significant' column is missing. Using manual cutoff.")
-            df_subset = laris_results.iloc[:n_top]
-    else:
-        df_subset = laris_results.iloc[:n_top]
+            print(f"Warning: 'filter_significant' is True but '{p_value_col}' and 'significant' "
+                  "columns are missing. Skipping significance filter.")
+
+    # 2. Try interaction score filter
+    if filter_by_interaction_score:
+        score_col = 'interaction_score' # Assuming this column name
+        if score_col in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset[score_col] > threshold_interaction_score]
+            did_filter = True
+        else:
+            print(f"Warning: 'filter_by_interaction_score' is True but "
+                  f"'{score_col}' column is missing. Skipping score filter.")
+
+    # 3. Fallback to n_top if no other filter was successfully applied
+    if not did_filter:
+        print(f"No filters were applied (or failed due to missing columns). "
+              f"Defaulting to top {n_top} interactions.")
+        laris_results_subset = laris_results_subset.iloc[:n_top]
+    
+    df_subset = laris_results_subset
+    # --- END UPDATED FILTERING LOGIC ---
+
 
     if edge_thickness_by_numbers:
         # Aggregate by counting interactions
@@ -674,6 +766,10 @@ def plotCCCNetworkCumulative(
         )
         df_agg = df_agg[df_agg['interaction_score'] >= cutoff]
         edge_attr_field = 'interaction_score'
+
+    if df_agg.empty:
+        print("No interactions found matching the criteria. Cannot plot network.")
+        return plt.subplots(figsize=figure_size)
 
     # Step 2: Build network graph
     G = nx.from_pandas_edgelist(
@@ -711,11 +807,11 @@ def plotCCCNetworkCumulative(
     ax.margins(margins)
     
     node_collection = nx.draw_networkx_nodes(G, pos, node_size=node_size, 
-                                              node_color=node_colors, ax=ax)
+                                             node_color=node_colors, ax=ax)
     node_collection.set_zorder(1)
     
     labels = nx.draw_networkx_labels(G, pos, font_size=label_font_size, 
-                                      font_family="sans-serif", ax=ax)
+                                     font_family="sans-serif", ax=ax)
     for label in labels.values():
         label.set_zorder(3)
     
@@ -726,8 +822,11 @@ def plotCCCNetworkCumulative(
         posB = pos[v]
 
         if edge_thickness_by_numbers:
-            count = data['interaction_count']
-            linewidth = (count / total_interaction_count) * total_edge_thickness
+            if total_interaction_count > 0:
+                count = data['interaction_count']
+                linewidth = (count / total_interaction_count) * total_edge_thickness
+            else:
+                linewidth = 0
         else:
             linewidth = data['interaction_score'] * interaction_multiplier
 
@@ -768,7 +867,13 @@ def plotCCCDotPlot(
     n_top=3000,
     cmap=pos_cmap,
     bubble_size=250,
+    # --- UPDATED PARAMETERS ---
+    p_value_col='p_value',
+    threshold=0.05,
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01,
     filter_significant=False
+    # --- END UPDATED PARAMETERS ---
 ):
     """
     Create a bubble plot for selected cell type pairs and interactions.
@@ -792,7 +897,7 @@ def plotCCCDotPlot(
         List of interaction names to include (e.g., ['CXCL13::CXCR5', ...])
         
     n_top : int, default=3000
-        Number of top interactions to consider
+        Number of top interactions to consider if no filters are applied
         
     cmap : matplotlib colormap, default=pos_cmap
         Colormap for bubble colors representing interaction scores
@@ -800,8 +905,20 @@ def plotCCCDotPlot(
     bubble_size : float, default=250
         Base size for bubbles
         
+    p_value_col : str, default='p_value'
+        Column name for p-value filtering.
+        
+    threshold : float, default=0.05
+        P-value cutoff for significance.
+        
+    filter_by_interaction_score : bool, default=True
+        If True, filter by 'interaction_score' > threshold_interaction_score.
+        
+    threshold_interaction_score : float, default=0.01
+        Cutoff for interaction score.
+        
     filter_significant : bool, default=False
-        If True, only plot significant interactions
+        If True, apply significance filtering.
     
     Returns
     -------
@@ -820,7 +937,8 @@ def plotCCCDotPlot(
     ...     laris_results,
     ...     sender_celltypes=senders,
     ...     receiver_celltypes=receivers,
-    ...     interactions_to_plot=interactions
+    ...     interactions_to_plot=interactions,
+    ...     filter_significant=True
     ... )
     
     Notes
@@ -833,34 +951,61 @@ def plotCCCDotPlot(
     - Only non-zero interaction scores are plotted
     - Figure dimensions automatically adjust based on number of categories
     """
-    # Filter for significant interactions if requested
+    # --- UPDATED FILTERING LOGIC ---
+    laris_results_subset = laris_results.copy()
+    did_filter = False
+
+    # 1. Try significance filter
     if filter_significant:
-        if 'significant' in laris_results.columns:
-            laris_results = laris_results[laris_results['significant']]
+        if p_value_col in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset[p_value_col] < threshold]
+            did_filter = True
+        elif 'significant' in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset['significant']]
+            did_filter = True
         else:
-            print("'significant' column is missing. Run significance testing first. "
-                  "Using manual cutoff for now.")
-            if n_top is not None:
-                laris_results = laris_results.sort_values(
-                    'interaction_score', ascending=False).iloc[:n_top].copy()
-    else:
+            print(f"Warning: 'filter_significant' is True but '{p_value_col}' and 'significant' "
+                  "columns are missing. Skipping significance filter.")
+
+    # 2. Try interaction score filter
+    if filter_by_interaction_score:
+        score_col = 'interaction_score' # Assuming this column name
+        if score_col in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset[score_col] > threshold_interaction_score]
+            did_filter = True
+        else:
+            print(f"Warning: 'filter_by_interaction_score' is True but "
+                  f"'{score_col}' column is missing. Skipping score filter.")
+
+    # 3. Fallback to n_top if no other filter was successfully applied
+    if not did_filter:
         if n_top is not None:
-            laris_results = laris_results.sort_values(
-                'interaction_score', ascending=False).iloc[:n_top].copy()
+            print(f"No filters were applied (or failed due to missing columns). "
+                  f"Defaulting to top {n_top} interactions.")
+            # This function's original logic included sorting
+            laris_results_subset = laris_results_subset.sort_values(
+                'interaction_score', ascending=False).iloc[:n_top]
+        else:
+            print("No filters applied and n_top is None. Using all interactions.")
+    # --- END UPDATED FILTERING LOGIC ---
     
     # Build mask for specified sender-receiver pairs
     mask_cell_pairs = None
     for sender, receiver in zip(sender_celltypes, receiver_celltypes):
-        current_mask = ((laris_results['sender'] == sender) & 
-                       (laris_results['receiver'] == receiver))
+        current_mask = ((laris_results_subset['sender'] == sender) & 
+                        (laris_results_subset['receiver'] == receiver))
         if mask_cell_pairs is None:
             mask_cell_pairs = current_mask
         else:
             mask_cell_pairs |= current_mask
 
+    if mask_cell_pairs is None:
+         print("No cell pairs specified or found.")
+         return plt.subplots()
+
     # Filter for selected interactions and cell pairs
-    df_filtered = laris_results[
-        laris_results['interaction_name'].isin(interactions_to_plot) & mask_cell_pairs
+    df_filtered = laris_results_subset[
+        laris_results_subset['interaction_name'].isin(interactions_to_plot) & mask_cell_pairs
     ].copy()
 
     # Remove missing scores
@@ -885,7 +1030,7 @@ def plotCCCDotPlot(
 
     # Create cell type pair labels
     df_filtered['cell_type_pair'] = (df_filtered['sender'] + ' -> ' + 
-                                      df_filtered['receiver'])
+                                     df_filtered['receiver'])
 
     # Define expected cell pairs in order
     all_cell_pairs = [f"{s} -> {r}" for s, r in zip(sender_celltypes, receiver_celltypes)]
@@ -905,26 +1050,31 @@ def plotCCCDotPlot(
     # Only plot non-zero scores
     df_nonzero = df_filtered[df_filtered['interaction_score'] > 0]
 
+    if df_nonzero.empty:
+        print("No non-zero interactions found to plot.")
+        # Still return a plot skeleton
+        
     # Calculate figure size
     num_cell_pairs = len(all_cell_pairs)
     num_interactions = len(interactions_to_plot)
-    fig_width = num_cell_pairs * 1.5
-    fig_height = num_interactions * 1.1
+    fig_width = max(8, num_cell_pairs * 1.5)
+    fig_height = max(6, num_interactions * 1.1)
     fig, ax = plt.subplots(figsize=(fig_width, fig_height))
 
     # Plot bubbles
-    sns.scatterplot(
-        ax=ax,
-        data=df_nonzero,
-        x='cell_type_pair',
-        y='interaction_name',
-        hue='interaction_score',
-        palette=cmap,
-        s=df_nonzero['bubble_size_plot'],
-        edgecolor='black',
-        legend=False,
-        clip_on=True,
-    )
+    if not df_nonzero.empty:
+        sns.scatterplot(
+            ax=ax,
+            data=df_nonzero,
+            x='cell_type_pair',
+            y='interaction_name',
+            hue='interaction_score',
+            palette=cmap,
+            s=df_nonzero['bubble_size_plot'],
+            edgecolor='black',
+            legend=False,
+            clip_on=True,
+        )
 
     # Set ticks and labels
     ax.set_xticks(range(len(all_cell_pairs)))
@@ -983,7 +1133,13 @@ def plotCCCDotPlotFacet(
     sender_celltypes=None,
     receiver_celltypes=None,
     interactions_to_plot=None,
+    # --- UPDATED PARAMETERS ---
+    p_value_col='p_value',
+    threshold=0.05,
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01,
     filter_significant=False
+    # --- END UPDATED PARAMETERS ---
 ):
     """
     Create faceted bubble plots organized by sending cell type.
@@ -1015,7 +1171,7 @@ def plotCCCDotPlotFacet(
         Extra space on y-axis to prevent clipping
         
     n_top : int, optional
-        Number of top interactions to include
+        Number of top interactions to include if no filters are applied
         
     sender_celltypes : list of str, optional
         Specific sending cell types to include. If None, all are included
@@ -1026,8 +1182,20 @@ def plotCCCDotPlotFacet(
     interactions_to_plot : list of str, optional
         Specific interactions to include. If None, all are included
         
+    p_value_col : str, default='p_value'
+        Column name for p-value filtering.
+        
+    threshold : float, default=0.05
+        P-value cutoff for significance.
+        
+    filter_by_interaction_score : bool, default=True
+        If True, filter by 'interaction_score' > threshold_interaction_score.
+        
+    threshold_interaction_score : float, default=0.01
+        Cutoff for interaction score.
+        
     filter_significant : bool, default=False
-        If True, only plot significant interactions
+        If True, apply significance filtering.
     
     Returns
     -------
@@ -1053,21 +1221,43 @@ def plotCCCDotPlotFacet(
     - Bubble size represents p-value significance (if available)
     - Colorbar and bubble size legend are added automatically
     """
-    # Copy to avoid modifying original
-    data = laris_results.copy()
-    
-    # Apply significance filtering if requested
+    # --- UPDATED FILTERING LOGIC ---
+    laris_results_subset = laris_results.copy()
+    did_filter = False
+
+    # 1. Try significance filter
     if filter_significant:
-        if 'significant' in data.columns:
-            data = data[data['significant']]
+        if p_value_col in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset[p_value_col] < threshold]
+            did_filter = True
+        elif 'significant' in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset['significant']]
+            did_filter = True
         else:
-            print("'significant' column is missing. Run significance testing first. "
-                  "Using manual cutoff for now.")
-            if n_top is not None:
-                data = data.iloc[:n_top]
-    else:
+            print(f"Warning: 'filter_significant' is True but '{p_value_col}' and 'significant' "
+                  "columns are missing. Skipping significance filter.")
+
+    # 2. Try interaction score filter
+    if filter_by_interaction_score:
+        score_col = 'interaction_score' # Assuming this column name
+        if score_col in laris_results_subset.columns:
+            laris_results_subset = laris_results_subset[laris_results_subset[score_col] > threshold_interaction_score]
+            did_filter = True
+        else:
+            print(f"Warning: 'filter_by_interaction_score' is True but "
+                  f"'{score_col}' column is missing. Skipping score filter.")
+
+    # 3. Fallback to n_top if no other filter was successfully applied
+    if not did_filter:
         if n_top is not None:
-            data = data.iloc[:n_top]
+            print(f"No filters were applied (or failed due to missing columns). "
+                  f"Defaulting to top {n_top} interactions.")
+            laris_results_subset = laris_results_subset.iloc[:n_top]
+        else:
+             print("No filters applied and n_top is None. Using all interactions.")
+    
+    data = laris_results_subset
+    # --- END UPDATED FILTERING LOGIC ---
     
     # Subset based on user selections
     if sender_celltypes is not None:
@@ -1079,6 +1269,10 @@ def plotCCCDotPlotFacet(
     if interactions_to_plot is not None:
         data = data[data["interaction_name"].isin(interactions_to_plot)]
     
+    if data.empty:
+        print("No interactions found matching criteria. Cannot plot.")
+        return None
+        
     # Convert to categorical with specified order
     if sender_celltypes is not None:
         data["sender"] = pd.Categorical(
@@ -1126,6 +1320,10 @@ def plotCCCDotPlotFacet(
         data_plot['bubble_size_plot'] = bubble_size
         bubble_legend = False
     
+    if data_plot.empty:
+        print("No interactions with p_value <= 0.1 (or no p_value column). Cannot plot.")
+        return None
+
     # Create FacetGrid
     g = sns.FacetGrid(
         data_plot,
@@ -1135,6 +1333,7 @@ def plotCCCDotPlotFacet(
         sharex=False,
         height=height,
         aspect=aspect_ratio,
+        gridspec_kws={"top": 0.85} # Adjust top to make space for legend
     )
     
     # Define scatter plot for each facet
@@ -1189,8 +1388,8 @@ def plotCCCDotPlotFacet(
             Line2D([0], [0], marker='o', color='w', label='0.05 < p_value ≤ 0.1',
                    markerfacecolor='gray', markersize=np.sqrt(bubble_size * 0.1))
         ]
-        g.fig.legend(handles=legend_handles, title="", loc='upper left',
-                     bbox_to_anchor=(0.85, 0.9), frameon=False)
+        g.fig.legend(handles=legend_handles, title="P-value", loc='upper left',
+                     bbox_to_anchor=(0.82, 0.9), frameon=False)
     
     # Set axis labels and titles
     g.set_axis_labels("Receiving Cell Type", "Interactions")
@@ -1468,8 +1667,8 @@ def plotCCCSpatial(
 
         # Set categorical order so background is plotted first
         full_categories = (lr_adata.obs[cell_type].cat.categories 
-                          if pd.api.types.is_categorical_dtype(lr_adata.obs[cell_type])
-                          else pd.Categorical(lr_adata.obs[cell_type]).categories)
+                           if pd.api.types.is_categorical_dtype(lr_adata.obs[cell_type])
+                           else pd.Categorical(lr_adata.obs[cell_type]).categories)
 
         lr_adata.obs['interaction_highlight'] = pd.Categorical(
             lr_adata.obs['interaction_highlight'],
@@ -1484,7 +1683,14 @@ def plotCCCSpatial(
         # Build color palette: original colors + grey for background
         palette = {'background': background_color}
         for i, ct in enumerate(full_categories):
-            palette[ct] = lr_adata.uns[f'{cell_type}_colors'][i]
+            try:
+                palette[ct] = lr_adata.uns[f'{cell_type}_colors'][i]
+            except (KeyError, IndexError):
+                print(f"Warning: Color for {ct} not found in .uns. Using default.")
+                # Fallback to a default colormap if .uns is missing
+                default_colors = plt.cm.get_cmap('tab10')(np.linspace(0, 1, len(full_categories)))
+                palette[ct] = default_colors[i]
+
 
         color_column = 'interaction_highlight'
 
@@ -1492,7 +1698,7 @@ def plotCCCSpatial(
     else:
         if selected_cell_types is None:
             raise ValueError("Either provide selected_cell_types or set "
-                           "highlight_all_expressing=True")
+                             "highlight_all_expressing=True")
         
         # Create custom color column
         lr_adata.obs['custom_color'] = 'other'
@@ -1531,7 +1737,10 @@ def plotCCCSpatial(
         y_coords = lr_adata.obsm[basis][:, 1]
         x_width = x_coords.max() - x_coords.min()
         y_width = y_coords.max() - y_coords.min()
-        fig_size = (10, 10 * y_width / x_width)
+        if x_width == 0 or y_width == 0:
+            fig_size = (10, 10) # Default for non-spatial
+        else:
+            fig_size = (10, 10 * y_width / x_width)
     
     plt.rcParams['figure.figsize'] = fig_size
 
@@ -1543,7 +1752,7 @@ def plotCCCSpatial(
         palette=palette,
         size=size,
         frameon=False,
-        ncols=6,
+        ncols=1,  # Set to 1 to avoid multiple columns
         sort_order=False,
         title=interaction,
         show=False
@@ -1576,7 +1785,7 @@ def prepareDotPlotAdata(lr_adata, adata):
     -------
     adata_dotplot : anndata.AnnData
         Combined AnnData object with:
-        - X matrix: concatenated [lr_adata.X, adata.X]
+        - X matrix: concatenated [lr_adata.X, adata.X] (sparse)
         - var_names: concatenated variable names (LR pairs + genes)
         - obs: copied from adata
         - obsm: copied from adata
@@ -1599,17 +1808,28 @@ def prepareDotPlotAdata(lr_adata, adata):
     
     Notes
     -----
-    - Both input matrices are converted to dense format before concatenation
-    - Result is converted back to sparse format for efficiency
+    - Uses sparse horizontal stacking (hstack) for memory efficiency
     - obs and obsm must be identical between lr_adata and adata
     - Typically used after LARIS analysis and before creating dot plots
     """
-    # Ensure both X matrices are dense
-    dense_lr_X = lr_adata.X if isinstance(lr_adata.X, np.ndarray) else lr_adata.X.toarray()
-    dense_adata_X = adata.X if isinstance(adata.X, np.ndarray) else adata.X.toarray()
+    # --- MEMORY FIX: Use sparse hstack ---
+    
+    # Ensure both matrices are sparse (CSR is good for hstack)
+    lr_X = lr_adata.X
+    if not issparse(lr_X):
+        lr_X = csr_matrix(lr_X)
+    elif not isinstance(lr_X, csr_matrix):
+        lr_X = lr_X.tocsr()
+        
+    adata_X = adata.X
+    if not issparse(adata_X):
+        adata_X = csr_matrix(adata_X)
+    elif not isinstance(adata_X, csr_matrix):
+        adata_X = adata_X.tocsr()
 
-    # Concatenate horizontally
-    combined_X = np.concatenate([dense_lr_X, dense_adata_X], axis=1)
+    # Concatenate horizontally using sparse hstack
+    combined_X = hstack([lr_X, adata_X], format='csr')
+    print("Combined matrices in sparse format.")
 
     # Combine variable names
     combined_var_names = np.concatenate([lr_adata.var_names, adata.var_names], axis=0)
@@ -1622,11 +1842,8 @@ def prepareDotPlotAdata(lr_adata, adata):
     adata_dotplot.obs = adata.obs.copy()
     adata_dotplot.obsm = adata.obsm.copy()
 
-    # Convert to sparse format
-    if not issparse(adata_dotplot.X):
-        adata_dotplot.X = csr_matrix(adata_dotplot.X)
-        print("Converted adata_dotplot.X to sparse format.")
-
+    # No need to convert back, it's already sparse
+    
     return adata_dotplot
 
 
@@ -1660,12 +1877,33 @@ def _compute_max_fraction(adata, genes, groupby):
     - Private function (prefixed with _) not intended for direct use
     """
     max_frac = 0
+    
+    # Ensure genes are in var_names
+    valid_genes = [g for g in genes if g in adata.var_names]
+    if len(valid_genes) != len(genes):
+        missing = set(genes) - set(valid_genes)
+        print(f"Warning: Genes not found in adata: {missing}")
+        
+    if not valid_genes:
+        return 0.0
+        
     groups = adata.obs[groupby].unique()
-    for gene in genes:
+    
+    for gene in valid_genes:
         for group in groups:
             subset = adata[adata.obs[groupby] == group]
-            # Fraction of cells with expression > 0
-            frac = (subset[:, gene].X > 0).mean()
+            
+            # --- BUG FIX: Correctly calculate mean for sparse data ---
+            n_cells_in_group = subset.n_obs
+            if n_cells_in_group == 0:
+                frac = 0
+            else:
+                # subset[:, gene].X will be (n_cells_in_group, 1) sparse matrix
+                # .sum() on a boolean matrix counts True values
+                n_expressing = (subset[:, gene].X > 0).sum()
+                frac = n_expressing / n_cells_in_group
+            # --- END BUG FIX ---
+                
             max_frac = max(max_frac, frac)
     return max_frac
 
