@@ -38,7 +38,8 @@ Examples
 ...     laris_results,
 ...     cell_type_of_interest='B_cell',
 ...     interaction_direction='sending',
-...     adata=adata
+...     adata=adata,
+...     return_fig=True
 ... )
 >>> 
 >>> # Create spatial plot of an interaction
@@ -266,12 +267,13 @@ def plotCCCHeatmap(
     filter_significant: bool = False,
     p_value_col: str = 'p_value',
     threshold: float = 0.05,
-    show_borders: bool = False,
+    show_borders: bool = True,
     cluster: bool = False,
     filter_by_interaction_score: bool = True,
     threshold_interaction_score: float = 0.01,
     save: Optional[str] = None,
-    verbosity: int = 2
+    verbosity: int = 2,
+    return_fig: bool = False
 ) -> Optional[plt.Figure]:
     """
     Create a heatmap showing the number of cell-cell communication interactions.
@@ -319,7 +321,7 @@ def plotCCCHeatmap(
     threshold : float, default=0.05
         P-value cutoff for filtering
         
-    show_borders : bool, default=False
+    show_borders : bool, default=True
         If True, draws light grey border lines between heatmap cells
         
     cluster : bool, default=False
@@ -336,15 +338,18 @@ def plotCCCHeatmap(
         
     verbosity : int, default=2
         Verbosity level (0=silent, 1=errors, 2=warnings/info, 3=debug)
+        
+    return_fig : bool, default=False
+        If True, return the figure object instead of just displaying
     
     Returns
     -------
     fig : matplotlib.figure.Figure or None
-        The figure object, or None if no data to plot
+        The figure object if return_fig=True, otherwise None
     
     Examples
     --------
-    >>> fig = la.pl.plotCCCHeatmap(
+    >>> la.pl.plotCCCHeatmap(
     ...     laris_results,
     ...     cmap='viridis',
     ...     filter_significant=True,
@@ -477,6 +482,9 @@ def plotCCCHeatmap(
         square=True
     )
 
+    # Remove tick lines (grid lines from ticks) while keeping cell borders
+    ax.tick_params(axis='both', which='both', length=0)
+
     # Set labels
     plt.xlabel('Receiver', fontsize=axis_label_fontsize)
     plt.ylabel('Sender', fontsize=axis_label_fontsize)
@@ -494,7 +502,10 @@ def plotCCCHeatmap(
     _save_figure(fig, save, verbosity)
     
     plt.show()
-    return fig
+    
+    if return_fig:
+        return fig
+    return None
 
 
 # ============================================================================
@@ -522,8 +533,9 @@ def plotCCCNetwork(
     threshold_interaction_score: float = 0.01,
     filter_significant: bool = False,
     save: Optional[str] = None,
-    verbosity: int = 2
-) -> Tuple[plt.Figure, plt.Axes]:
+    verbosity: int = 2,
+    return_fig: bool = False
+) -> Optional[Tuple[plt.Figure, plt.Axes]]:
     """
     Plot an interaction network for a specific cell type.
     
@@ -597,17 +609,18 @@ def plotCCCNetwork(
         
     verbosity : int, default=2
         Verbosity level
+        
+    return_fig : bool, default=False
+        If True, return the figure and axes objects
     
     Returns
     -------
-    fig : matplotlib.figure.Figure
-        The figure object
-    ax : matplotlib.axes.Axes
-        The axes object
+    tuple or None
+        (fig, ax) if return_fig=True, otherwise None
     
     Examples
     --------
-    >>> fig, ax = la.pl.plotCCCNetwork(
+    >>> la.pl.plotCCCNetwork(
     ...     laris_results,
     ...     cell_type_of_interest='B_cell',
     ...     interaction_direction='sending',
@@ -677,7 +690,10 @@ def plotCCCNetwork(
             1, verbosity, 'error'
         )
         fig, ax = plt.subplots(figsize=figsize)
-        return fig, ax
+        plt.show()
+        if return_fig:
+            return fig, ax
+        return None
 
     # Group by cell type pairs
     df_grouped = df_filtered.groupby(
@@ -769,7 +785,9 @@ def plotCCCNetwork(
     _save_figure(fig, save, verbosity)
     plt.show()
 
-    return fig, ax
+    if return_fig:
+        return fig, ax
+    return None
 
 
 def plotCCCNetworkCumulative(
@@ -793,8 +811,9 @@ def plotCCCNetworkCumulative(
     edge_thickness_by_numbers: bool = False,
     total_edge_thickness: float = 100,
     save: Optional[str] = None,
-    verbosity: int = 2
-) -> Tuple[plt.Figure, plt.Axes]:
+    verbosity: int = 2,
+    return_fig: bool = False
+) -> Optional[Tuple[plt.Figure, plt.Axes]]:
     """
     Plot a cumulative interaction network across all cell types.
     
@@ -866,13 +885,14 @@ def plotCCCNetworkCumulative(
         
     verbosity : int, default=2
         Verbosity level
+        
+    return_fig : bool, default=False
+        If True, return the figure and axes objects
     
     Returns
     -------
-    fig : matplotlib.figure.Figure
-        The figure object
-    ax : matplotlib.axes.Axes
-        The axes object
+    tuple or None
+        (fig, ax) if return_fig=True, otherwise None
     """
     # Apply filters
     laris_results_subset = laris_results.copy()
@@ -945,7 +965,10 @@ def plotCCCNetworkCumulative(
             1, verbosity, 'error'
         )
         fig, ax = plt.subplots(figsize=figsize)
-        return fig, ax
+        plt.show()
+        if return_fig:
+            return fig, ax
+        return None
 
     # Build network graph
     G = nx.from_pandas_edgelist(
@@ -1035,7 +1058,9 @@ def plotCCCNetworkCumulative(
     _save_figure(fig, save, verbosity)
     plt.show()
 
-    return fig, ax
+    if return_fig:
+        return fig, ax
+    return None
 
 
 # ============================================================================
@@ -1044,9 +1069,11 @@ def plotCCCNetworkCumulative(
 
 def plotCCCDotPlot(
     laris_results: pd.DataFrame,
-    sender_celltypes: List[str],
-    receiver_celltypes: List[str],
     interactions_to_plot: List[str],
+    senders: Optional[List[str]] = None,
+    receivers: Optional[List[str]] = None,
+    sender_receiver_pairs: Optional[List[str]] = None,
+    delimiter_pair: str = "-->",
     n_top: int = 3000,
     cmap: Union[str, colors.Colormap] = None,
     bubble_size: float = 250,
@@ -1058,8 +1085,9 @@ def plotCCCDotPlot(
     n_permutations: int = 1000,
     figsize: Optional[Tuple[float, float]] = None,
     save: Optional[str] = None,
-    verbosity: int = 2
-) -> Tuple[plt.Figure, plt.Axes]:
+    verbosity: int = 2,
+    return_fig: bool = False
+) -> Optional[Tuple[plt.Figure, plt.Axes]]:
     """
     Create a bubble plot for selected cell type pairs and interactions.
     
@@ -1072,14 +1100,21 @@ def plotCCCDotPlot(
     laris_results : pd.DataFrame
         DataFrame containing LARIS results
         
-    sender_celltypes : list of str
-        List of sending cell types to plot
-        
-    receiver_celltypes : list of str
-        List of receiving cell types (must match length of sender_celltypes)
-        
     interactions_to_plot : list of str
         List of interaction names to include (e.g., ['CXCL13::CXCR5', ...])
+        
+    senders : list of str, optional
+        List of sending cell types to plot (used with receivers)
+        
+    receivers : list of str, optional
+        List of receiving cell types (must match length of senders)
+        
+    sender_receiver_pairs : list of str, optional
+        Alternative to senders/receivers. List of pairs in format 
+        'sender-->receiver' (or using custom delimiter_pair)
+        
+    delimiter_pair : str, default='-->'
+        Delimiter used in sender_receiver_pairs to separate sender and receiver
         
     n_top : int, default=3000
         Number of top interactions if no filters applied
@@ -1116,26 +1151,37 @@ def plotCCCDotPlot(
         
     verbosity : int, default=2
         Verbosity level
+        
+    return_fig : bool, default=False
+        If True, return the figure and axes objects
     
     Returns
     -------
-    fig : matplotlib.figure.Figure
-        The figure object
-    ax : matplotlib.axes.Axes
-        The axes object
+    tuple or None
+        (fig, ax) if return_fig=True, otherwise None
     
     Examples
     --------
+    >>> # Using senders and receivers
     >>> senders = ['B_cell', 'B_cell', 'T_cell']
     >>> receivers = ['T_cell', 'Macrophage', 'B_cell']
     >>> interactions = ['CXCL13::CXCR5', 'CD40LG::CD40']
     >>> 
-    >>> fig, ax = la.pl.plotCCCDotPlot(
+    >>> la.pl.plotCCCDotPlot(
     ...     laris_results,
-    ...     sender_celltypes=senders,
-    ...     receiver_celltypes=receivers,
     ...     interactions_to_plot=interactions,
+    ...     senders=senders,
+    ...     receivers=receivers,
     ...     filter_significant=True,
+    ...     save='dotplot.pdf'
+    ... )
+    >>> 
+    >>> # Using sender_receiver_pairs
+    >>> pairs = ['B_cell-->T_cell', 'B_cell-->Macrophage', 'T_cell-->B_cell']
+    >>> la.pl.plotCCCDotPlot(
+    ...     laris_results,
+    ...     interactions_to_plot=interactions,
+    ...     sender_receiver_pairs=pairs,
     ...     save='dotplot.pdf'
     ... )
     
@@ -1147,6 +1193,36 @@ def plotCCCDotPlot(
     """
     if cmap is None:
         cmap = pos_cmap
+
+    # Parse sender_receiver_pairs if provided
+    if sender_receiver_pairs is not None:
+        senders = []
+        receivers = []
+        for pair in sender_receiver_pairs:
+            parts = pair.split(delimiter_pair)
+            if len(parts) != 2:
+                _log_message(
+                    f"Invalid pair format: '{pair}'. Expected format: 'sender{delimiter_pair}receiver'",
+                    1, verbosity, 'error'
+                )
+                return None
+            senders.append(parts[0].strip())
+            receivers.append(parts[1].strip())
+    
+    # Validate inputs
+    if senders is None or receivers is None:
+        _log_message(
+            "Must provide either (senders, receivers) or sender_receiver_pairs",
+            1, verbosity, 'error'
+        )
+        return None
+    
+    if len(senders) != len(receivers):
+        _log_message(
+            "Length of senders and receivers must match",
+            1, verbosity, 'error'
+        )
+        return None
 
     # Apply filters
     laris_results_subset = laris_results.copy()
@@ -1194,7 +1270,7 @@ def plotCCCDotPlot(
 
     # Build mask for specified sender-receiver pairs
     mask_cell_pairs = None
-    for sender, receiver in zip(sender_celltypes, receiver_celltypes):
+    for sender, receiver in zip(senders, receivers):
         current_mask = (
             (laris_results_subset['sender'] == sender) &
             (laris_results_subset['receiver'] == receiver)
@@ -1207,7 +1283,10 @@ def plotCCCDotPlot(
     if mask_cell_pairs is None:
         _log_message("No cell pairs specified or found.", 1, verbosity, 'error')
         fig, ax = plt.subplots()
-        return fig, ax
+        plt.show()
+        if return_fig:
+            return fig, ax
+        return None
 
     # Filter for selected interactions and cell pairs
     df_filtered = laris_results_subset[
@@ -1246,7 +1325,7 @@ def plotCCCDotPlot(
 
     # Define expected cell pairs in order
     all_cell_pairs = [
-        f"{s} → {r}" for s, r in zip(sender_celltypes, receiver_celltypes)
+        f"{s} → {r}" for s, r in zip(senders, receivers)
     ]
 
     # Force categorical order
@@ -1275,13 +1354,14 @@ def plotCCCDotPlot(
     num_interactions = len(interactions_to_plot)
     
     if figsize is None:
-        fig_width = max(8, num_cell_pairs * 1.5 + 3)  # Extra space for legend
+        fig_width = max(8, num_cell_pairs * 1.5 + 4)  # Extra space for legends
         fig_height = max(6, num_interactions * 0.8)
         figsize = (fig_width, fig_height)
 
     fig, ax = plt.subplots(figsize=figsize)
 
     # Plot bubbles
+    scatter = None
     if not df_nonzero.empty:
         scatter = ax.scatter(
             x=df_nonzero['cell_type_pair'].cat.codes,
@@ -1306,20 +1386,18 @@ def plotCCCDotPlot(
     ax.set_xlim(-0.5, len(all_cell_pairs) - 0.5)
     ax.set_ylim(-0.5, len(interactions_to_plot) - 0.5)
 
-    # Add colorbar
-    if not df_nonzero.empty:
-        max_score = df_nonzero['interaction_score'].max()
-        
-        # Position colorbar to leave room for legend
-        cbar = plt.colorbar(scatter, ax=ax, shrink=0.6, pad=0.15)
+    # Add colorbar with smaller width
+    if scatter is not None:
+        # Create colorbar with controlled width
+        cbar = plt.colorbar(scatter, ax=ax, shrink=0.5, pad=0.02, aspect=30)
         cbar.set_label('Interaction Score')
 
-    # Add p-value legend
+    # Add p-value legend next to colorbar (below it)
     if bubble_legend:
         _create_pvalue_legend_log10(
             ax, bubble_size, n_permutations,
             loc='upper left',
-            bbox_to_anchor=(1.02, 1.0)
+            bbox_to_anchor=(1.15, 1.0)
         )
 
     plt.tight_layout()
@@ -1327,7 +1405,9 @@ def plotCCCDotPlot(
     _save_figure(fig, save, verbosity)
     plt.show()
 
-    return fig, ax
+    if return_fig:
+        return fig, ax
+    return None
 
 
 def plotCCCDotPlotFacet(
@@ -1339,8 +1419,8 @@ def plotCCCDotPlotFacet(
     x_padding: float = 0.4,
     y_padding: float = 0.4,
     n_top: Optional[int] = None,
-    sender_celltypes: Optional[List[str]] = None,
-    receiver_celltypes: Optional[List[str]] = None,
+    senders: Optional[List[str]] = None,
+    receivers: Optional[List[str]] = None,
     interactions_to_plot: Optional[List[str]] = None,
     p_value_col: str = 'p_value',
     threshold: float = 0.05,
@@ -1348,8 +1428,10 @@ def plotCCCDotPlotFacet(
     threshold_interaction_score: float = 0.01,
     filter_significant: bool = False,
     n_permutations: int = 1000,
+    ncol: Optional[int] = None,
     save: Optional[str] = None,
-    verbosity: int = 2
+    verbosity: int = 2,
+    return_fig: bool = False
 ) -> Optional[sns.FacetGrid]:
     """
     Create faceted bubble plots organized by sending cell type.
@@ -1383,10 +1465,10 @@ def plotCCCDotPlotFacet(
     n_top : int, optional
         Number of top interactions if no filters applied
         
-    sender_celltypes : list of str, optional
+    senders : list of str, optional
         Specific sending cell types. If None, all are included
         
-    receiver_celltypes : list of str, optional
+    receivers : list of str, optional
         Specific receiving cell types. If None, all are included
         
     interactions_to_plot : list of str, optional
@@ -1410,25 +1492,32 @@ def plotCCCDotPlotFacet(
     n_permutations : int, default=1000
         Number of permutations (for p-value scaling)
         
+    ncol : int, optional
+        Number of columns per row. If None, all facets in one row
+        
     save : str, optional
         Path to save figure
         
     verbosity : int, default=2
         Verbosity level
+        
+    return_fig : bool, default=False
+        If True, return the FacetGrid object
     
     Returns
     -------
     g : seaborn.FacetGrid or None
-        The FacetGrid object, or None if no data to plot
+        The FacetGrid object if return_fig=True, otherwise None
     
     Examples
     --------
-    >>> g = la.pl.plotCCCDotPlotFacet(
+    >>> la.pl.plotCCCDotPlotFacet(
     ...     laris_results,
-    ...     sender_celltypes=['B_cell', 'T_cell'],
-    ...     receiver_celltypes=['Macrophage', 'NK_cell'],
+    ...     senders=['B_cell', 'T_cell'],
+    ...     receivers=['Macrophage', 'NK_cell'],
     ...     interactions_to_plot=['CXCL13::CXCR5', 'CD40LG::CD40'],
     ...     filter_significant=True,
+    ...     ncol=2,
     ...     save='facet_plot.pdf'
     ... )
     """
@@ -1480,11 +1569,11 @@ def plotCCCDotPlotFacet(
     data = laris_results_subset
 
     # Subset based on user selections
-    if sender_celltypes is not None:
-        data = data[data["sender"].isin(sender_celltypes)]
+    if senders is not None:
+        data = data[data["sender"].isin(senders)]
 
-    if receiver_celltypes is not None:
-        data = data[data["receiver"].isin(receiver_celltypes)]
+    if receivers is not None:
+        data = data[data["receiver"].isin(receivers)]
 
     if interactions_to_plot is not None:
         data = data[data["interaction_name"].isin(interactions_to_plot)]
@@ -1497,13 +1586,13 @@ def plotCCCDotPlotFacet(
         return None
 
     # Determine categories for axes
-    if sender_celltypes is not None:
-        sender_cats = sender_celltypes
+    if senders is not None:
+        sender_cats = senders
     else:
         sender_cats = sorted(data["sender"].unique())
     
-    if receiver_celltypes is not None:
-        receiver_cats = receiver_celltypes
+    if receivers is not None:
+        receiver_cats = receivers
     else:
         receiver_cats = sorted(data["receiver"].unique())
     
@@ -1550,11 +1639,20 @@ def plotCCCDotPlotFacet(
             2, verbosity, 'warning'
         )
 
-    # Create FacetGrid
+    # Determine number of columns
+    n_senders = len(sender_cats)
+    if ncol is None:
+        ncol = n_senders
+    
+    # Calculate number of rows
+    nrow = math.ceil(n_senders / ncol)
+
+    # Create FacetGrid with col_wrap for multiple rows
     g = sns.FacetGrid(
         data_plot,
         col="sender",
         col_order=sender_cats,
+        col_wrap=ncol if nrow > 1 else None,
         sharey=True,
         sharex=False,
         height=height,
@@ -1581,21 +1679,33 @@ def plotCCCDotPlotFacet(
 
     g.map_dataframe(facet_scatter)
 
-    # Fix axis labels for each facet - ensure all receivers are shown
-    for ax in g.axes.flatten():
-        # Set x-axis ticks and labels to show ALL receiver categories
+    # Fix axis labels for each facet
+    for idx, ax in enumerate(g.axes.flatten()):
+        # Calculate row index
+        row_idx = idx // ncol
+        col_idx = idx % ncol
+        
+        # Set x-axis ticks and labels
         ax.set_xticks(range(len(receiver_cats)))
         ax.set_xticklabels(receiver_cats, rotation=45, ha='right')
         ax.set_xlim(-0.5 - x_padding, len(receiver_cats) - 0.5 + x_padding)
         
         # Set y-axis ticks and labels
         ax.set_yticks(range(len(interaction_cats)))
-        ax.set_yticklabels(interaction_cats)
+        
+        # Show y-axis labels for first column in each row
+        if col_idx == 0:
+            ax.set_yticklabels(interaction_cats)
+        else:
+            ax.set_yticklabels([])
+        
         ax.set_ylim(-0.5 - y_padding, len(interaction_cats) - 0.5 + y_padding)
 
-    # Add colorbar
-    g.fig.subplots_adjust(right=0.75)
-    cbar_ax = g.fig.add_axes([0.78, 0.15, 0.02, 0.5])
+    # Adjust layout to make room for legends
+    g.fig.subplots_adjust(right=0.78)
+    
+    # Add colorbar with smaller width
+    cbar_ax = g.fig.add_axes([0.80, 0.15, 0.015, 0.4])
     
     if len(data_plot) > 0:
         max_score = data['interaction_score'].max()
@@ -1606,10 +1716,10 @@ def plotCCCDotPlotFacet(
         cbar.ax.set_yticklabels(['0', f'{max_score:.3f}'])
         cbar.set_label("Interaction Score")
 
-    # Add p-value legend
+    # Add p-value legend below colorbar
     if bubble_legend:
         # Create a dummy axes for the legend
-        legend_ax = g.fig.add_axes([0.78, 0.70, 0.2, 0.2], frameon=False)
+        legend_ax = g.fig.add_axes([0.80, 0.58, 0.18, 0.25], frameon=False)
         legend_ax.axis('off')
         
         min_p = 1.0 / (n_permutations + 1)
@@ -1661,22 +1771,29 @@ def plotCCCDotPlotFacet(
         _log_message(f"Figure saved to: {save}", 2, verbosity, 'info')
 
     plt.show()
-    return g
+    
+    if return_fig:
+        return g
+    return None
 
 
 def plotLRDotPlot(
     adata_dotplot: ad.AnnData,
     interactions_to_plot: List[str],
     groupby: str,
-    cmap: str = 'Spectral_r',
+    cmap_diffusion: str = 'Spectral_r',
+    cmap_ligand: str = 'Blues',
+    cmap_receptor: str = 'Purples',
+    orientation: str = 'horizontal',
     row_height: Optional[float] = None,
     max_height: Optional[float] = None,
     figsize: Optional[Tuple[float, float]] = None,
     save: Optional[str] = None,
-    verbosity: int = 2
-) -> Tuple[plt.Figure, np.ndarray]:
+    verbosity: int = 2,
+    return_fig: bool = False
+) -> Optional[Tuple[plt.Figure, np.ndarray]]:
     """
-    Create three side-by-side dot plots for LR pairs, ligands, and receptors.
+    Create three side-by-side (or stacked) dot plots for LR pairs, ligands, and receptors.
     
     Visualizes expression patterns of ligand-receptor pairs alongside individual 
     ligand and receptor expression across cell types.
@@ -1693,8 +1810,17 @@ def plotLRDotPlot(
     groupby : str
         Column in adata_dotplot.obs to group by
         
-    cmap : str, default='Spectral_r'
-        Colormap for the dot plots
+    cmap_diffusion : str, default='Spectral_r'
+        Colormap for the diffused LR scores plot
+        
+    cmap_ligand : str, default='Blues'
+        Colormap for the ligand expression plot
+        
+    cmap_receptor : str, default='Purples'
+        Colormap for the receptor expression plot
+        
+    orientation : str, default='horizontal'
+        Layout orientation: 'horizontal' for side-by-side, 'vertical' for stacked
         
     row_height : float, optional
         Height per interaction row in inches
@@ -1710,21 +1836,23 @@ def plotLRDotPlot(
         
     verbosity : int, default=2
         Verbosity level
+        
+    return_fig : bool, default=False
+        If True, return the figure and axes objects
     
     Returns
     -------
-    fig : matplotlib.figure.Figure
-        The figure object
-    axes : array of matplotlib.axes.Axes
-        Array of three axes objects
+    tuple or None
+        (fig, axes) if return_fig=True, otherwise None
     
     Examples
     --------
     >>> adata_combined = la.pl.prepareDotPlotAdata(lr_adata, adata)
-    >>> fig, axes = la.pl.plotLRDotPlot(
+    >>> la.pl.plotLRDotPlot(
     ...     adata_combined,
     ...     interactions_to_plot=['CXCL13::CXCR5', 'CD40LG::CD40'],
     ...     groupby='cell_type',
+    ...     orientation='vertical',
     ...     save='lr_dotplot.pdf'
     ... )
     """
@@ -1746,17 +1874,27 @@ def plotLRDotPlot(
     common_dot_max = max(max_frac_ligands, max_frac_receptors, max_frac_interactions)
 
     # Determine figure size
+    n_interactions = len(interactions_to_plot)
+    
     if figsize is not None:
         fig_width, fig_height = figsize
     else:
-        fig_width = 18
-        n_interactions = len(interactions_to_plot)
-        fig_height = n_interactions * (row_height or 1.0)
-        if max_height is not None:
-            fig_height = min(fig_height, max_height)
+        if orientation == 'horizontal':
+            fig_width = 18
+            fig_height = n_interactions * (row_height or 1.0)
+            if max_height is not None:
+                fig_height = min(fig_height, max_height)
+        else:  # vertical
+            fig_width = 8
+            fig_height = n_interactions * (row_height or 1.0) * 3
+            if max_height is not None:
+                fig_height = min(fig_height, max_height)
 
-    # Create figure with 3 subplots
-    fig, axes = plt.subplots(ncols=3, figsize=(fig_width, fig_height))
+    # Create figure with appropriate layout
+    if orientation == 'horizontal':
+        fig, axes = plt.subplots(ncols=3, figsize=(fig_width, fig_height))
+    else:  # vertical
+        fig, axes = plt.subplots(nrows=3, figsize=(fig_width, fig_height))
 
     # Plot 1: Diffused LR scores
     sc.pl.dotplot(
@@ -1764,7 +1902,7 @@ def plotLRDotPlot(
         var_names=interactions_to_plot,
         groupby=groupby,
         standard_scale='var',
-        cmap=cmap,
+        cmap=cmap_diffusion,
         swap_axes=True,
         dot_max=common_dot_max,
         ax=axes[0],
@@ -1777,7 +1915,7 @@ def plotLRDotPlot(
         var_names=ligands,
         groupby=groupby,
         standard_scale='var',
-        cmap=cmap,
+        cmap=cmap_ligand,
         swap_axes=True,
         dot_max=common_dot_max,
         ax=axes[1],
@@ -1790,7 +1928,7 @@ def plotLRDotPlot(
         var_names=receptors,
         groupby=groupby,
         standard_scale='var',
-        cmap=cmap,
+        cmap=cmap_receptor,
         swap_axes=True,
         dot_max=common_dot_max,
         ax=axes[2],
@@ -1814,7 +1952,9 @@ def plotLRDotPlot(
     _save_figure(fig, save, verbosity)
     plt.show()
 
-    return fig, axes
+    if return_fig:
+        return fig, axes
+    return None
 
 
 # ============================================================================
@@ -1831,10 +1971,12 @@ def plotCCCSpatial(
     background_color: str = 'lightgrey',
     colors: Optional[List[str]] = None,
     size: float = 120,
-    figsize: Optional[Tuple[float, float]] = None,
+    fig_width: Optional[float] = None,
+    fig_height: Optional[float] = None,
     save: Optional[str] = None,
-    verbosity: int = 2
-) -> None:
+    verbosity: int = 2,
+    return_fig: bool = False
+) -> Optional[plt.Figure]:
     """
     Plot spatial distribution of ligand-receptor interactions.
     
@@ -1870,19 +2012,27 @@ def plotCCCSpatial(
     size : float, default=120
         Point size for spatial plot
         
-    figsize : tuple, optional
-        Figure size. If None, automatically computed
+    fig_width : float, optional
+        Figure width in inches. If provided without fig_height, height is 
+        calculated to maintain data aspect ratio
+        
+    fig_height : float, optional
+        Figure height in inches. If provided without fig_width, width is 
+        calculated to maintain data aspect ratio
         
     save : str, optional
         Path to save figure
         
     verbosity : int, default=2
         Verbosity level
+        
+    return_fig : bool, default=False
+        If True, return the figure object
     
     Returns
     -------
-    None
-        Displays the plot
+    fig or None
+        The figure object if return_fig=True, otherwise None
     
     Examples
     --------
@@ -1893,6 +2043,7 @@ def plotCCCSpatial(
     ...     cell_type='cell_type',
     ...     selected_cell_types=['B_cell', 'T_cell'],
     ...     colors=['green', 'orange'],
+    ...     fig_width=10,
     ...     save='spatial.pdf'
     ... )
     """
@@ -1902,7 +2053,7 @@ def plotCCCSpatial(
             f"{interaction} not found in lr_adata.var_names.",
             1, verbosity, 'error'
         )
-        return
+        return None
 
     # Compute expression mask
     gene_idx = lr_adata.var_names.get_loc(interaction)
@@ -1945,6 +2096,10 @@ def plotCCCSpatial(
                 palette[ct] = default_colors[i]
 
         color_column = 'interaction_highlight'
+        
+        # Build informative title
+        n_expressing = mask.sum()
+        title = f"{interaction}\nExpressing cells by cell type (n={n_expressing})"
 
     # Mode 2: Highlight specific cell types
     else:
@@ -1953,7 +2108,7 @@ def plotCCCSpatial(
                 "Either provide selected_cell_types or set highlight_all_expressing=True",
                 1, verbosity, 'error'
             )
-            return
+            return None
 
         lr_adata.obs['custom_color'] = 'other'
 
@@ -1979,24 +2134,47 @@ def plotCCCSpatial(
                 "Length of selected_cell_types and colors must match.",
                 1, verbosity, 'error'
             )
-            return
+            return None
 
         palette = {'other': background_color}
         for ct, col in zip(selected_cell_types, colors):
             palette[ct] = col
 
         color_column = 'custom_color'
+        
+        # Build informative title
+        ct_counts = []
+        for ct in selected_cell_types:
+            condition = (lr_adata.obs[cell_type] == ct) & mask
+            ct_counts.append(f"{ct}: {condition.sum()}")
+        
+        title = f"{interaction}\nExpressing cells: {', '.join(ct_counts)}"
 
-    # Compute figure size if not provided
-    if figsize is None:
-        x_coords = lr_adata.obsm[basis][:, 0]
-        y_coords = lr_adata.obsm[basis][:, 1]
-        x_width = x_coords.max() - x_coords.min()
-        y_width = y_coords.max() - y_coords.min()
-        if x_width == 0 or y_width == 0:
-            figsize = (10, 10)
-        else:
-            figsize = (10, 10 * y_width / x_width)
+    # Compute figure size based on data aspect ratio
+    x_coords = lr_adata.obsm[basis][:, 0]
+    y_coords = lr_adata.obsm[basis][:, 1]
+    x_range = x_coords.max() - x_coords.min()
+    y_range = y_coords.max() - y_coords.min()
+    
+    if x_range == 0 or y_range == 0:
+        # Default to square if data has no range
+        aspect_ratio = 1.0
+    else:
+        aspect_ratio = y_range / x_range
+    
+    # Calculate figure size
+    if fig_width is not None and fig_height is not None:
+        # Both provided - use as is
+        figsize = (fig_width, fig_height)
+    elif fig_width is not None:
+        # Only width provided - calculate height
+        figsize = (fig_width, fig_width * aspect_ratio)
+    elif fig_height is not None:
+        # Only height provided - calculate width
+        figsize = (fig_height / aspect_ratio, fig_height)
+    else:
+        # Neither provided - default width of 10
+        figsize = (10, 10 * aspect_ratio)
 
     plt.rcParams['figure.figsize'] = figsize
 
@@ -2010,9 +2188,12 @@ def plotCCCSpatial(
         frameon=False,
         ncols=1,
         sort_order=False,
-        title=interaction,
+        title=title,
         show=False
     )
+
+    # Get current figure
+    fig = plt.gcf()
 
     # Save figure
     if save is not None:
@@ -2023,6 +2204,10 @@ def plotCCCSpatial(
 
     # Reset default figsize
     plt.rcParams['figure.figsize'] = (4, 4)
+
+    if return_fig:
+        return fig
+    return None
 
 
 # ============================================================================
