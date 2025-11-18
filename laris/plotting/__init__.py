@@ -1517,18 +1517,27 @@ def plotCCCDotPlot(
     ax.set_xlim(-0.5, len(all_cell_pairs) - 0.5)
     ax.set_ylim(-0.5, len(interactions_to_plot) - 0.5)
 
-    # Add colorbar with smaller width
+    # Add colorbar with smaller width - ensure it starts at 0
     if scatter is not None:
+        # Get the actual max score for colorbar
+        if not df_nonzero.empty:
+            max_score = df_nonzero['interaction_score'].max()
+        else:
+            max_score = 1.0
+        
+        # Set color limits to start from 0
+        scatter.set_clim(0, max_score)
+        
         # Create colorbar with controlled width
         cbar = plt.colorbar(scatter, ax=ax, shrink=0.5, pad=0.02, aspect=40)
-        cbar.set_label('Interaction Score')
+        cbar.set_label('Interaction Score', fontsize=10)
 
-    # Add p-value legend next to colorbar (below it)
+    # Add p-value legend with more space from colorbar
     if bubble_legend:
         _create_pvalue_legend_log10(
             ax, bubble_size, n_permutations,
             loc='upper left',
-            bbox_to_anchor=(1.15, 1.0),
+            bbox_to_anchor=(1.20, 1.0),  # Moved further right for more spacing
             frameon=False
         )
 
@@ -1560,7 +1569,7 @@ def plotCCCDotPlotFacet(
     threshold_interaction_score: float = 0.01,
     filter_significant: bool = True,
     n_permutations: int = 1000,
-    ncol: Optional[int] = None,
+    ncol: int = 3,
     save: Optional[str] = None,
     verbosity: int = 2,
     return_fig: bool = False
@@ -1624,8 +1633,8 @@ def plotCCCDotPlotFacet(
     n_permutations : int, default=1000
         Number of permutations (for p-value scaling)
         
-    ncol : int, optional
-        Number of columns per row. If None, all facets in one row
+    ncol : int, default=3
+        Number of columns per row
         
     save : str, optional
         Path to save figure
@@ -1773,8 +1782,6 @@ def plotCCCDotPlotFacet(
 
     # Determine number of columns
     n_senders = len(sender_cats)
-    if ncol is None:
-        ncol = n_senders
     
     # Calculate number of rows
     nrow = math.ceil(n_senders / ncol)
