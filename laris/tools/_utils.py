@@ -1047,56 +1047,98 @@ def _prepare_background_interactions(
     leaf_size: int = 30
 ) -> pd.DataFrame:
     """
-    Builds a background set for interaction pairs based on the similarity
-    of their diffused score profiles in lr_adata.
+    Build a background set of similar interactions for permutation testing.
+    
+    This function creates a reference set for each ligand-receptor (LR) pair by 
+    identifying other LR pairs with similar diffused score profiles. Similarity 
+    is determined by computing the mean and variance of diffused scores across 
+    cells, then finding nearest neighbors in this 2D feature space using a KDTree.
+    
+    The rationale is that interactions with similar expression patterns across 
+    space should serve as appropriate null controls for statistical testing, 
+    rather than using completely random interactions.
     
     Parameters
     ----------
     lr_adata : AnnData
-        AnnData object with interactions in .var and diffused scores in .X.
-    n_nearest_neighbors : int
-        Number of similar interactions to find for each interaction.
+        AnnData object with interactions in `.var` and diffused scores in `.X`.
+        Rows are cells, columns are LR pairs (e.g., "Tgfb1::Tgfbr1").
+    n_nearest_neighbors : int, default=30
+        Number of similar interactions to identify for each LR pair. These will
+        be used to build the null distribution during permutation testing.
     leaf_size : int, default=30
-        Leaf size for the KDTree.
+        Leaf size parameter for the KDTree algorithm. Larger values can speed up
+        construction but may slow down queries.
         
     Returns
     -------
     pd.DataFrame
-        DataFrame where index is interaction_name (e.g., 'L::R') and
-        values are the *indices* (in lr_adata.var_names) of the
-        n_nearest_neighbors.
-    """
-    print(f"  - Calculating mean and variance of diffused scores for {lr_adata.n_vars} interactions...")
+        DataFrame where:
+        - Index: interaction names (e.g., 'Tgfb1::Tgfbr1')
+        - Columns: [0, 1, ..., n_nearest_neighbors-1]
+        - Values: Integer indices corresponding to positions in `lr_adata.var_names`
+        
+        For each row (interaction), the values represent the indices of its
+        n_nearest_neighbors most similar interactions based on diffused score profiles.
     
+    Notes
+    -----
+    The background interactions are used during statistical testing to create a
+    more biologically meaningful null distribution. Rather than comparing each
+    LR pair to all possible interactions, we compare it to interactions with
+    similar spatial expression patterns.
+    
+    The features used for similarity are:
+    - Mean diffused score: Average interaction strength across all cells
+    - Variance: Spatial heterogeneity of the interaction
+    
+    Examples
+    --------
+    >>> background = _prepare_background_interactions(lr_adata, n_nearest_neighbors=50)
+    >>> # For the first interaction, get its control set
+    >>> first_interaction = lr_adata.var_names[0]
+    >>> control_indices = background.loc[first_interaction].values
+    >>> control_names = lr_adata.var_names[control_indices]
+    """
+    print(f"  - Calculating summary statistics for {lr_adata.n_vars} interactions...")
+    
+    # Ensure the expression matrix is in CSR format for efficient row operations
     expression_matrix = lr_adata.X
-
     if not sp.isspmatrix_csr(expression_matrix):
         expression_matrix = expression_matrix.tocsr()
-        
-    # Calculate mean and variance (E[X^2] - (E[X])^2)
+    
+    # Compute mean and variance of diffused scores across cells
+    # Mean: E[X]
     mean_scores = np.asarray(expression_matrix.mean(axis=0)).flatten()
     
+    # Variance: E[X^2] - (E[X])^2
     mean_squared_scores = np.asarray(expression_matrix.power(2).mean(axis=0)).flatten()
     var_scores = mean_squared_scores - (mean_scores ** 2)
     
-    # Combine into a feature matrix (n_interactions, 2)
-    features = np.array([mean_scores, var_scores]).T
+    # Create feature matrix: each interaction is represented by (mean, variance)
+    features = np.column_stack([mean_scores, var_scores])
     
-    print(f"  - Building KDTree to find {n_nearest_neighbors} nearest neighbors for each interaction...")
-    # We search for n+1 neighbors because one of them will be the interaction itself
+    print(f"  - Building KDTree to find {n_nearest_neighbors} nearest neighbors...")
+    
+    # Build KDTree for efficient nearest neighbor search
+    # We query for n+1 neighbors because the first neighbor is always the point itself
     kdt = KDTree(features, leaf_size=leaf_size, metric='euclidean')
     distances, indices = kdt.query(features, k=n_nearest_neighbors + 1)
     
-    # Remove self from neighbors (which is always the closest, at index 0)
+    # Remove self from neighbors (always at index 0, with distance=0)
     neighbor_indices = indices[:, 1:]
     
-    # Create the background DataFrame
+    # Create DataFrame with interaction names as index
     background_df = pd.DataFrame(
         neighbor_indices,
-        index=lr_adata.var_names
+        index=lr_adata.var_names,
+        columns=range(n_nearest_neighbors)
     )
     
+    print(f"  - Background set prepared: {len(background_df)} interactions")
+    
     return background_df
+
 
 
 def _calculate_laris_score_by_celltype(
@@ -1111,7 +1153,7 @@ def _calculate_laris_score_by_celltype(
     remove_lowly_expressed: bool = True,
     mask_threshold: float = 1e-6,
     calculate_pvalues: bool = True,
-    layer: str = None,
+    layer: Optional[str] = None,
     n_nearest_neighbors: int = 30,
     n_permutations: int = 1000,
     chunk_size: int = 50000,
@@ -1122,130 +1164,226 @@ def _calculate_laris_score_by_celltype(
     use_conditional_pvalue: bool = False
 ) -> pd.DataFrame:
     """
-    Calculate LARIS interaction scores for all sender-receiver cell type pairs with
-    optional statistical significance testing via permutation.
+    Calculate cell type-specific LARIS interaction scores with statistical testing.
     
-    This is the main function for computing cell type-specific ligand-receptor
-    interaction scores. It integrates information from:
-    1. Spatial specificity of LR pairs (from `runLARIS()`)
-    2. Cell type specificity of ligand and receptor genes
-    3. Diffused LR interaction scores
-    4. Spatial co-localization of cell type pairs
-    5. Statistical significance via permutation testing (optional)
+    This is the core function for computing sender-receiver cell type pair interaction
+    scores. It integrates multiple sources of information to identify biologically
+    meaningful ligand-receptor interactions:
+    
+    1. **Spatial specificity**: From the runLARIS() output, indicating which LR pairs
+       show spatial co-localization patterns
+    2. **Cell type specificity**: Expression specificity of ligand and receptor genes
+       in different cell types (computed using COSG algorithm)
+    3. **Diffused LR scores**: Neighborhood-averaged interaction scores that capture
+       local microenvironment effects
+    4. **Spatial co-localization**: How frequently sender-receiver cell types are
+       found in proximity
+    5. **Statistical significance**: Permutation-based p-values and FDR correction
     
     Parameters
     ----------
     adata : AnnData
         Annotated data matrix with gene expression and spatial information.
+        Must contain:
+        - `.obs[groupby]`: Cell type annotations
+        - `.obsm[use_rep_spatial]`: Spatial coordinates
+        - `.X` or `.layers[layer]`: Gene expression data
+        
     lr_adata : AnnData
-        AnnData object containing LR interaction scores.
+        AnnData object containing LR interaction scores from prepareLRInteraction().
+        Must have the same cells as `adata`.
+        
     laris_lr : pd.DataFrame
-        DataFrame of spatially-specific LR pairs (from `runLARIS()`).
+        DataFrame of spatially-specific LR pairs from runLARIS(). Must contain:
+        - 'ligand': Ligand gene names
+        - 'receptor': Receptor gene names
+        - 'score': LARIS spatial specificity scores
+        
     groupby : str, default='CellTypes'
-        Column in adata.obs defining cell type groups.
+        Column name in `adata.obs` that defines cell type groups.
+        
     use_rep_spatial : str, default='X_spatial'
-        Key in adata.obsm for spatial coordinates.
+        Key in `adata.obsm` containing spatial coordinates (n_cells × 2 or 3).
+        
     number_nearest_neighbors : int, default=10
-        Number of neighbors for spatial graph construction.
+        Number of spatial neighbors to consider for neighborhood analysis.
+        Larger values capture broader spatial contexts.
+        
     mu : float, default=100
-        Regularization parameter for COSG.
+        Regularization parameter for COSG specificity calculation.
+        Higher values increase penalty for broadly expressed genes.
+        
     expressed_pct : float, default=0.1
-        Minimum expression fraction threshold.
+        Minimum fraction of cells in a group that must express a gene for it
+        to be considered "expressed" in that group.
+        
     remove_lowly_expressed : bool, default=True
-        Whether to filter lowly expressed genes.
+        Whether to filter out lowly expressed genes before analysis.
+        
     mask_threshold : float, default=1e-6
-        Threshold for masking low values.
+        Numerical threshold below which values are masked as zero.
+        
     calculate_pvalues : bool, default=True
-        Whether to calculate p-values via permutation testing. If False, only
-        interaction scores are computed.
+        Whether to perform permutation testing for statistical significance.
+        If False, only interaction scores are computed (much faster).
+        
     layer : str, optional
-        Layer in adata.layers to use for permutation testing. If None, uses adata.X.
+        Layer in `adata.layers` to use for expression data. If None, uses `adata.X`.
+        
     n_nearest_neighbors : int, default=30
-        Number of nearest neighbors to use for creating the background interaction sets
-        (based on diffused score similarity in `lr_adata`).
+        Number of similar interactions to use as background for permutation testing.
+        These are selected based on similarity of diffused score profiles.
+        
     n_permutations : int, default=1000
-        Number of permutations to run for statistical testing.
+        Number of permutations for statistical testing. More permutations give
+        more precise p-values but take longer. Common values: 1000-10000.
+        
     chunk_size : int, default=50000
-        Number of interactions to process at once during permutation testing
-        to manage memory usage.
+        Number of interactions to process simultaneously during permutation testing.
+        Larger values are faster but use more memory.
+        
     prefilter_fdr : bool, default=True
-        If True, only interactions with interaction_score > prefilter_threshold
-        are tested for significance. Others are assigned FDR p-value of 1.0.
-        This reduces multiple testing burden.
+        If True, only interactions with scores > prefilter_threshold are tested.
+        Others are assigned FDR p-value = 1.0. This reduces multiple testing burden
+        and focuses power on high-scoring interactions.
+        
     prefilter_threshold : float, default=0.0
-        Minimum interaction score threshold for FDR testing when prefilter_fdr=True.
+        Minimum interaction score for FDR testing (if prefilter_fdr=True).
+        
     score_threshold : float, default=1e-6
-        Minimum threshold for interaction scores. Values below this are set to
-        exactly 0.0 to avoid numerical precision issues in p-value calculation.
+        Numerical precision threshold. Scores below this are set to exactly 0.0
+        to avoid floating-point artifacts in p-value calculations.
+        
     spatial_weight : float, default=1.0
-        Exponent applied to the spatial specificity score from runLARIS().
-        Controls the influence of spatial specificity on final interaction scores.
-        - spatial_weight = 0: Ignore spatial specificity (weight becomes 1)
-        - spatial_weight = 1: Linear influence (current default)
-        - spatial_weight > 1: Stronger emphasis on spatial specificity
-        - spatial_weight < 1: Weaker emphasis on spatial specificity
-        Formula: interaction_matrix = outer(L, R) * (spatial_score ** spatial_weight)
+        Exponent applied to spatial specificity scores. Controls how much spatial
+        specificity influences final scores:
+        - 0: Ignore spatial specificity (all weights = 1)
+        - 1: Linear influence (default)
+        - >1: Stronger emphasis on spatial specificity
+        - <1: Weaker emphasis on spatial specificity
+        
     use_conditional_pvalue : bool, default=False
-        If True, use the conditional p-value logic to robustly handle
-        zero-inflated null distributions (recommended for sparse data).
-        If False, use the standard p-value calculation.
+        Use conditional p-value calculation for zero-inflated data. Recommended
+        for sparse datasets. When True:
+        - Interactions with score=0 get p-value=1.0
+        - Non-zero scores are compared only to non-zero background scores
+        This prevents artificially significant p-values from sparse null distributions.
         
     Returns
     -------
     pd.DataFrame
-        Long-format DataFrame with columns:
+        Long-format DataFrame with one row per sender-receiver-LR combination.
+        Columns:
         - 'sender': Cell type sending the ligand
-        - 'receiver': Cell type receiving the signal
+        - 'receiver': Cell type receiving the signal  
         - 'ligand': Ligand gene name
         - 'receptor': Receptor gene name
         - 'interaction_name': Format "ligand::receptor"
-        - 'interaction_score': Integrated LARIS score
+        - 'interaction_score': Integrated LARIS score (higher = stronger interaction)
         - 'p_value': Raw p-value from permutation test (if calculate_pvalues=True)
-        - 'p_value_fdr': FDR-corrected p-value per cell type pair (if calculate_pvalues=True)
-        - 'nlog10_p_value_fdr': -log10(p_value_fdr) for visualization (if calculate_pvalues=True)
-        Sorted by interaction_score (descending).
+        - 'p_value_fdr': Benjamini-Hochberg FDR-corrected p-value per cell type pair
+        - 'nlog10_p_value_fdr': -log10(p_value_fdr) for visualization
+        
+        Sorted by interaction_score in descending order.
     
     Notes
     -----
-    ... (Notes on interaction score, spatial weight remain the same) ...
+    **Interaction Score Calculation:**
     
-    Statistical Testing:
-    The permutation testing approach compares each observed ligand-receptor
-    interaction score to a null distribution generated by randomly sampling
-    from a background set of *control interaction pairs*.
+    The final interaction score integrates four components:
     
-    This background set is built by comparing (L, R) pairs based on the
-    mean and variance of their *diffused interaction scores* (from `lr_adata`).
-    This asks the more robust question: "Is this (L, R) score high compared
-    to other (L', R') pairs that have a similar diffused interaction profile?"
+    1. Cell type specificity: outer_product(ligand_specificity, receptor_specificity)
+    2. Spatial specificity weight: (LARIS_score ** spatial_weight)
+    3. Diffused LR scores: Captures local expression of the interaction
+    4. Spatial co-localization: How often sender-receiver types are neighbors
     
-    The null distribution uses the actual integrated LARIS scores (from `res_laris`)
-    for these control (L', R') pairs within the same sender-receiver cell type pair.
+    Formula:
+        score = ligand_spec × receptor_spec × spatial_weight × 
+                diffused_LR × sender_receiver_colocalization
     
-    *** FIX FOR SPARSE DATA (ZERO-INFLATED NULL) ***
-    To address issues with sparse (zero-inflated) interaction data, the p-value
-    calculation can be made conditional by setting `use_conditional_pvalue=True`:
-    1. Any interaction with an `interaction_score` of 0.0 is assigned a p-value of 1.0.
-    2. For an interaction with a score > 0.0, its p-value is calculated by
-       comparing it *only* to the *non-zero* scores within its null distribution.
-    3. If all control pairs for a given interaction have a score of 0,
-       a non-zero observed score will receive a p-value of 1.0
-       (as `p = (sum(non-zero_null >= obs) + 1) / (n_non-zero_null + 1)` -> `(0+1)/(0+1) = 1.0`),
-       robustly handling sparse null distributions.
+    **Statistical Testing:**
     
-    This combined approach (better background set + conditional p-value) ensures
-    that p-values are both powerful (comparing to a relevant null) and
-    safe (not fooled by sparsity).
+    The permutation approach tests: "Is this LR pair's score unusually high for
+    this sender-receiver pair, compared to similar interactions?"
     
-    ... (Rest of notes on FDR, etc., remain the same) ...
+    For each (sender, receiver, LR) combination:
+    1. Identify background interactions with similar diffused score profiles
+    2. Sample n_permutations random interactions from this background
+    3. Look up their actual scores for the same sender-receiver pair
+    4. Calculate p-value as: (n_null >= observed + 1) / (n_permutations + 1)
+    
+    **Conditional P-value Logic (use_conditional_pvalue=True):**
+    
+    For sparse data, many interactions may have score=0. Standard p-values can be
+    misleading when the null distribution is zero-inflated. The conditional approach:
+    
+    - If observed score = 0: p-value = 1.0 (cannot be significant)
+    - If observed score > 0: compare only to non-zero null scores
+    - If all null scores = 0 but observed > 0: p-value = 1.0 (no evidence)
+    
+    This ensures conservative, robust p-values even with extreme sparsity.
+    
+    **FDR Correction:**
+    
+    P-values are FDR-corrected separately for each sender-receiver cell type pair
+    using the Benjamini-Hochberg procedure. This accounts for multiple testing
+    across all LR pairs tested within each pair.
+    
+    **Performance Considerations:**
+    
+    - For ~1000 LR pairs, ~10 cell types, and 1000 permutations: ~5-10 minutes
+    - Memory usage scales with n_permutations × chunk_size
+    - Set calculate_pvalues=False for exploratory analysis (much faster)
+    - Use prefilter_fdr=True to reduce testing burden on low-scoring interactions
+    
+    Examples
+    --------
+    >>> # Basic usage with default parameters
+    >>> results = _calculate_laris_score_by_celltype(
+    ...     adata=adata,
+    ...     lr_adata=lr_adata,
+    ...     laris_lr=laris_lr
+    ... )
+    
+    >>> # Fast mode without p-values
+    >>> results = _calculate_laris_score_by_celltype(
+    ...     adata=adata,
+    ...     lr_adata=lr_adata, 
+    ...     laris_lr=laris_lr,
+    ...     calculate_pvalues=False
+    ... )
+    
+    >>> # Conservative testing for sparse data
+    >>> results = _calculate_laris_score_by_celltype(
+    ...     adata=adata,
+    ...     lr_adata=lr_adata,
+    ...     laris_lr=laris_lr,
+    ...     use_conditional_pvalue=True,
+    ...     n_permutations=5000
+    ... )
+    
+    >>> # Emphasize spatial specificity
+    >>> results = _calculate_laris_score_by_celltype(
+    ...     adata=adata,
+    ...     lr_adata=lr_adata,
+    ...     laris_lr=laris_lr,
+    ...     spatial_weight=2.0
+    ... )
+    
+    See Also
+    --------
+    runLARIS : Identifies spatially-specific LR pairs (upstream of this function)
+    prepareLRInteraction : Computes diffused LR scores (upstream of this function)
     """
     
     # =========================================================================
     # STEP 1: Calculate Cell Type Specificity Scores
     # =========================================================================
+    print("\n" + "="*70)
+    print("LARIS CELL TYPE ANALYSIS")
+    print("="*70)
     print("\n--- Step 1: Calculating ligand and receptor cell type specificity ---")
     
-    # Note: Assuming _calculate_ligand_receptor_specificity is defined elsewhere
     gene_by_group_cosg = _calculate_ligand_receptor_specificity(
         adata,
         laris_lr,
@@ -1255,45 +1393,31 @@ def _calculate_laris_score_by_celltype(
         remove_lowly_expressed=remove_lowly_expressed,
         mask_threshold=mask_threshold
     )
-    # Mock return if function is not available
-    # [REMOVED]
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
+    
+    print(f"  ✓ Computed specificity for {gene_by_group_cosg.shape[0]} genes "
+          f"across {gene_by_group_cosg.shape[1]} cell types")
     
     # =========================================================================
     # STEP 2: Calculate Diffused LR-score Distribution
     # =========================================================================
-    print("\n--- Step 2: Calculating diffused LR-score distribution across cell types ---")
+    print("\n--- Step 2: Calculating diffused LR-score distribution ---")
     
+    # Create binary version of lr_adata for presence/absence calculation
     lr_adata_percentage = lr_adata.copy()
     lr_adata_percentage.X = sp.csr_matrix(lr_adata_percentage.X)
-    lr_adata_percentage.X.data = np.repeat(1, len(lr_adata_percentage.X.data))
+    lr_adata_percentage.X.data = np.ones_like(lr_adata_percentage.X.data)
     
-    # Note: Assuming _compute_avg_expression is defined elsewhere
-    avg_gene_expr_lr = _compute_avg_expression(lr_adata_percentage, groupby=groupby).T
+    # Compute average expression per cell type
+    avg_gene_expr_lr = _compute_avg_expression(
+        lr_adata_percentage, 
+        groupby=groupby
+    ).T
     del lr_adata_percentage
     
-    # Mock return if function is not available
-    # [REMOVED]
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    
-    # Reorder the column names
+    # Ensure column order matches cell type order
     avg_gene_expr_lr = avg_gene_expr_lr.loc[:, gene_by_group_cosg.columns]
+    
+    print(f"  ✓ Computed diffused scores for {avg_gene_expr_lr.shape[0]} interactions")
 
     # =========================================================================
     # STEP 3: Compute Interaction Scores for All Sender-Receiver Pairs
@@ -1301,102 +1425,107 @@ def _calculate_laris_score_by_celltype(
     print(f"\n--- Step 3: Computing interaction scores (spatial_weight={spatial_weight}) ---")
     
     results = []
+    n_processed = 0
+    n_skipped = 0
     
-    # Iterate over each row in laris_lr
+    # Iterate over each LR pair in laris_lr
     for idx, row in laris_lr.iterrows():
         ligand = row['ligand']
         receptor = row['receptor']
-        interaction_score = row['score']
+        spatial_score = row['score']
         interaction_name = f"{ligand}::{receptor}"
 
-        # Get the ligand-receptor diffusion score
+        # Skip if ligand or receptor not in cell type specificity data
+        if ligand not in gene_by_group_cosg.index or receptor not in gene_by_group_cosg.index:
+            n_skipped += 1
+            continue
+
+        # Get cell type specificity scores
+        ligand_scores = gene_by_group_cosg.loc[ligand, :]
+        receptor_scores = gene_by_group_cosg.loc[receptor, :]
+        
+        # Get diffused LR scores per cell type
         lr_by_group_cosg_i = avg_gene_expr_lr.loc[interaction_name]
+        
+        # Apply spatial weight transformation
+        if spatial_weight == 0:
+            spatial_factor = 1.0
+        else:
+            spatial_factor = np.power(spatial_score, spatial_weight)
+        
+        # Create interaction matrix: outer product of ligand and receptor specificity
+        interaction_matrix = np.outer(ligand_scores, receptor_scores) * spatial_factor
+        
+        interaction_df = pd.DataFrame(
+            interaction_matrix,
+            index=gene_by_group_cosg.columns,
+            columns=gene_by_group_cosg.columns
+        )
+        
+        # Incorporate diffused LR scores (sender × receiver outer product)
+        lr_interaction_df = pd.DataFrame(
+            np.outer(lr_by_group_cosg_i, lr_by_group_cosg_i),
+            index=gene_by_group_cosg.columns,
+            columns=gene_by_group_cosg.columns
+        )
+        
+        # Multiply the two components
+        interaction_df = lr_interaction_df.multiply(interaction_df)
+        
+        # Convert to long format
+        interaction_df = interaction_df.reset_index().melt(
+            id_vars='index',
+            var_name='receiver',
+            value_name='interaction_score'
+        )
+        interaction_df.rename(columns={'index': 'sender'}, inplace=True)
+        interaction_df['ligand'] = ligand
+        interaction_df['receptor'] = receptor
+        interaction_df['interaction_name'] = interaction_name
+        
+        results.append(interaction_df)
+        n_processed += 1
 
-        # Calculate the interaction matrix if ligand and receptor are in the DataFrame
-        if ligand in gene_by_group_cosg.index and receptor in gene_by_group_cosg.index:
-            ligand_scores = gene_by_group_cosg.loc[ligand, :]
-            receptor_scores = gene_by_group_cosg.loc[receptor, :]
-            
-            # Apply spatial weight via power transformation
-            # This allows flexible control over spatial specificity influence
-            if spatial_weight == 0:
-                # When spatial_weight is 0, ignore spatial specificity (set to 1)
-                spatial_factor = 1.0
-            else:
-                # Otherwise, apply the power transformation
-                spatial_factor = np.power(interaction_score, spatial_weight)
-            
-            interaction_matrix = np.outer(ligand_scores, receptor_scores) * spatial_factor
+    print(f"  ✓ Processed {n_processed} interactions")
+    if n_skipped > 0:
+        print(f"  ⚠ Skipped {n_skipped} interactions (genes not found)")
 
-            interaction_df = pd.DataFrame(
-                interaction_matrix, 
-                index=gene_by_group_cosg.columns, 
-                columns=gene_by_group_cosg.columns
-            ) * 1
-            
-            # Add the information from the LR diffusion matrix
-            lr_interaction_df = pd.DataFrame(
-                np.outer(lr_by_group_cosg_i, lr_by_group_cosg_i),
-                index=gene_by_group_cosg.columns, 
-                columns=gene_by_group_cosg.columns
-            )
-            
-            # Combine these two interaction matrices
-            interaction_df = lr_interaction_df.multiply(interaction_df)
-
-            # Melt into a long format
-            interaction_df = interaction_df.reset_index().melt(
-                id_vars='index', 
-                var_name='receiver', 
-                value_name='interaction_score'
-            )
-            interaction_df.rename(columns={'index': 'sender'}, inplace=True)
-            interaction_df['ligand'] = ligand
-            interaction_df['receptor'] = receptor
-            interaction_df['interaction_name'] = interaction_name
-
-            results.append(interaction_df)
-
-    # Concatenate all results into a single DataFrame if there are any results
+    # Concatenate all results
     if results:
         res_laris = pd.concat(results, ignore_index=True)
     else:
-        res_laris = pd.DataFrame(
-            columns=['sender', 'receiver', 'ligand', 
-                     'receptor', 'interaction_name', 'interaction_score']
+        print("  ✗ No valid interactions found!")
+        return pd.DataFrame(
+            columns=['sender', 'receiver', 'ligand', 'receptor', 
+                    'interaction_name', 'interaction_score']
         )
 
-    res_laris.reset_index(drop=True, inplace=True)
     res_laris = res_laris.sort_values(by='interaction_score', ascending=False)
-
-    # Reset the index
-    res_laris = res_laris.reset_index(drop=True)
+    res_laris.reset_index(drop=True, inplace=True)
     
     # =========================================================================
-    # STEP 3.5: Rescale Scores (with check for zero-division)
+    # STEP 3.5: Rescale Scores
     # =========================================================================
     print("\n--- Step 3.5: Rescaling interaction scores ---")
     
     if not res_laris.empty:
-        # Calculate mean of top 100 scores (or fewer, if not 100 exist)
-        top_scores_mean = np.mean(res_laris['interaction_score'].head(100))
+        n_for_scaling = min(100, len(res_laris))
+        top_scores_mean = res_laris['interaction_score'].head(n_for_scaling).mean()
         
-        # Rescale, but only if the mean is non-zero
         if top_scores_mean > 0:
             scale_factor = 0.1 / top_scores_mean
-            print(f"  - Rescaling scores by factor: {scale_factor:.4f}")
-            res_laris['interaction_score'] = res_laris['interaction_score'] * scale_factor
+            print(f"  - Scaling factor: {scale_factor:.6f} (based on top {n_for_scaling} scores)")
+            res_laris['interaction_score'] *= scale_factor
         else:
-            print("  - Skipping rescaling: Mean of top 100 scores is 0.")
+            print("  ⚠ Skipping rescaling: Mean of top scores is 0")
     else:
-        print("  - Skipping rescaling: No interaction scores calculated.")
+        print("  ⚠ Skipping rescaling: No interaction scores")
     
     # =========================================================================
-    # STEP 4: Include Spatial Cell Type Neighborhood Information
+    # STEP 4: Incorporate Spatial Cell Type Neighborhood Information
     # =========================================================================
-    print("\n--- Step 4: Incorporating spatial cell type neighborhood information ---")
+    print("\n--- Step 4: Incorporating spatial cell type co-localization ---")
     
-    # Note: Assuming _calculate_specificity_in_spatial_neighborhood is defined elsewhere
     cosg_lr_ctc = _calculate_specificity_in_spatial_neighborhood(
         adata,
         lr_adata,
@@ -1409,257 +1538,233 @@ def _calculate_laris_score_by_celltype(
         column_delimiter='@@'
     )
     
-    # Mock return if function is not available
-    # [REMOVED]
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
+    print(f"  ✓ Calculated co-localization for {cosg_lr_ctc.shape[0]} interactions "
+          f"and {cosg_lr_ctc.shape[1]} sender-receiver pairs")
 
     if not res_laris.empty:
-        ctc_cosg_scores = list()
+        ctc_cosg_scores = []
         for row in res_laris.itertuples():
-            ctc_i = row.sender + '::' + row.receiver
+            ctc_i = f"{row.sender}::{row.receiver}"
             lr_i = row.interaction_name
             ctc_cosg_score_i = cosg_lr_ctc.loc[lr_i, ctc_i]
             ctc_cosg_scores.append(ctc_cosg_score_i)
 
-        res_laris['interaction_score'] = res_laris['interaction_score'] * ctc_cosg_scores
+        res_laris['interaction_score'] *= ctc_cosg_scores
         res_laris = res_laris.sort_values('interaction_score', ascending=False, ignore_index=True)
+        print(f"  ✓ Applied co-localization weights")
     
     # =========================================================================
-    # STEP 4.5: Clean up numerical precision issues
+    # STEP 4.5: Clean Up Numerical Precision Issues
     # =========================================================================
     print(f"\n--- Step 4.5: Cleaning up numerical precision (threshold={score_threshold}) ---")
     
-    # Ensure interaction_score is float64 type
     res_laris['interaction_score'] = res_laris['interaction_score'].astype(np.float64)
     
-    # Count values before thresholding
     n_below_threshold = (res_laris['interaction_score'] < score_threshold).sum()
     n_exact_zero = (res_laris['interaction_score'] == 0.0).sum()
     
-    print(f"  - Found {n_below_threshold} scores below threshold (will be set to 0.0)")
-    print(f"  - Found {n_exact_zero} scores that are exactly 0.0")
+    print(f"  - Before: {n_below_threshold:,} scores < threshold, "
+          f"{n_exact_zero:,} exactly zero")
     
-    # Apply threshold: set very small values to exactly 0.0
+    # Set very small values to exactly 0.0
     res_laris.loc[res_laris['interaction_score'] < score_threshold, 'interaction_score'] = 0.0
     
-    # Verify after thresholding
     n_zero_after = (res_laris['interaction_score'] == 0.0).sum()
-    print(f"  - After thresholding: {n_zero_after} scores are exactly 0.0")
+    print(f"  - After: {n_zero_after:,} scores set to exactly 0.0")
     
     # =========================================================================
     # STEP 5: Statistical Significance Testing (Optional)
     # =========================================================================
     if calculate_pvalues:
-        print("\n=== Beginning Statistical Significance Testing ===")
+        print("\n" + "="*70)
+        print("STATISTICAL SIGNIFICANCE TESTING")
+        print("="*70)
         
-        # ===================================================================
-        # START: Updated Step 5.1
-        # ===================================================================
-        print("\n--- Step 5.1: Preparing background interaction sets (based on diffused score) ---")
+        # Step 5.1: Prepare Background Interactions
+        print("\n--- Step 5.1: Preparing background interaction sets ---")
         
-        # Get all interaction names from lr_adata
         all_interaction_names = lr_adata.var_names.values
         
-        # Build background set using the new helper function
         background_interactions = _prepare_background_interactions(
-            lr_adata, n_nearest_neighbors=n_nearest_neighbors
+            lr_adata, 
+            n_nearest_neighbors=n_nearest_neighbors
         )
         
-        # ===================================================================
-        # END: Updated Step 5.1
-        # ===================================================================
-
-        # Step 5.2: Calculate p-values for each interaction (Vectorized)
-        print(f"\n--- Step 5.2: Calculating p-values via {n_permutations} permutations (vectorized) ---")
+        # Step 5.2: Calculate P-values via Permutation Testing
+        print(f"\n--- Step 5.2: Calculating p-values ({n_permutations:,} permutations) ---")
+        print(f"  - Method: {'Conditional' if use_conditional_pvalue else 'Standard'}")
+        print(f"  - Chunk size: {chunk_size:,}")
         
         p_values_list = []
-        # Group by sender-receiver pairs to vectorize calculations within each group
         grouped_interactions = res_laris.groupby(['sender', 'receiver'])
+        
+        n_cell_type_pairs = len(grouped_interactions)
+        print(f"  - Testing {n_cell_type_pairs} sender-receiver pairs")
 
-        for (sender, receiver), group_df in tqdm(grouped_interactions, total=len(grouped_interactions), 
-                                                 desc="Processing cell type pairs"):
+        for (sender, receiver), group_df in tqdm(
+            grouped_interactions, 
+            total=n_cell_type_pairs,
+            desc="  Processing pairs"
+        ):
+            # Create score lookup for this cell type pair
+            score_lookup = {
+                (row.ligand, row.receptor): row.interaction_score 
+                for row in group_df.itertuples()
+            }
             
-            # Create a lookup dictionary for fast score retrieval within this cell type pair
-            # Key: (ligand, receptor), Value: interaction_score
-            score_lookup = {}
-            for row in group_df.itertuples():
-                score_lookup[(row.ligand, row.receptor)] = row.interaction_score
-            
-            # Process each group in chunks to manage memory
+            # Process in chunks to manage memory
             for i in range(0, len(group_df), chunk_size):
                 chunk_df = group_df.iloc[i:i + chunk_size]
                 n_in_chunk = len(chunk_df)
 
-                # ===========================================================
-                # START: Updated Step 5.2 Sampling
-                # ===========================================================
-                
-                # Get data for the current chunk
+                # Get observed data
                 interaction_names = chunk_df['interaction_name'].values
                 observed_scores = chunk_df['interaction_score'].values
                 
-                # Vectorized sampling of control INTERACTION indices
+                # Sample background interactions
                 control_interaction_indices = background_interactions.loc[interaction_names].values
                 
-                # Create random indices to sample from neighbor lists for each interaction
-                rand_indices = np.random.randint(0, control_interaction_indices.shape[1], 
-                                                 size=(n_in_chunk, n_permutations))
-
-                # Use advanced indexing to get the final control interaction indices
+                rand_indices = np.random.randint(
+                    0, control_interaction_indices.shape[1],
+                    size=(n_in_chunk, n_permutations)
+                )
+                
                 row_idx = np.arange(n_in_chunk)[:, np.newaxis]
                 control_indices = control_interaction_indices[row_idx, rand_indices]
                 
-                # Get control INTERACTION NAMES using the saved name array
-                control_interaction_names = all_interaction_names[control_indices]  # shape: (n_in_chunk, n_permutations)
+                control_interaction_names = all_interaction_names[control_indices]
                 
-                # Vectorized score lookup
-                # Flatten arrays, do lookups, then reshape
+                # Look up scores for background interactions
                 control_interaction_names_flat = control_interaction_names.flatten()
-                
-                # This part is now a loop, but it's much faster than
-                # nested loops or pandas-based lookups.
                 null_scores_flat = []
+                
                 for name in control_interaction_names_flat:
                     try:
                         L, R = name.split('::')
                         null_scores_flat.append(score_lookup.get((L, R), 0.0))
                     except ValueError:
-                        # Safety check in case an interaction name is malformed
                         null_scores_flat.append(0.0)
                 
-                # ===========================================================
-                # END: Updated Step 5.2 Sampling
-                # ===========================================================
+                null_distribution = np.array(
+                    null_scores_flat, 
+                    dtype=np.float64
+                ).reshape(n_in_chunk, n_permutations)
                 
-                # Reshape back to (n_in_chunk, n_permutations)
-                null_distribution = np.array(null_scores_flat, dtype=np.float64).reshape(n_in_chunk, n_permutations)
-                
+                # Calculate p-values
                 if use_conditional_pvalue:
-                    # ============================================================
-                    # *** START OF FIX for Zero-Inflated Null Distribution (Conditional) ***
-                    # ============================================================
-                    
-                    # 1. Default all p-values to 1.0.
-                    #    This correctly handles all observed_scores == 0.0
-                    p_values_chunk = np.full(n_in_chunk, 1.0, dtype=np.float64)
-                    
-                    # 2. Find which observed scores are > 0.0 (the ones we need to test)
+                    # Conditional p-value for zero-inflated data
+                    p_values_chunk = np.ones(n_in_chunk, dtype=np.float64)
                     non_zero_obs_mask = observed_scores > 0.0
                     
-                    # 3. If there are any scores to test, calculate their p-values
                     if np.any(non_zero_obs_mask):
-                        
-                        # 4. Filter to only the rows we need to test
                         obs_to_test = observed_scores[non_zero_obs_mask]
                         null_to_test = null_distribution[non_zero_obs_mask, :]
                         
-                        # 5. Create a mask for all *null* scores that are > 0.0
                         null_non_zero_mask = null_to_test > 0.0
+                        n_null_nonzero = np.sum(null_non_zero_mask, axis=1)
                         
-                        # 6. Count how many non-zero nulls we have for each row
-                        #    This is the denominator (+1) for the p-value
-                        n_null_filtered = np.sum(null_non_zero_mask, axis=1)
-                        
-                        # 7. Find how many nulls are >= observed
                         is_greater_all = null_to_test >= obs_to_test[:, np.newaxis]
+                        is_greater_and_nonzero = is_greater_all & null_non_zero_mask
+                        n_numerator = np.sum(is_greater_and_nonzero, axis=1)
                         
-                        # 8. We only care about nulls that are >= observed AND non-zero
-                        #    This is the numerator (+1) for the p-value
-                        is_greater_and_non_zero = is_greater_all & null_non_zero_mask
-                        n_numerator = np.sum(is_greater_and_non_zero, axis=1)
-                        
-                        # 9. Calculate the conditional p-value
-                        #    p = (numerator + 1) / (denominator + 1)
-                        #    If n_null_filtered is 0, n_numerator is also 0.
-                        #    This gives (0+1)/(0+1) = 1.0, which is what we want.
-                        p_values_calculated = (n_numerator + 1) / (n_null_filtered + 1)
-                        
-                        # 10. Place these calculated p-values back into the chunk array
+                        p_values_calculated = (n_numerator + 1) / (n_null_nonzero + 1)
                         p_values_chunk[non_zero_obs_mask] = p_values_calculated
-                    
-                    # ==========================================================
-                    # *** END OF FIX ***
-                    # ==========================================================
                 else:
-                    # Original, non-conditional p-value calculation
+                    # Standard p-value calculation
                     is_greater = null_distribution >= observed_scores[:, np.newaxis]
                     p_values_chunk = (np.sum(is_greater, axis=1) + 1) / (n_permutations + 1)
                 
                 p_values_list.append(pd.Series(p_values_chunk, index=chunk_df.index))
 
-        # Concatenate all p-value series and add to the main dataframe
         if p_values_list:
             res_laris['p_value'] = pd.concat(p_values_list)
         else:
             res_laris['p_value'] = np.nan
         
-        # Step 5.3: FDR Correction per Cell-Type Pair
-        print("\n--- Step 5.3: Applying FDR (Benjamini/Hochberg) correction per cell-type pair ---")
+        print(f"  ✓ Calculated p-values for {len(res_laris):,} interaction combinations")
         
-        # Initialize the new column with NaNs
+        # Step 5.3: FDR Correction
+        print("\n--- Step 5.3: Applying FDR correction (Benjamini-Hochberg) ---")
+        print(f"  - Strategy: {'Pre-filtered' if prefilter_fdr else 'All interactions'}")
+        if prefilter_fdr:
+            print(f"  - Pre-filter threshold: {prefilter_threshold}")
+        
         res_laris['p_value_fdr'] = np.nan
+        
+        n_pairs_corrected = 0
+        n_interactions_tested = 0
+        n_interactions_filtered = 0
 
-        # Iterate through each group to apply FDR and assign back correctly
-        for _, group_df in tqdm(res_laris.groupby(['sender', 'receiver']), desc="FDR Correction"):
-            
+        for (sender, receiver), group_df in tqdm(
+            res_laris.groupby(['sender', 'receiver']),
+            desc="  FDR correction"
+        ):
             p_values = group_df['p_value']
             if p_values.empty or p_values.isnull().all():
                 continue
-                
-            # Round p-values to 6 decimal places to improve stability of FDR calculation
+            
+            # Round for numerical stability
             p_values = p_values.round(6)
 
             if prefilter_fdr:
-                # Create a mask for interactions that pass the threshold
                 filter_mask = group_df['interaction_score'] > prefilter_threshold
                 p_values_to_test = p_values[filter_mask]
+                
+                n_interactions_tested += len(p_values_to_test)
+                n_interactions_filtered += len(p_values) - len(p_values_to_test)
 
                 if not p_values_to_test.empty:
-                    # Apply FDR correction only to the filtered set
-                    _, p_values_corrected, _, _ = multipletests(p_values_to_test, method='fdr_bh')
+                    _, p_values_corrected, _, _ = multipletests(
+                        p_values_to_test, 
+                        method='fdr_bh'
+                    )
                     res_laris.loc[p_values_to_test.index, 'p_value_fdr'] = p_values_corrected
                 
-                # For interactions that were filtered out, set their FDR to 1.0
+                # Filtered interactions get FDR = 1.0
                 if not p_values.empty:
                     res_laris.loc[p_values[~filter_mask].index, 'p_value_fdr'] = 1.0
-            
-            else:  # Original behavior if pre-filtering is off
+            else:
                 _, p_values_corrected, _, _ = multipletests(p_values, method='fdr_bh')
                 res_laris.loc[group_df.index, 'p_value_fdr'] = p_values_corrected
+                n_interactions_tested += len(p_values)
+            
+            n_pairs_corrected += 1
 
-        # Clip FDR p-values to be at most 1.0 to handle potential floating point inaccuracies
+        # Clean up FDR values
         res_laris['p_value_fdr'] = res_laris['p_value_fdr'].clip(upper=1.0)
-        
-        # Fill any remaining NaNs (e.g., from empty groups) with 1.0
         res_laris['p_value_fdr'].fillna(1.0, inplace=True)
 
-        # Calculate the -log10 of the FDR p-value
+        # Calculate -log10(FDR) for visualization
         res_laris['nlog10_p_value_fdr'] = -np.log10(res_laris['p_value_fdr'] + 1e-10)
-        
-        # Correct any small negative values resulting from p-values of 1.0
         res_laris['nlog10_p_value_fdr'] = res_laris['nlog10_p_value_fdr'].clip(lower=0)
         
-        print("\n=== Statistical Testing Complete ===")
-    
-    # Fill p-value columns if calculate_pvalues was False
-    if not calculate_pvalues:
+        print(f"  ✓ Corrected {n_pairs_corrected} sender-receiver pairs")
+        print(f"  - Interactions tested: {n_interactions_tested:,}")
+        if prefilter_fdr:
+            print(f"  - Interactions filtered: {n_interactions_filtered:,}")
+        
+        # Report significant interactions
+        n_sig_05 = (res_laris['p_value_fdr'] < 0.05).sum()
+        n_sig_01 = (res_laris['p_value_fdr'] < 0.01).sum()
+        print(f"\n  Significant interactions:")
+        print(f"  - FDR < 0.05: {n_sig_05:,} ({100*n_sig_05/len(res_laris):.2f}%)")
+        print(f"  - FDR < 0.01: {n_sig_01:,} ({100*n_sig_01/len(res_laris):.2f}%)")
+        
+        print("\n" + "="*70)
+        print("STATISTICAL TESTING COMPLETE")
+        print("="*70)
+    else:
+        # No p-value calculation
         res_laris['p_value'] = np.nan
         res_laris['p_value_fdr'] = np.nan
         res_laris['nlog10_p_value_fdr'] = np.nan
-        
-    print("\n=== LARIS Cell Type Analysis Complete ===")
+    
+    print("\n" + "="*70)
+    print("LARIS CELL TYPE ANALYSIS COMPLETE")
+    print("="*70)
+    print(f"\nFinal results: {len(res_laris):,} sender-receiver-LR combinations")
+    print(f"Score range: [{res_laris['interaction_score'].min():.6f}, "
+          f"{res_laris['interaction_score'].max():.6f}]")
     
     return res_laris
 
