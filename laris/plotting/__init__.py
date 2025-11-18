@@ -28,7 +28,6 @@ Examples
 >>> # Plot heatmap of top interactions
 >>> lr.pl.plotCCCHeatmap(
 ...     laris_results, 
-...     cmap='viridis',
 ...     n_top=1000,
 ...     filter_significant=True
 ... )
@@ -57,6 +56,7 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import seaborn as sns
 import scipy
 from matplotlib import cm
@@ -71,6 +71,7 @@ from collections import OrderedDict
 from scipy.sparse import csr_matrix, issparse, hstack
 from typing import Optional, Union, List, Tuple
 import warnings
+import textwrap
 
 # Import for clustering
 try:
@@ -192,7 +193,8 @@ def _compute_bubble_sizes_log10(p_values: np.ndarray,
 def _create_pvalue_legend_log10(ax, bubble_size: float, 
                                  n_permutations: int = 1000,
                                  loc: str = 'upper left',
-                                 bbox_to_anchor: tuple = (1.05, 1.0)):
+                                 bbox_to_anchor: tuple = (1.05, 1.0),
+                                 frameon: bool = False):
     """
     Create legend for -log10(p_value) based bubble sizes.
     
@@ -208,6 +210,8 @@ def _create_pvalue_legend_log10(ax, bubble_size: float,
         Legend location
     bbox_to_anchor : tuple
         Legend anchor position
+    frameon : bool
+        Whether to draw frame around legend
         
     Returns
     -------
@@ -231,22 +235,71 @@ def _create_pvalue_legend_log10(ax, bubble_size: float,
         normalized = neg_log10_p / max_neg_log10
         size = bubble_size * (0.1 + 0.9 * normalized)
         
-        # Format label
+        # Format label with italic P
         if p < 0.001:
-            label = f'p ≤ {p:.0e}'
+            label = f'$\it{{P}}$ ≤ {p:.0e}'
         elif p < 0.01:
-            label = f'p = {p:.3f}'
+            label = f'$\it{{P}}$ = {p:.3f}'
         else:
-            label = f'p = {p:.2f}'
+            label = f'$\it{{P}}$ = {p:.2f}'
         
         handle = Line2D([0], [0], marker='o', color='w', label=label,
                        markerfacecolor='gray', markersize=np.sqrt(size),
                        markeredgecolor='black', markeredgewidth=0.5)
         legend_handles.append(handle)
     
-    legend = ax.legend(handles=legend_handles, title="P-value", 
+    # Use italic P in title
+    legend = ax.legend(handles=legend_handles, title="$\it{P}$ value", 
                       loc=loc, bbox_to_anchor=bbox_to_anchor, 
-                      frameon=True, framealpha=0.9)
+                      frameon=frameon, framealpha=0.9,
+                      labelspacing=1.2,  # Add more space between labels
+                      handletextpad=1.5)  # Add more space between marker and text
+    
+    return legend
+
+
+def _create_edge_thickness_legend(ax, edge_values: list, edge_widths: list,
+                                   title: str = "Edge Thickness",
+                                   loc: str = 'upper left',
+                                   bbox_to_anchor: tuple = (1.05, 1.0)):
+    """
+    Create legend for edge thickness in network plots.
+    
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes to add legend to
+    edge_values : list
+        Representative values for the legend
+    edge_widths : list
+        Corresponding line widths
+    title : str
+        Legend title
+    loc : str
+        Legend location
+    bbox_to_anchor : tuple
+        Legend anchor position
+        
+    Returns
+    -------
+    legend : matplotlib.legend.Legend
+        The created legend object
+    """
+    legend_handles = []
+    for val, width in zip(edge_values, edge_widths):
+        if val >= 1:
+            label = f'{val:.1f}'
+        else:
+            label = f'{val:.2f}'
+        
+        handle = Line2D([0], [0], color='gray', linewidth=width, label=label)
+        legend_handles.append(handle)
+    
+    legend = ax.legend(handles=legend_handles, title=title,
+                      loc=loc, bbox_to_anchor=bbox_to_anchor,
+                      frameon=False, framealpha=0.9,
+                      handletextpad=2.0,  # More space between stroke and label
+                      labelspacing=1.0)
     
     return legend
 
@@ -257,15 +310,15 @@ def _create_pvalue_legend_log10(ax, bubble_size: float,
 
 def plotCCCHeatmap(
     laris_results: pd.DataFrame,
-    cmap: Union[str, colors.Colormap],
+    cmap: Union[str, colors.Colormap] = 'Purples',
     n_top: int = 3000,
-    figsize: Tuple[float, float] = (12, 10),
+    figsize: Tuple[float, float] = (6, 5),
     axis_label_fontsize: int = 16,
     tick_fontsize: int = 12,
     cbar_label_fontsize: int = 16,
     cbar_tick_fontsize: int = 12,
-    filter_significant: bool = False,
-    p_value_col: str = 'p_value',
+    filter_significant: bool = True,
+    p_value_col: str = 'p_value_fdr',
     threshold: float = 0.05,
     show_borders: bool = True,
     cluster: bool = False,
@@ -291,13 +344,13 @@ def plotCCCHeatmap(
         - 'significant' : bool (optional), fallback significance flag
         - p_value_col : str (optional), column name for p-values
         
-    cmap : str or matplotlib.colors.Colormap
+    cmap : str or matplotlib.colors.Colormap, default='Purples'
         Colormap to use for the heatmap (e.g., 'viridis', 'RdBu_r')
         
     n_top : int, default=3000
         Number of top-ranked interactions to include if no filters are applied
         
-    figsize : tuple, default=(12, 10)
+    figsize : tuple, default=(6, 5)
         Figure size as (width, height) in inches
         
     axis_label_fontsize : int, default=16
@@ -312,10 +365,10 @@ def plotCCCHeatmap(
     cbar_tick_fontsize : int, default=12
         Font size for colorbar tick labels
         
-    filter_significant : bool, default=False
+    filter_significant : bool, default=True
         If True, filters interactions based on p_value_col and threshold
         
-    p_value_col : str, default='p_value'
+    p_value_col : str, default='p_value_fdr'
         Column name to use for p-value filtering
         
     threshold : float, default=0.05
@@ -351,7 +404,6 @@ def plotCCCHeatmap(
     --------
     >>> la.pl.plotCCCHeatmap(
     ...     laris_results,
-    ...     cmap='viridis',
     ...     filter_significant=True,
     ...     cluster=True,
     ...     save='heatmap.pdf'
@@ -482,8 +534,10 @@ def plotCCCHeatmap(
         square=True
     )
 
-    # Remove tick lines (grid lines from ticks) while keeping cell borders
+    # Remove tick lines and grid lines from ticks
     ax.tick_params(axis='both', which='both', length=0)
+    # Turn off grid lines that extend from ticks
+    ax.grid(False)
 
     # Set labels
     plt.xlabel('Receiver', fontsize=axis_label_fontsize)
@@ -518,20 +572,20 @@ def plotCCCNetwork(
     interaction_direction: str = "sending",
     adata: Optional[ad.AnnData] = None,
     n_top: int = 3000,
-    interaction_multiplier: float = 250,
+    edge_width_scale: float = 30,
     interaction_cutoff: float = 0.0,
-    cell_type: str = "cell_type",
+    groupby: str = "cell_type",
     cell_type_color_key: str = "cell_type_colors",
     custom_color_mapping: Optional[dict] = None,
-    figsize: Tuple[float, float] = (10, 10),
+    figsize: Tuple[float, float] = (12, 10),
     margins: float = 0.2,
     label_font_size: int = 16,
     node_size: int = 1100,
-    p_value_col: str = 'p_value',
+    p_value_col: str = 'p_value_fdr',
     threshold: float = 0.05,
     filter_by_interaction_score: bool = True,
     threshold_interaction_score: float = 0.01,
-    filter_significant: bool = False,
+    filter_significant: bool = True,
     save: Optional[str] = None,
     verbosity: int = 2,
     return_fig: bool = False
@@ -562,13 +616,13 @@ def plotCCCNetwork(
     n_top : int, default=3000
         Number of top interactions if no filters applied
         
-    interaction_multiplier : float, default=250
-        Scaling factor for edge thickness
+    edge_width_scale : float, default=30
+        Scaling factor for edge thickness based on interaction score
         
     interaction_cutoff : float, default=0.0
         Minimum interaction score threshold
         
-    cell_type : str, default='cell_type'
+    groupby : str, default='cell_type'
         Column name in adata.obs containing cell type labels
         
     cell_type_color_key : str, default='cell_type_colors'
@@ -577,7 +631,7 @@ def plotCCCNetwork(
     custom_color_mapping : dict, optional
         Custom mapping of cell types to colors
         
-    figsize : tuple, default=(10, 10)
+    figsize : tuple, default=(12, 10)
         Figure size in inches
         
     margins : float, default=0.2
@@ -589,7 +643,7 @@ def plotCCCNetwork(
     node_size : int, default=1100
         Size of network nodes
         
-    p_value_col : str, default='p_value'
+    p_value_col : str, default='p_value_fdr'
         Column name for p-value filtering
         
     threshold : float, default=0.05
@@ -601,7 +655,7 @@ def plotCCCNetwork(
     threshold_interaction_score : float, default=0.01
         Cutoff for interaction score
         
-    filter_significant : bool, default=False
+    filter_significant : bool, default=True
         If True, apply significance filtering
         
     save : str, optional
@@ -712,7 +766,7 @@ def plotCCCNetwork(
 
     # Add all cell type nodes
     if adata is not None:
-        all_nodes = adata.obs[cell_type].unique()
+        all_nodes = adata.obs[groupby].unique()
         for node in all_nodes:
             if node not in G:
                 G.add_node(node)
@@ -728,7 +782,7 @@ def plotCCCNetwork(
     if custom_color_mapping is not None:
         cell_type_to_color = custom_color_mapping
     elif adata is not None:
-        cell_type_labels = adata.obs[cell_type].unique()
+        cell_type_labels = adata.obs[groupby].unique()
         cell_type_colors = adata.uns[cell_type_color_key]
         cell_type_to_color = dict(zip(cell_type_labels, cell_type_colors))
     else:
@@ -736,8 +790,13 @@ def plotCCCNetwork(
 
     node_colors = [cell_type_to_color.get(node, 'gray') for node in G.nodes()]
 
-    # Create figure
-    fig, ax = plt.subplots(figsize=figsize)
+    # Create figure with GridSpec for proper layout
+    fig = plt.figure(figsize=figsize)
+    gs = gridspec.GridSpec(1, 2, width_ratios=[4, 1], wspace=0.05)
+    
+    # Main network plot (square)
+    ax = fig.add_subplot(gs[0])
+    ax.set_aspect('equal')
     ax.margins(margins)
 
     # Draw nodes
@@ -753,10 +812,13 @@ def plotCCCNetwork(
     for label in labels.values():
         label.set_zorder(3)
 
-    # Draw edges
+    # Draw edges and collect edge scores for legend
+    edge_scores = []
     for u, v, data in G.edges(data=True):
         sender_color = cell_type_to_color.get(u, 'gray')
-        linewidth = data['interaction_score'] * interaction_multiplier
+        score = data['interaction_score']
+        linewidth = score * edge_width_scale
+        edge_scores.append(score)
 
         posA = pos[u]
         posB = pos[v]
@@ -780,6 +842,30 @@ def plotCCCNetwork(
         f"({interaction_direction.capitalize()} Interactions)"
     )
     ax.axis('off')
+
+    # Create edge thickness legend in separate axes
+    legend_ax = fig.add_subplot(gs[1])
+    legend_ax.axis('off')
+    
+    if edge_scores:
+        min_score = min(edge_scores)
+        max_score = max(edge_scores)
+        
+        # Create representative values for legend
+        if max_score > min_score:
+            legend_values = [min_score, (min_score + max_score) / 2, max_score]
+        else:
+            legend_values = [max_score]
+        
+        legend_widths = [v * edge_width_scale for v in legend_values]
+        
+        _create_edge_thickness_legend(
+            legend_ax, legend_values, legend_widths,
+            title="Interaction\nScore",
+            loc='center left',
+            bbox_to_anchor=(0, 0.5)
+        )
+
     plt.tight_layout()
 
     _save_figure(fig, save, verbosity)
@@ -795,19 +881,19 @@ def plotCCCNetworkCumulative(
     adata: ad.AnnData,
     cutoff: float = 0,
     n_top: int = 3000,
-    cell_type: str = "cell_type",
+    groupby: str = "cell_type",
     cell_type_color_key: str = "cell_type_colors",
     custom_color_mapping: Optional[dict] = None,
-    figsize: Tuple[float, float] = (10, 10),
+    figsize: Tuple[float, float] = (12, 10),
     margins: float = 0.2,
     label_font_size: int = 16,
     node_size: int = 1100,
-    interaction_multiplier: float = 5,
-    p_value_col: str = 'p_value',
+    edge_width_scale: float = 5,
+    p_value_col: str = 'p_value_fdr',
     threshold: float = 0.05,
     filter_by_interaction_score: bool = True,
     threshold_interaction_score: float = 0.01,
-    filter_significant: bool = False,
+    filter_significant: bool = True,
     edge_thickness_by_numbers: bool = False,
     total_edge_thickness: float = 100,
     save: Optional[str] = None,
@@ -835,7 +921,7 @@ def plotCCCNetworkCumulative(
     n_top : int, default=3000
         Number of top interactions if no filters applied
         
-    cell_type : str, default='cell_type'
+    groupby : str, default='cell_type'
         Column in adata.obs containing cell type labels
         
     cell_type_color_key : str, default='cell_type_colors'
@@ -844,7 +930,7 @@ def plotCCCNetworkCumulative(
     custom_color_mapping : dict, optional
         Custom cell type to color mapping
         
-    figsize : tuple, default=(10, 10)
+    figsize : tuple, default=(12, 10)
         Figure dimensions in inches
         
     margins : float, default=0.2
@@ -856,10 +942,10 @@ def plotCCCNetworkCumulative(
     node_size : int, default=1100
         Size of network nodes
         
-    interaction_multiplier : float, default=5
+    edge_width_scale : float, default=5
         Scaling factor for edge thickness (when using scores)
         
-    p_value_col : str, default='p_value'
+    p_value_col : str, default='p_value_fdr'
         Column name for p-value filtering
         
     threshold : float, default=0.05
@@ -871,7 +957,7 @@ def plotCCCNetworkCumulative(
     threshold_interaction_score : float, default=0.01
         Cutoff for interaction score
         
-    filter_significant : bool, default=False
+    filter_significant : bool, default=True
         If True, apply significance filtering
         
     edge_thickness_by_numbers : bool, default=False
@@ -983,7 +1069,7 @@ def plotCCCNetworkCumulative(
     G.remove_edges_from(list(nx.selfloop_edges(G)))
 
     # Add all cell types as nodes
-    unique_cell_types = adata.obs[cell_type].unique()
+    unique_cell_types = adata.obs[groupby].unique()
     for ctype in unique_cell_types:
         if ctype not in G:
             G.add_node(ctype)
@@ -992,7 +1078,7 @@ def plotCCCNetworkCumulative(
     if custom_color_mapping is not None:
         cell_type_to_color = custom_color_mapping
     elif adata is not None:
-        cell_type_labels = adata.obs[cell_type].unique()
+        cell_type_labels = adata.obs[groupby].unique()
         cell_type_colors = adata.uns[cell_type_color_key]
         cell_type_to_color = dict(zip(cell_type_labels, cell_type_colors))
     else:
@@ -1000,10 +1086,16 @@ def plotCCCNetworkCumulative(
 
     node_colors = [cell_type_to_color.get(node, 'gray') for node in G.nodes()]
 
-    # Create figure
-    pos = nx.circular_layout(G)
-    fig, ax = plt.subplots(figsize=figsize)
+    # Create figure with GridSpec for proper layout
+    fig = plt.figure(figsize=figsize)
+    gs = gridspec.GridSpec(1, 2, width_ratios=[4, 1], wspace=0.05)
+    
+    # Main network plot (square)
+    ax = fig.add_subplot(gs[0])
+    ax.set_aspect('equal')
     ax.margins(margins)
+    
+    pos = nx.circular_layout(G)
 
     # Draw nodes
     node_collection = nx.draw_networkx_nodes(
@@ -1018,7 +1110,10 @@ def plotCCCNetworkCumulative(
     for label in labels.values():
         label.set_zorder(3)
 
-    # Draw edges
+    # Draw edges and collect values for legend
+    edge_values = []
+    edge_widths = []
+    
     for u, v, data in G.edges(data=True):
         sender_color = cell_type_to_color.get(u, 'gray')
         posA = pos[u]
@@ -1028,10 +1123,16 @@ def plotCCCNetworkCumulative(
             if total_interaction_count > 0:
                 count = data['interaction_count']
                 linewidth = (count / total_interaction_count) * total_edge_thickness
+                edge_values.append(count)
             else:
                 linewidth = 0
+                edge_values.append(0)
         else:
-            linewidth = data['interaction_score'] * interaction_multiplier
+            score = data['interaction_score']
+            linewidth = score * edge_width_scale
+            edge_values.append(score)
+        
+        edge_widths.append(linewidth)
 
         arrow = FancyArrowPatch(
             posA=posA,
@@ -1051,8 +1152,38 @@ def plotCCCNetworkCumulative(
         "Interaction Network by " +
         ("Interaction Count" if edge_thickness_by_numbers else "Cumulative Score")
     )
-    plt.title(title_text)
-    plt.axis('off')
+    ax.set_title(title_text)
+    ax.axis('off')
+
+    # Create edge thickness legend in separate axes
+    legend_ax = fig.add_subplot(gs[1])
+    legend_ax.axis('off')
+    
+    if edge_values:
+        min_val = min(edge_values)
+        max_val = max(edge_values)
+        
+        # Create representative values for legend
+        if max_val > min_val:
+            legend_values = [min_val, (min_val + max_val) / 2, max_val]
+        else:
+            legend_values = [max_val]
+        
+        if edge_thickness_by_numbers:
+            legend_widths = [(v / total_interaction_count) * total_edge_thickness 
+                            for v in legend_values]
+            legend_title = "Interaction\nCount"
+        else:
+            legend_widths = [v * edge_width_scale for v in legend_values]
+            legend_title = "Cumulative\nScore"
+        
+        _create_edge_thickness_legend(
+            legend_ax, legend_values, legend_widths,
+            title=legend_title,
+            loc='center left',
+            bbox_to_anchor=(0, 0.5)
+        )
+
     plt.tight_layout()
 
     _save_figure(fig, save, verbosity)
@@ -1077,11 +1208,11 @@ def plotCCCDotPlot(
     n_top: int = 3000,
     cmap: Union[str, colors.Colormap] = None,
     bubble_size: float = 250,
-    p_value_col: str = 'p_value',
+    p_value_col: str = 'p_value_fdr',
     threshold: float = 0.05,
     filter_by_interaction_score: bool = True,
     threshold_interaction_score: float = 0.01,
-    filter_significant: bool = False,
+    filter_significant: bool = True,
     n_permutations: int = 1000,
     figsize: Optional[Tuple[float, float]] = None,
     save: Optional[str] = None,
@@ -1125,7 +1256,7 @@ def plotCCCDotPlot(
     bubble_size : float, default=250
         Maximum bubble size for most significant p-values
         
-    p_value_col : str, default='p_value'
+    p_value_col : str, default='p_value_fdr'
         Column name for p-value filtering and sizing
         
     threshold : float, default=0.05
@@ -1137,7 +1268,7 @@ def plotCCCDotPlot(
     threshold_interaction_score : float, default=0.01
         Cutoff for interaction score
         
-    filter_significant : bool, default=False
+    filter_significant : bool, default=True
         If True, apply significance filtering
         
     n_permutations : int, default=1000
@@ -1389,7 +1520,7 @@ def plotCCCDotPlot(
     # Add colorbar with smaller width
     if scatter is not None:
         # Create colorbar with controlled width
-        cbar = plt.colorbar(scatter, ax=ax, shrink=0.5, pad=0.02, aspect=30)
+        cbar = plt.colorbar(scatter, ax=ax, shrink=0.5, pad=0.02, aspect=40)
         cbar.set_label('Interaction Score')
 
     # Add p-value legend next to colorbar (below it)
@@ -1397,7 +1528,8 @@ def plotCCCDotPlot(
         _create_pvalue_legend_log10(
             ax, bubble_size, n_permutations,
             loc='upper left',
-            bbox_to_anchor=(1.15, 1.0)
+            bbox_to_anchor=(1.15, 1.0),
+            frameon=False
         )
 
     plt.tight_layout()
@@ -1413,26 +1545,26 @@ def plotCCCDotPlot(
 def plotCCCDotPlotFacet(
     laris_results: pd.DataFrame,
     cmap: Union[str, colors.Colormap] = None,
-    bubble_size: float = 200,
-    height: float = 5,
-    aspect_ratio: float = 0.7,
+    bubble_size: float = 400,
+    height_single_panel: float = 4.5,
+    width_single_panel: float = 4.5,
     x_padding: float = 0.4,
     y_padding: float = 0.4,
     n_top: Optional[int] = None,
     senders: Optional[List[str]] = None,
     receivers: Optional[List[str]] = None,
     interactions_to_plot: Optional[List[str]] = None,
-    p_value_col: str = 'p_value',
+    p_value_col: str = 'p_value_fdr',
     threshold: float = 0.05,
     filter_by_interaction_score: bool = True,
     threshold_interaction_score: float = 0.01,
-    filter_significant: bool = False,
+    filter_significant: bool = True,
     n_permutations: int = 1000,
     ncol: Optional[int] = None,
     save: Optional[str] = None,
     verbosity: int = 2,
     return_fig: bool = False
-) -> Optional[sns.FacetGrid]:
+) -> Optional[plt.Figure]:
     """
     Create faceted bubble plots organized by sending cell type.
     
@@ -1447,14 +1579,14 @@ def plotCCCDotPlotFacet(
     cmap : colormap, optional
         Colormap for bubble colors. If None, uses pos_cmap
         
-    bubble_size : float, default=200
+    bubble_size : float, default=400
         Maximum bubble size
         
-    height : float, default=5
+    height_single_panel : float, default=4.5
         Height of each facet panel in inches
         
-    aspect_ratio : float, default=0.7
-        Aspect ratio (width = aspect × height) for each facet
+    width_single_panel : float, default=4.5
+        Width of each facet panel in inches
         
     x_padding : float, default=0.4
         Extra space on x-axis
@@ -1474,7 +1606,7 @@ def plotCCCDotPlotFacet(
     interactions_to_plot : list of str, optional
         Specific interactions. If None, all are included
         
-    p_value_col : str, default='p_value'
+    p_value_col : str, default='p_value_fdr'
         Column name for p-value filtering
         
     threshold : float, default=0.05
@@ -1486,7 +1618,7 @@ def plotCCCDotPlotFacet(
     threshold_interaction_score : float, default=0.01
         Cutoff for interaction score
         
-    filter_significant : bool, default=False
+    filter_significant : bool, default=True
         If True, apply significance filtering
         
     n_permutations : int, default=1000
@@ -1502,12 +1634,12 @@ def plotCCCDotPlotFacet(
         Verbosity level
         
     return_fig : bool, default=False
-        If True, return the FacetGrid object
+        If True, return the Figure object
     
     Returns
     -------
-    g : seaborn.FacetGrid or None
-        The FacetGrid object if return_fig=True, otherwise None
+    fig : matplotlib.figure.Figure or None
+        The Figure object if return_fig=True, otherwise None
     
     Examples
     --------
@@ -1647,133 +1779,194 @@ def plotCCCDotPlotFacet(
     # Calculate number of rows
     nrow = math.ceil(n_senders / ncol)
 
-    # Create FacetGrid with col_wrap for multiple rows
-    g = sns.FacetGrid(
-        data_plot,
-        col="sender",
-        col_order=sender_cats,
-        col_wrap=ncol if nrow > 1 else None,
-        sharey=True,
-        sharex=False,
-        height=height,
-        aspect=aspect_ratio,
-        gridspec_kws={"top": 0.85}
-    )
-
-    # Define scatter plot for each facet
-    def facet_scatter(data, **kwargs):
-        if data.empty:
-            return
-        
-        ax = plt.gca()
-        scatter = ax.scatter(
-            x=data["receiver"].cat.codes,
-            y=data["interaction_name"].cat.codes,
-            c=data["interaction_score"],
-            s=data["bubble_size_plot"],
-            cmap=cmap,
-            alpha=0.8,
-            edgecolor='black',
-            linewidth=0.5
-        )
-
-    g.map_dataframe(facet_scatter)
-
-    # Fix axis labels for each facet
-    for idx, ax in enumerate(g.axes.flatten()):
-        # Calculate row index
+    # Calculate figure size based on panel dimensions
+    fig_width = width_single_panel * ncol + 2.5  # Extra space for legends
+    fig_height = height_single_panel * nrow
+    
+    # Create figure and axes manually for better control
+    fig = plt.figure(figsize=(fig_width, fig_height))
+    
+    # Create GridSpec for the panels
+    gs = gridspec.GridSpec(nrow, ncol, figure=fig, wspace=0.3, hspace=0.4)
+    
+    axes = []
+    for idx in range(n_senders):
+        row_idx = idx // ncol
+        col_idx = idx % ncol
+        ax = fig.add_subplot(gs[row_idx, col_idx])
+        axes.append(ax)
+    
+    # Plot each facet
+    for idx, sender in enumerate(sender_cats):
+        ax = axes[idx]
         row_idx = idx // ncol
         col_idx = idx % ncol
         
-        # Set x-axis ticks and labels
+        # Get data for this sender
+        sender_data = data_plot[data_plot["sender"] == sender]
+        
+        if not sender_data.empty:
+            scatter = ax.scatter(
+                x=sender_data["receiver"].cat.codes,
+                y=sender_data["interaction_name"].cat.codes,
+                c=sender_data["interaction_score"],
+                s=sender_data["bubble_size_plot"],
+                cmap=cmap,
+                alpha=0.8,
+                edgecolor='black',
+                linewidth=0.5
+            )
+        
+        # Set title
+        ax.set_title(sender)
+        
+        # Set x-axis ticks
         ax.set_xticks(range(len(receiver_cats)))
-        ax.set_xticklabels(receiver_cats, rotation=45, ha='right')
+        
+        # Determine if this is the bottom row
+        is_bottom_row = (row_idx == nrow - 1) or (idx >= n_senders - ncol)
+        
+        # Only show x-axis labels for bottom row panels
+        if is_bottom_row or nrow == 1:
+            ax.set_xticklabels(receiver_cats, rotation=45, ha='right')
+            ax.set_xlabel("Receiving Cell Type")
+        else:
+            ax.set_xticklabels([])
+        
         ax.set_xlim(-0.5 - x_padding, len(receiver_cats) - 0.5 + x_padding)
         
         # Set y-axis ticks and labels
         ax.set_yticks(range(len(interaction_cats)))
         
-        # Show y-axis labels for first column in each row
+        # Always show y-axis labels for first column
         if col_idx == 0:
             ax.set_yticklabels(interaction_cats)
+            ax.set_ylabel("Interactions")
         else:
             ax.set_yticklabels([])
         
         ax.set_ylim(-0.5 - y_padding, len(interaction_cats) - 0.5 + y_padding)
-
-    # Adjust layout to make room for legends
-    g.fig.subplots_adjust(right=0.78)
-    
-    # Add colorbar with smaller width
-    cbar_ax = g.fig.add_axes([0.80, 0.15, 0.015, 0.4])
-    
-    if len(data_plot) > 0:
-        max_score = data['interaction_score'].max()
-        norm = plt.Normalize(0, max_score)
-        sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
-        sm.set_array([])
-        cbar = plt.colorbar(sm, cax=cbar_ax, ticks=[0, max_score])
-        cbar.ax.set_yticklabels(['0', f'{max_score:.3f}'])
-        cbar.set_label("Interaction Score")
-
-    # Add p-value legend below colorbar
-    if bubble_legend:
-        # Create a dummy axes for the legend
-        legend_ax = g.fig.add_axes([0.80, 0.58, 0.18, 0.25], frameon=False)
-        legend_ax.axis('off')
         
-        min_p = 1.0 / (n_permutations + 1)
-        max_neg_log10 = -np.log10(min_p)
-        
-        # Create legend handles
-        p_values_legend = [0.001, 0.01, 0.05, 0.1, 1.0]
-        p_values_legend = [p for p in p_values_legend if p >= min_p]
-        
-        legend_handles = []
-        for p in p_values_legend:
-            neg_log10_p = -np.log10(p)
-            normalized = neg_log10_p / max_neg_log10
-            size = bubble_size * (0.1 + 0.9 * normalized)
-            
-            if p < 0.001:
-                label = f'p ≤ {p:.0e}'
-            elif p < 0.01:
-                label = f'p = {p:.3f}'
-            else:
-                label = f'p = {p:.2f}'
-            
-            handle = Line2D([0], [0], marker='o', color='w', label=label,
-                           markerfacecolor='gray', markersize=np.sqrt(size),
-                           markeredgecolor='black', markeredgewidth=0.5)
-            legend_handles.append(handle)
-        
-        legend_ax.legend(
-            handles=legend_handles, 
-            title="P-value",
-            loc='upper left',
-            frameon=True,
-            framealpha=0.9
-        )
-
-    # Set axis labels and titles
-    g.set_axis_labels("Receiving Cell Type", "Interactions")
-    g.set_titles(col_template="{col_name}")
-
-    # Rotate x-tick labels and show spines
-    for ax in g.axes.flat:
-        ax.tick_params(axis="x", rotation=45)
+        # Show spines
         for spine in ax.spines.values():
             spine.set_visible(True)
 
+    # Adjust layout to make room for legends
+    fig.subplots_adjust(right=0.82)
+    
+    # Position legends based on number of rows
+    if nrow == 1:
+        # Single row: colorbar and p-value legend side by side on the right
+        cbar_ax = fig.add_axes([0.84, 0.15, 0.008, 0.5])
+        
+        if len(data_plot) > 0:
+            max_score = data['interaction_score'].max()
+            norm = plt.Normalize(0, max_score)
+            sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+            sm.set_array([])
+            cbar = plt.colorbar(sm, cax=cbar_ax, ticks=[0, max_score])
+            cbar.ax.set_yticklabels(['0', f'{max_score:.3f}'])
+            cbar.set_label("Interaction Score", fontsize=10)
+
+        # P-value legend to the right of colorbar with more spacing
+        if bubble_legend:
+            legend_ax = fig.add_axes([0.89, 0.15, 0.10, 0.5], frameon=False)
+            legend_ax.axis('off')
+            
+            min_p = 1.0 / (n_permutations + 1)
+            max_neg_log10 = -np.log10(min_p)
+            
+            p_values_legend = [0.001, 0.01, 0.05, 0.1, 1.0]
+            p_values_legend = [p for p in p_values_legend if p >= min_p]
+            
+            legend_handles = []
+            for p in p_values_legend:
+                neg_log10_p = -np.log10(p)
+                normalized = neg_log10_p / max_neg_log10
+                size = bubble_size * (0.1 + 0.9 * normalized)
+                
+                if p < 0.001:
+                    label = f'$\it{{P}}$ ≤ {p:.0e}'
+                elif p < 0.01:
+                    label = f'$\it{{P}}$ = {p:.3f}'
+                else:
+                    label = f'$\it{{P}}$ = {p:.2f}'
+                
+                handle = Line2D([0], [0], marker='o', color='w', label=label,
+                               markerfacecolor='gray', markersize=np.sqrt(size),
+                               markeredgecolor='black', markeredgewidth=0.5)
+                legend_handles.append(handle)
+            
+            legend = legend_ax.legend(
+                handles=legend_handles, 
+                title="$\it{P}$ value",
+                loc='center left',
+                frameon=False,
+                labelspacing=1.2,
+                handletextpad=1.5
+            )
+            legend.get_title().set_fontsize(10)
+    else:
+        # Multiple rows: p-value legend above colorbar with more spacing
+        cbar_ax = fig.add_axes([0.84, 0.10, 0.008, 0.25])
+        
+        if len(data_plot) > 0:
+            max_score = data['interaction_score'].max()
+            norm = plt.Normalize(0, max_score)
+            sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+            sm.set_array([])
+            cbar = plt.colorbar(sm, cax=cbar_ax, ticks=[0, max_score])
+            cbar.ax.set_yticklabels(['0', f'{max_score:.3f}'])
+            cbar.set_label("Interaction Score", fontsize=10)
+
+        # P-value legend above colorbar with more spacing
+        if bubble_legend:
+            legend_ax = fig.add_axes([0.84, 0.42, 0.15, 0.30], frameon=False)
+            legend_ax.axis('off')
+            
+            min_p = 1.0 / (n_permutations + 1)
+            max_neg_log10 = -np.log10(min_p)
+            
+            p_values_legend = [0.001, 0.01, 0.05, 0.1, 1.0]
+            p_values_legend = [p for p in p_values_legend if p >= min_p]
+            
+            legend_handles = []
+            for p in p_values_legend:
+                neg_log10_p = -np.log10(p)
+                normalized = neg_log10_p / max_neg_log10
+                size = bubble_size * (0.1 + 0.9 * normalized)
+                
+                if p < 0.001:
+                    label = f'$\it{{P}}$ ≤ {p:.0e}'
+                elif p < 0.01:
+                    label = f'$\it{{P}}$ = {p:.3f}'
+                else:
+                    label = f'$\it{{P}}$ = {p:.2f}'
+                
+                handle = Line2D([0], [0], marker='o', color='w', label=label,
+                               markerfacecolor='gray', markersize=np.sqrt(size),
+                               markeredgecolor='black', markeredgewidth=0.5)
+                legend_handles.append(handle)
+            
+            legend = legend_ax.legend(
+                handles=legend_handles, 
+                title="$\it{P}$ value",
+                loc='upper left',
+                frameon=False,
+                labelspacing=1.2,
+                handletextpad=1.5
+            )
+            legend.get_title().set_fontsize(10)
+
     # Save figure
     if save is not None:
-        g.fig.savefig(save, bbox_inches='tight', dpi=300)
+        fig.savefig(save, bbox_inches='tight', dpi=300)
         _log_message(f"Figure saved to: {save}", 2, verbosity, 'info')
 
     plt.show()
     
     if return_fig:
-        return g
+        return fig
     return None
 
 
@@ -1876,6 +2069,8 @@ def plotLRDotPlot(
     # Determine figure size
     n_interactions = len(interactions_to_plot)
     
+    titles = ["Diffused LR score", "Ligands", "Receptors"]
+    
     if figsize is not None:
         fig_width, fig_height = figsize
     else:
@@ -1886,68 +2081,91 @@ def plotLRDotPlot(
                 fig_height = min(fig_height, max_height)
         else:  # vertical
             fig_width = 8
-            fig_height = n_interactions * (row_height or 1.0) * 3
+            fig_height = n_interactions * (row_height or 1.2) * 3 + 2
             if max_height is not None:
                 fig_height = min(fig_height, max_height)
 
     # Create figure with appropriate layout
     if orientation == 'horizontal':
         fig, axes = plt.subplots(ncols=3, figsize=(fig_width, fig_height))
+        
+        # Plot all three
+        sc.pl.dotplot(
+            adata_dotplot,
+            var_names=interactions_to_plot,
+            groupby=groupby,
+            standard_scale='var',
+            cmap=cmap_diffusion,
+            swap_axes=True,
+            dot_max=common_dot_max,
+            ax=axes[0],
+            show=False,
+        )
+
+        sc.pl.dotplot(
+            adata_dotplot,
+            var_names=ligands,
+            groupby=groupby,
+            standard_scale='var',
+            cmap=cmap_ligand,
+            swap_axes=True,
+            dot_max=common_dot_max,
+            ax=axes[1],
+            show=False
+        )
+
+        sc.pl.dotplot(
+            adata_dotplot,
+            var_names=receptors,
+            groupby=groupby,
+            standard_scale='var',
+            cmap=cmap_receptor,
+            swap_axes=True,
+            dot_max=common_dot_max,
+            ax=axes[2],
+            show=False
+        )
+
+        # Add titles above each plot
+        for ax, title in zip(axes, titles):
+            pos = ax.get_position()
+            x_center = pos.x0 + pos.width / 2
+            y_top = pos.y1 + 0.02
+            fig.text(x_center, y_top, title, ha='center', va='bottom', 
+                    fontsize=14, fontweight='bold')
+
+        plt.tight_layout()
+        plt.subplots_adjust(top=0.92)
+        
     else:  # vertical
+        # Create figure with subplots
         fig, axes = plt.subplots(nrows=3, figsize=(fig_width, fig_height))
-
-    # Plot 1: Diffused LR scores
-    sc.pl.dotplot(
-        adata_dotplot,
-        var_names=interactions_to_plot,
-        groupby=groupby,
-        standard_scale='var',
-        cmap=cmap_diffusion,
-        swap_axes=True,
-        dot_max=common_dot_max,
-        ax=axes[0],
-        show=False,
-    )
-
-    # Plot 2: Ligands
-    sc.pl.dotplot(
-        adata_dotplot,
-        var_names=ligands,
-        groupby=groupby,
-        standard_scale='var',
-        cmap=cmap_ligand,
-        swap_axes=True,
-        dot_max=common_dot_max,
-        ax=axes[1],
-        show=False
-    )
-
-    # Plot 3: Receptors
-    sc.pl.dotplot(
-        adata_dotplot,
-        var_names=receptors,
-        groupby=groupby,
-        standard_scale='var',
-        cmap=cmap_receptor,
-        swap_axes=True,
-        dot_max=common_dot_max,
-        ax=axes[2],
-        show=False
-    )
-
-    # Add titles
-    fig.canvas.draw()
-    titles = ["Diffused LR score", "Ligands", "Receptors"]
-
-    for ax, title in zip(axes, titles):
-        bbox = ax.get_tightbbox(fig.canvas.get_renderer())
-        inv = fig.transFigure.inverted()
-        bbox_fig = inv.transform(bbox)
-        x_center = (bbox_fig[0, 0] + bbox_fig[1, 0]) / 2
-        y_top = bbox_fig[1, 1]
-        fig.text(x_center, y_top, title, ha='center', va='bottom', fontsize=14)
-
-    plt.tight_layout()
+        
+        cmaps = [cmap_diffusion, cmap_ligand, cmap_receptor]
+        var_names_list = [interactions_to_plot, ligands, receptors]
+        
+        for i in range(3):
+            sc.pl.dotplot(
+                adata_dotplot,
+                var_names=var_names_list[i],
+                groupby=groupby,
+                standard_scale='var',
+                cmap=cmaps[i],
+                swap_axes=True,
+                dot_max=common_dot_max,
+                ax=axes[i],
+                show=False
+            )
+        
+        # Add titles in the upper left corner of each row
+        for ax, title in zip(axes, titles):
+            # Add text annotation in upper left corner
+            ax.text(-0.15, 1.05, title, transform=ax.transAxes,
+                   fontsize=12, fontweight='bold',
+                   ha='left', va='bottom')
+        
+        plt.tight_layout()
+        plt.subplots_adjust(hspace=0.5, left=0.15)
 
     _save_figure(fig, save, verbosity)
     plt.show()
@@ -1971,8 +2189,9 @@ def plotCCCSpatial(
     background_color: str = 'lightgrey',
     colors: Optional[List[str]] = None,
     size: float = 120,
-    fig_width: Optional[float] = None,
+    fig_width: Optional[float] = 6,
     fig_height: Optional[float] = None,
+    max_title_chars: int = 60,
     save: Optional[str] = None,
     verbosity: int = 2,
     return_fig: bool = False
@@ -2012,13 +2231,14 @@ def plotCCCSpatial(
     size : float, default=120
         Point size for spatial plot
         
-    fig_width : float, optional
-        Figure width in inches. If provided without fig_height, height is 
-        calculated to maintain data aspect ratio
+    fig_width : float, default=6
+        Figure width in inches. Height is calculated to maintain data aspect ratio
         
     fig_height : float, optional
-        Figure height in inches. If provided without fig_width, width is 
-        calculated to maintain data aspect ratio
+        Figure height in inches. If provided, overrides aspect ratio calculation
+        
+    max_title_chars : int, default=60
+        Maximum characters per line in title before wrapping
         
     save : str, optional
         Path to save figure
@@ -2047,167 +2267,175 @@ def plotCCCSpatial(
     ...     save='spatial.pdf'
     ... )
     """
-    # Check if interaction exists
-    if interaction not in lr_adata.var_names:
-        _log_message(
-            f"{interaction} not found in lr_adata.var_names.",
-            1, verbosity, 'error'
-        )
-        return None
+    # Save original rcParams to restore later
+    original_figsize = plt.rcParams['figure.figsize'].copy()
+    
+    try:
+        # Check if interaction exists
+        if interaction not in lr_adata.var_names:
+            _log_message(
+                f"{interaction} not found in lr_adata.var_names.",
+                1, verbosity, 'error'
+            )
+            return None
 
-    # Compute expression mask
-    gene_idx = lr_adata.var_names.get_loc(interaction)
-    mask = lr_adata.X[:, gene_idx] != 0
-    if scipy.sparse.issparse(mask):
-        mask = mask.toarray().flatten()
+        # Compute expression mask
+        gene_idx = lr_adata.var_names.get_loc(interaction)
+        mask = lr_adata.X[:, gene_idx] != 0
+        if scipy.sparse.issparse(mask):
+            mask = mask.toarray().flatten()
 
-    # Mode 1: Highlight all expressing cells
-    if highlight_all_expressing:
-        lr_adata.obs['interaction_highlight'] = 'background'
-        lr_adata.obs.loc[mask, 'interaction_highlight'] = lr_adata.obs.loc[mask, cell_type]
+        # Mode 1: Highlight all expressing cells
+        if highlight_all_expressing:
+            lr_adata.obs['interaction_highlight'] = 'background'
+            lr_adata.obs.loc[mask, 'interaction_highlight'] = lr_adata.obs.loc[mask, cell_type]
 
-        full_categories = (
-            lr_adata.obs[cell_type].cat.categories
-            if pd.api.types.is_categorical_dtype(lr_adata.obs[cell_type])
-            else pd.Categorical(lr_adata.obs[cell_type]).categories
-        )
+            full_categories = (
+                lr_adata.obs[cell_type].cat.categories
+                if pd.api.types.is_categorical_dtype(lr_adata.obs[cell_type])
+                else pd.Categorical(lr_adata.obs[cell_type]).categories
+            )
 
-        lr_adata.obs['interaction_highlight'] = pd.Categorical(
-            lr_adata.obs['interaction_highlight'],
-            categories=['background'] + list(full_categories),
-            ordered=True
-        )
+            lr_adata.obs['interaction_highlight'] = pd.Categorical(
+                lr_adata.obs['interaction_highlight'],
+                categories=['background'] + list(full_categories),
+                ordered=True
+            )
 
-        sorted_idx = lr_adata.obs.sort_values('interaction_highlight').index
-        lr_adata_sorted = lr_adata[sorted_idx].copy()
+            sorted_idx = lr_adata.obs.sort_values('interaction_highlight').index
+            lr_adata_sorted = lr_adata[sorted_idx].copy()
 
-        palette = {'background': background_color}
-        for i, ct in enumerate(full_categories):
-            try:
-                palette[ct] = lr_adata.uns[f'{cell_type}_colors'][i]
-            except (KeyError, IndexError):
+            palette = {'background': background_color}
+            for i, ct in enumerate(full_categories):
+                try:
+                    palette[ct] = lr_adata.uns[f'{cell_type}_colors'][i]
+                except (KeyError, IndexError):
+                    _log_message(
+                        f"Color for {ct} not found. Using default.",
+                        2, verbosity, 'warning'
+                    )
+                    default_colors = plt.cm.get_cmap('tab10')(
+                        np.linspace(0, 1, len(full_categories))
+                    )
+                    palette[ct] = default_colors[i]
+
+            color_column = 'interaction_highlight'
+            
+            # Build informative title with wrapping
+            n_expressing = mask.sum()
+            title_text = f"{interaction}\nExpressing cells by cell type (n={n_expressing})"
+
+        # Mode 2: Highlight specific cell types
+        else:
+            if selected_cell_types is None:
                 _log_message(
-                    f"Color for {ct} not found. Using default.",
-                    2, verbosity, 'warning'
+                    "Either provide selected_cell_types or set highlight_all_expressing=True",
+                    1, verbosity, 'error'
                 )
-                default_colors = plt.cm.get_cmap('tab10')(
-                    np.linspace(0, 1, len(full_categories))
-                )
-                palette[ct] = default_colors[i]
+                return None
 
-        color_column = 'interaction_highlight'
-        
-        # Build informative title
-        n_expressing = mask.sum()
-        title = f"{interaction}\nExpressing cells by cell type (n={n_expressing})"
+            lr_adata.obs['custom_color'] = 'other'
 
-    # Mode 2: Highlight specific cell types
-    else:
-        if selected_cell_types is None:
-            _log_message(
-                "Either provide selected_cell_types or set highlight_all_expressing=True",
-                1, verbosity, 'error'
+            for ct in selected_cell_types:
+                condition = (lr_adata.obs[cell_type] == ct) & mask
+                lr_adata.obs.loc[condition, 'custom_color'] = ct
+
+            order = ['other'] + selected_cell_types
+            lr_adata.obs['custom_color'] = pd.Categorical(
+                lr_adata.obs['custom_color'],
+                categories=order,
+                ordered=True
             )
-            return None
 
-        lr_adata.obs['custom_color'] = 'other'
+            lr_adata_sorted = lr_adata[
+                lr_adata.obs.sort_values('custom_color').index
+            ].copy()
 
-        for ct in selected_cell_types:
-            condition = (lr_adata.obs[cell_type] == ct) & mask
-            lr_adata.obs.loc[condition, 'custom_color'] = ct
+            if colors is None:
+                colors = plt.cm.tab10(np.linspace(0, 1, len(selected_cell_types)))
+            elif len(selected_cell_types) != len(colors):
+                _log_message(
+                    "Length of selected_cell_types and colors must match.",
+                    1, verbosity, 'error'
+                )
+                return None
 
-        order = ['other'] + selected_cell_types
-        lr_adata.obs['custom_color'] = pd.Categorical(
-            lr_adata.obs['custom_color'],
-            categories=order,
-            ordered=True
+            palette = {'other': background_color}
+            for ct, col in zip(selected_cell_types, colors):
+                palette[ct] = col
+
+            color_column = 'custom_color'
+            
+            # Build informative title with wrapping
+            ct_counts = []
+            for ct in selected_cell_types:
+                condition = (lr_adata.obs[cell_type] == ct) & mask
+                ct_counts.append(f"{ct}: {condition.sum()}")
+            
+            details = ', '.join(ct_counts)
+            # Wrap long details
+            wrapped_details = textwrap.fill(details, width=max_title_chars)
+            title_text = f"{interaction}\nExpressing cells: {wrapped_details}"
+
+        # Compute figure size based on data aspect ratio
+        x_coords = lr_adata.obsm[basis][:, 0]
+        y_coords = lr_adata.obsm[basis][:, 1]
+        x_range = x_coords.max() - x_coords.min()
+        y_range = y_coords.max() - y_coords.min()
+        
+        if x_range == 0 or y_range == 0:
+            # Default to square if data has no range
+            aspect_ratio = 1.0
+        else:
+            aspect_ratio = y_range / x_range
+        
+        # Calculate figure size
+        if fig_width is not None and fig_height is not None:
+            # Both provided - use as is
+            figsize = (fig_width, fig_height)
+        elif fig_width is not None:
+            # Only width provided - calculate height
+            figsize = (fig_width, fig_width * aspect_ratio)
+        elif fig_height is not None:
+            # Only height provided - calculate width
+            figsize = (fig_height / aspect_ratio, fig_height)
+        else:
+            # Neither provided - default width of 6
+            figsize = (6, 6 * aspect_ratio)
+
+        plt.rcParams['figure.figsize'] = figsize
+
+        # Plot
+        sc.pl.embedding(
+            lr_adata_sorted,
+            basis=basis,
+            color=color_column,
+            palette=palette,
+            size=size,
+            frameon=False,
+            ncols=1,
+            sort_order=False,
+            title=title_text,
+            show=False
         )
 
-        lr_adata_sorted = lr_adata[
-            lr_adata.obs.sort_values('custom_color').index
-        ].copy()
+        # Get current figure
+        fig = plt.gcf()
 
-        if colors is None:
-            colors = plt.cm.tab10(np.linspace(0, 1, len(selected_cell_types)))
-        elif len(selected_cell_types) != len(colors):
-            _log_message(
-                "Length of selected_cell_types and colors must match.",
-                1, verbosity, 'error'
-            )
-            return None
+        # Save figure
+        if save is not None:
+            plt.savefig(save, bbox_inches='tight', dpi=300)
+            _log_message(f"Figure saved to: {save}", 2, verbosity, 'info')
 
-        palette = {'other': background_color}
-        for ct, col in zip(selected_cell_types, colors):
-            palette[ct] = col
+        plt.show()
 
-        color_column = 'custom_color'
+        if return_fig:
+            return fig
+        return None
         
-        # Build informative title
-        ct_counts = []
-        for ct in selected_cell_types:
-            condition = (lr_adata.obs[cell_type] == ct) & mask
-            ct_counts.append(f"{ct}: {condition.sum()}")
-        
-        title = f"{interaction}\nExpressing cells: {', '.join(ct_counts)}"
-
-    # Compute figure size based on data aspect ratio
-    x_coords = lr_adata.obsm[basis][:, 0]
-    y_coords = lr_adata.obsm[basis][:, 1]
-    x_range = x_coords.max() - x_coords.min()
-    y_range = y_coords.max() - y_coords.min()
-    
-    if x_range == 0 or y_range == 0:
-        # Default to square if data has no range
-        aspect_ratio = 1.0
-    else:
-        aspect_ratio = y_range / x_range
-    
-    # Calculate figure size
-    if fig_width is not None and fig_height is not None:
-        # Both provided - use as is
-        figsize = (fig_width, fig_height)
-    elif fig_width is not None:
-        # Only width provided - calculate height
-        figsize = (fig_width, fig_width * aspect_ratio)
-    elif fig_height is not None:
-        # Only height provided - calculate width
-        figsize = (fig_height / aspect_ratio, fig_height)
-    else:
-        # Neither provided - default width of 10
-        figsize = (10, 10 * aspect_ratio)
-
-    plt.rcParams['figure.figsize'] = figsize
-
-    # Plot
-    sc.pl.embedding(
-        lr_adata_sorted,
-        basis=basis,
-        color=color_column,
-        palette=palette,
-        size=size,
-        frameon=False,
-        ncols=1,
-        sort_order=False,
-        title=title,
-        show=False
-    )
-
-    # Get current figure
-    fig = plt.gcf()
-
-    # Save figure
-    if save is not None:
-        plt.savefig(save, bbox_inches='tight', dpi=300)
-        _log_message(f"Figure saved to: {save}", 2, verbosity, 'info')
-
-    plt.show()
-
-    # Reset default figsize
-    plt.rcParams['figure.figsize'] = (4, 4)
-
-    if return_fig:
-        return fig
-    return None
+    finally:
+        # Restore original rcParams
+        plt.rcParams['figure.figsize'] = original_figsize
 
 
 # ============================================================================
