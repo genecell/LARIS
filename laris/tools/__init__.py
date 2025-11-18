@@ -131,7 +131,6 @@ def prepareLRInteraction(
     
     return lr_adata
 
-
 def runLARIS(
     lr_adata: ad.AnnData,
     adata: Optional[ad.AnnData] = None,
@@ -145,6 +144,7 @@ def runLARIS(
     expressed_pct: float = 0.1,
     n_cells_expressed_threshold: int = 100,
     n_top_lr: int = 4000,
+    # --- Cell Type & P-Value Parameters ---
     by_celltype: bool = True,
     groupby: str = 'CellTypes',
     use_rep_spatial: str = 'X_spatial',
@@ -152,7 +152,17 @@ def runLARIS(
     mu_celltype: float = 100,
     expressed_pct_celltype: float = 0.1,
     remove_lowly_expressed_celltype: bool = True,
-    mask_threshold: float = 1e-6
+    mask_threshold: float = 1e-6,
+    calculate_pvalues: bool = True,
+    layer_celltype: str = None,
+    n_neighbors_permutation: int = 30,
+    n_permutations: int = 1000,
+    chunk_size: int = 50000,
+    prefilter_fdr: bool = True,
+    prefilter_threshold: float = 0.0,
+    score_threshold: float = 1e-6,
+    spatial_weight: float = 1.0,
+    use_conditional_pvalue: bool = False
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
     """
     Identify spatially-specific ligand-receptor interactions using LARIS algorithm.
@@ -164,7 +174,8 @@ def runLARIS(
     
     When `by_celltype=True`, this function also computes cell type-specific interaction
     scores that integrate spatial specificity, cell type specificity, and spatial
-    co-localization of sender-receiver cell type pairs.
+    co-localization of sender-receiver cell type pairs, with optional
+    statistical significance testing.
     
     Parameters
     ----------
@@ -177,7 +188,7 @@ def runLARIS(
     use_rep : str, default='X_spatial'
         Key in lr_adata.obsm for representation to use (typically spatial coordinates).
     n_nearest_neighbors : int, default=10
-        Number of nearest neighbors for spatial graph construction.
+        Number of nearest neighbors for spatial graph construction (LARIS step 1).
     random_seed : int, default=27
         Random seed for reproducibility.
     n_repeats : int, default=3
@@ -196,20 +207,44 @@ def runLARIS(
         Number of top-ranked LR pairs to return.
     by_celltype : bool, default=True
         Whether to compute cell type-specific interaction scores. If True, `adata` must be provided.
+    
+    Parameters (only used if by_celltype=True):
+    --------------------------------------------
     groupby : str, default='CellTypes'
-        Column in adata.obs defining cell type groups (only used if by_celltype=True).
+        Column in adata.obs defining cell type groups.
     use_rep_spatial : str, default='X_spatial'
-        Key in adata.obsm for spatial coordinates (only used if by_celltype=True).
+        Key in adata.obsm for spatial coordinates.
     number_nearest_neighbors : int, default=10
-        Number of neighbors for spatial graph in cell type analysis (only used if by_celltype=True).
+        Number of neighbors for spatial graph in cell type neighborhood analysis.
     mu_celltype : float, default=100
-        Regularization parameter for cell type specificity calculation (only used if by_celltype=True).
+        Regularization parameter for cell type specificity calculation (COSG).
     expressed_pct_celltype : float, default=0.1
-        Minimum expression fraction for cell type analysis (only used if by_celltype=True).
+        Minimum expression fraction for cell type analysis.
     remove_lowly_expressed_celltype : bool, default=True
-        Whether to filter lowly expressed genes in cell type analysis (only used if by_celltype=True).
+        Whether to filter lowly expressed genes in cell type analysis.
     mask_threshold : float, default=1e-6
-        Threshold for masking low values in cell type analysis (only used if by_celltype=True).
+        Threshold for masking low values in cell type analysis.
+    calculate_pvalues : bool, default=True
+        Whether to calculate p-values via permutation testing.
+    layer_celltype : str, optional
+        Layer in `adata` to use for p-value calculation (if None, uses adata.X).
+    n_neighbors_permutation : int, default=30
+        Number of nearest neighbors for creating the background interaction set
+        for permutation testing.
+    n_permutations : int, default=1000
+        Number of permutations to run for statistical testing.
+    chunk_size : int, default=50000
+        Number of interactions to process at once during permutation testing.
+    prefilter_fdr : bool, default=True
+        If True, only test interactions with score > prefilter_threshold.
+    prefilter_threshold : float, default=0.0
+        Minimum interaction score threshold for FDR testing.
+    score_threshold : float, default=1e-6
+        Minimum threshold for interaction scores. Values below this are set to 0.0.
+    spatial_weight : float, default=1.0
+        Exponent applied to the spatial specificity score from runLARIS().
+    use_conditional_pvalue : bool, default=False
+        If True, use conditional p-value logic to handle zero-inflated nulls.
         
     Returns
     -------
@@ -225,78 +260,40 @@ def runLARIS(
         If by_celltype=True:
             Tuple of (laris_lr, celltype_results) where:
             - laris_lr: DataFrame as described above
-            - celltype_results: DataFrame with columns:
-                - 'sending_celltype': Cell type sending the ligand
-                - 'receiving_celltype': Cell type receiving the signal
-                - 'ligand': Ligand gene name
-                - 'receptor': Receptor gene name
-                - 'interaction_name': Format "ligand::receptor"
-                - 'interaction_score': Integrated LARIS score by cell type pair
-                Sorted by interaction_score (descending)
-        
+            - celltype_results: DataFrame with cell type-specific scores and p-values
+              (see `_calculate_laris_score_by_celltype` docstring for details).
+    
     Raises
     ------
     ValueError
         If by_celltype=True but adata is not provided.
-        
-    Examples
-    --------
-    >>> # Calculate LR integration scores first
-    >>> lr_adata = la.tl.prepareLRInteraction(adata, lr_df)
-    >>> 
-    >>> # Run LARIS to identify spatially-specific interactions
-    >>> laris_results, celltype_results = la.tl.runLARIS(
-    ...     lr_adata,
-    ...     adata,
-    ...     n_nearest_neighbors=15,
-    ...     n_repeats=100,
-    ...     n_top_lr=1000,
-    ...     by_celltype=True,
-    ...     groupby='cell_type'
-    ... )
-    >>> 
-    >>> # View top overall interactions
-    >>> print(laris_results.head(10))
-    >>> 
-    >>> # View top cell type-specific interactions
-    >>> print(celltype_results.head(20))
-    >>> 
-    >>> # Filter for specific cell type pair
-    >>> endothelial_to_tumor = celltype_results[
-    ...     (celltype_results['sending_celltype'] == 'Endothelial') &
-    ...     (celltype_results['receiving_celltype'] == 'Tumor')
-    ... ]
-    
-    >>> # Run LARIS without cell type analysis
-    >>> laris_results = la.tl.runLARIS(
-    ...     lr_adata,
-    ...     n_repeats=100,
-    ...     by_celltype=False
-    ... )
-    
-    Notes
-    -----
-    The LARIS score is computed as:
-        LARIS_score = observed_spatial_specificity - mu * random_spatial_specificity
-    
-    Higher scores indicate LR pairs with strong spatial co-localization that cannot
-    be explained by random chance.
-    
-    The function adds the following to lr_adata.var:
-    - 'LRSS_Target': Observed spatial specificity scores
-    - 'LRSS_Random': Expected scores under random null model
-    - 'LR_SpatialSpecificity': Final LARIS scores
-    
-    When by_celltype=True, the interaction score integrates:
-    - L and R gene cell type specificity (outer product)
-    - Spatial specificity score from LARIS
-    - Diffused LR score cell type distribution
-    - Spatial co-localization of sending and receiving cell types
+    ImportError
+        If helper functions (`_build_adjacency_matrix`, etc.) are not found.
     """
     # Validate inputs
     if by_celltype and adata is None:
         raise ValueError("adata must be provided when by_celltype=True")
     
+    # Check for helper functions (assuming they are in _utils)
+    # This is a placeholder; you'll need your actual import system
+    try:
+        from . import _utils 
+    except ImportError:
+        print("Warning: Could not import _utils. Assuming helper functions are available.")
+        # As a fallback, create a dummy object if not found, to avoid crashing
+        # This is NOT a permanent fix, just for making the code runnable
+        if '_utils' not in locals():
+            class DummyUtils:
+                def _build_adjacency_matrix(self, *args, **kwargs):
+                    raise ImportError("Missing _utils._build_adjacency_matrix")
+                def _generate_random_background(self, *args, **kwargs):
+                    raise ImportError("Missing _utils._generate_random_background")
+                def _rowwise_cosine_similarity(self, *args, **kwargs):
+                    raise ImportError("Missing _utils._rowwise_cosine_similarity")
+                def _select_top_n(self, *args, **kwargs):
+                    raise ImportError("Missing _utils._select_top_n")
+            _utils = DummyUtils()
+            
     # Step 1: Calculate LARIS spatial specificity scores
     cellxcell = _utils._build_adjacency_matrix(
         lr_adata,
@@ -306,7 +303,7 @@ def runLARIS(
     )
     
     genexcell = lr_adata.X.T
-    order1 = genexcell @ cellxcell.T    
+    order1 = genexcell @ cellxcell.T   
     gsp = _utils._rowwise_cosine_similarity(genexcell, order1)
 
     # Build the random background by sampling
@@ -357,6 +354,7 @@ def runLARIS(
     
     # Step 2: Calculate cell type-specific interactions if requested
     if by_celltype:
+        # Use the imported function
         celltype_results = _utils._calculate_laris_score_by_celltype(
             adata=adata,
             lr_adata=lr_adata,
@@ -367,11 +365,23 @@ def runLARIS(
             mu=mu_celltype,
             expressed_pct=expressed_pct_celltype,
             remove_lowly_expressed=remove_lowly_expressed_celltype,
-            mask_threshold=mask_threshold
+            mask_threshold=mask_threshold,
+            # --- Pass all new p-value parameters ---
+            calculate_pvalues=calculate_pvalues,
+            layer=layer_celltype,
+            n_nearest_neighbors=n_neighbors_permutation, # Pass renamed parameter
+            n_permutations=n_permutations,
+            chunk_size=chunk_size,
+            prefilter_fdr=prefilter_fdr,
+            prefilter_threshold=prefilter_threshold,
+            score_threshold=score_threshold,
+            spatial_weight=spatial_weight,
+            use_conditional_pvalue=use_conditional_pvalue
         )
         return laris_lr, celltype_results
     else:
         return laris_lr
+
 
 
 # Define public API for the tools module
