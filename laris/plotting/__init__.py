@@ -15,7 +15,7 @@ plotCCCHeatmap : Create heatmap of cell-cell communication interactions
 plotCCCNetwork : Plot interaction network for specific cell type
 plotCCCNetworkCumulative : Plot cumulative interaction network across all cell types
 plotCCCDotPlot : Create bubble/dot plot for selected cell type pairs
-plotCCCDotPlotFacet : Create faceted dot plot by sending cell type
+plotCCCDotPlotFacet : Create faceted dot plot by sending or receiving cell type
 plotLRDotPlot : Create side-by-side dot plots for LR pairs, ligands, and receptors
 plotCCCSpatial : Plot spatial distribution of interactions
 prepareDotPlotAdata : Prepare combined AnnData object for dot plot visualizations
@@ -72,6 +72,7 @@ from scipy.sparse import csr_matrix, issparse, hstack
 from typing import Optional, Union, List, Tuple
 import warnings
 import textwrap
+import matplotlib.patheffects as path_effects
 
 # Import for clustering
 try:
@@ -194,7 +195,8 @@ def _create_pvalue_legend_log10(ax, bubble_size: float,
                                  n_permutations: int = 1000,
                                  loc: str = 'upper left',
                                  bbox_to_anchor: tuple = (1.05, 1.0),
-                                 frameon: bool = False):
+                                 frameon: bool = False,
+                                 title_fontsize: int = 16):
     """
     Create legend for -log10(p_value) based bubble sizes.
     
@@ -212,6 +214,8 @@ def _create_pvalue_legend_log10(ax, bubble_size: float,
         Legend anchor position
     frameon : bool
         Whether to draw frame around legend
+    title_fontsize : int
+        Font size for legend title
         
     Returns
     -------
@@ -254,6 +258,9 @@ def _create_pvalue_legend_log10(ax, bubble_size: float,
                       frameon=frameon, framealpha=0.9,
                       labelspacing=1.2,  # Add more space between labels
                       handletextpad=1.5)  # Add more space between marker and text
+    
+    # Set title font size
+    legend.get_title().set_fontsize(title_fontsize)
     
     return legend
 
@@ -586,6 +593,9 @@ def plotCCCNetwork(
     filter_by_interaction_score: bool = True,
     threshold_interaction_score: float = 0.01,
     filter_significant: bool = True,
+    label_border: bool = True,
+    label_border_color: str = 'white',
+    label_border_width: float = 3.0,
     save: Optional[str] = None,
     verbosity: int = 2,
     return_fig: bool = False
@@ -658,6 +668,15 @@ def plotCCCNetwork(
     filter_significant : bool, default=True
         If True, apply significance filtering
         
+    label_border : bool, default=True
+        If True, add border/outline to cell type labels for better visibility
+        
+    label_border_color : str, default='white'
+        Color of the label border/outline
+        
+    label_border_width : float, default=3.0
+        Width of the label border/outline
+        
     save : str, optional
         Path to save figure
         
@@ -680,6 +699,8 @@ def plotCCCNetwork(
     ...     interaction_direction='sending',
     ...     adata=adata,
     ...     filter_significant=True,
+    ...     label_border=True,
+    ...     label_border_width=4.0,
     ...     save='network.pdf'
     ... )
     """
@@ -805,12 +826,17 @@ def plotCCCNetwork(
     )
     node_collection.set_zorder(1)
 
-    # Draw labels
+    # Draw labels with optional border
     labels = nx.draw_networkx_labels(
         G, pos, font_size=label_font_size, font_family="sans-serif", ax=ax
     )
     for label in labels.values():
         label.set_zorder(3)
+        if label_border:
+            label.set_path_effects([
+                path_effects.Stroke(linewidth=label_border_width, foreground=label_border_color),
+                path_effects.Normal()
+            ])
 
     # Draw edges and collect edge scores for legend
     edge_scores = []
@@ -896,6 +922,9 @@ def plotCCCNetworkCumulative(
     filter_significant: bool = True,
     edge_thickness_by_numbers: bool = False,
     total_edge_thickness: float = 100,
+    label_border: bool = True,
+    label_border_color: str = 'white',
+    label_border_width: float = 3.0,
     save: Optional[str] = None,
     verbosity: int = 2,
     return_fig: bool = False
@@ -966,6 +995,15 @@ def plotCCCNetworkCumulative(
     total_edge_thickness : float, default=100
         Total thickness budget when edge_thickness_by_numbers=True
         
+    label_border : bool, default=True
+        If True, add border/outline to cell type labels for better visibility
+        
+    label_border_color : str, default='white'
+        Color of the label border/outline
+        
+    label_border_width : float, default=3.0
+        Width of the label border/outline
+        
     save : str, optional
         Path to save figure
         
@@ -979,6 +1017,18 @@ def plotCCCNetworkCumulative(
     -------
     tuple or None
         (fig, ax) if return_fig=True, otherwise None
+    
+    Examples
+    --------
+    >>> la.pl.plotCCCNetworkCumulative(
+    ...     laris_results,
+    ...     adata=adata,
+    ...     filter_significant=True,
+    ...     label_border=True,
+    ...     label_border_color='white',
+    ...     label_border_width=4.0,
+    ...     save='cumulative_network.pdf'
+    ... )
     """
     # Apply filters
     laris_results_subset = laris_results.copy()
@@ -1103,12 +1153,17 @@ def plotCCCNetworkCumulative(
     )
     node_collection.set_zorder(1)
 
-    # Draw labels
+    # Draw labels with optional border
     labels = nx.draw_networkx_labels(
         G, pos, font_size=label_font_size, font_family="sans-serif", ax=ax
     )
     for label in labels.values():
         label.set_zorder(3)
+        if label_border:
+            label.set_path_effects([
+                path_effects.Stroke(linewidth=label_border_width, foreground=label_border_color),
+                path_effects.Normal()
+            ])
 
     # Draw edges and collect values for legend
     edge_values = []
@@ -1214,6 +1269,8 @@ def plotCCCDotPlot(
     threshold_interaction_score: float = 0.01,
     filter_significant: bool = True,
     n_permutations: int = 1000,
+    legend_fontsize: int = 16,
+    show_grid: bool = False,
     figsize: Optional[Tuple[float, float]] = None,
     save: Optional[str] = None,
     verbosity: int = 2,
@@ -1274,6 +1331,12 @@ def plotCCCDotPlot(
     n_permutations : int, default=1000
         Number of permutations used (for p-value scaling)
         
+    legend_fontsize : int, default=16
+        Font size for legend titles ("Interaction Score" and "P value")
+        
+    show_grid : bool, default=False
+        If True, show grid lines in the plot
+        
     figsize : tuple, optional
         Figure size. If None, automatically calculated
         
@@ -1304,6 +1367,8 @@ def plotCCCDotPlot(
     ...     senders=senders,
     ...     receivers=receivers,
     ...     filter_significant=True,
+    ...     legend_fontsize=16,
+    ...     show_grid=False,
     ...     save='dotplot.pdf'
     ... )
     >>> 
@@ -1517,7 +1582,11 @@ def plotCCCDotPlot(
     ax.set_xlim(-0.5, len(all_cell_pairs) - 0.5)
     ax.set_ylim(-0.5, len(interactions_to_plot) - 0.5)
 
-    # Add colorbar with smaller width - ensure it starts at 0
+    # Control grid lines
+    if not show_grid:
+        ax.grid(False)
+
+    # Add colorbar with doubled width and label on left side
     if scatter is not None:
         # Get the actual max score for colorbar
         if not df_nonzero.empty:
@@ -1528,17 +1597,21 @@ def plotCCCDotPlot(
         # Set color limits to start from 0
         scatter.set_clim(0, max_score)
         
-        # Create colorbar with controlled width
-        cbar = plt.colorbar(scatter, ax=ax, shrink=0.5, pad=0.02, aspect=40)
-        cbar.set_label('Interaction Score', fontsize=10)
+        # Create colorbar with doubled width and moved further right (pad=0.15 to account for left label)
+        cbar = plt.colorbar(scatter, ax=ax, shrink=0.5, pad=0.15, aspect=20)
+        # Set label on the left side of colorbar
+        cbar.ax.yaxis.set_label_position('left')
+        cbar.ax.yaxis.set_ticks_position('right')
+        cbar.set_label('Interaction Score', fontsize=legend_fontsize)
 
     # Add p-value legend with more space from colorbar
     if bubble_legend:
         _create_pvalue_legend_log10(
             ax, bubble_size, n_permutations,
             loc='upper left',
-            bbox_to_anchor=(1.20, 1.0),  # Moved further right for more spacing
-            frameon=False
+            bbox_to_anchor=(1.35, 1.0),  # Moved further right for more spacing
+            frameon=False,
+            title_fontsize=legend_fontsize
         )
 
     plt.tight_layout()
@@ -1570,15 +1643,18 @@ def plotCCCDotPlotFacet(
     filter_significant: bool = True,
     n_permutations: int = 1000,
     ncol: int = 3,
+    facet_by: str = 'sender',
+    legend_fontsize: int = 16,
+    show_grid: bool = True,
     save: Optional[str] = None,
     verbosity: int = 2,
     return_fig: bool = False
 ) -> Optional[plt.Figure]:
     """
-    Create faceted bubble plots organized by sending cell type.
+    Create faceted bubble plots organized by sending or receiving cell type.
     
     Generates a grid of bubble plots where each facet represents a different 
-    sending cell type, showing interactions to receiving cell types.
+    sending or receiving cell type, showing interactions to/from other cell types.
     
     Parameters
     ----------
@@ -1636,6 +1712,17 @@ def plotCCCDotPlotFacet(
     ncol : int, default=3
         Number of columns per row
         
+    facet_by : str, default='sender'
+        How to organize facets:
+        - 'sender' : Each facet shows a different sending cell type
+        - 'receiver' : Each facet shows a different receiving cell type
+        
+    legend_fontsize : int, default=16
+        Font size for legend titles ("Interaction Score" and "P value")
+        
+    show_grid : bool, default=True
+        If True, show grid lines in the plots
+        
     save : str, optional
         Path to save figure
         
@@ -1652,6 +1739,7 @@ def plotCCCDotPlotFacet(
     
     Examples
     --------
+    >>> # Facet by sender (default)
     >>> la.pl.plotCCCDotPlotFacet(
     ...     laris_results,
     ...     senders=['B_cell', 'T_cell'],
@@ -1659,11 +1747,33 @@ def plotCCCDotPlotFacet(
     ...     interactions_to_plot=['CXCL13::CXCR5', 'CD40LG::CD40'],
     ...     filter_significant=True,
     ...     ncol=2,
-    ...     save='facet_plot.pdf'
+    ...     facet_by='sender',
+    ...     show_grid=False,
+    ...     save='facet_plot_sender.pdf'
+    ... )
+    >>> 
+    >>> # Facet by receiver
+    >>> la.pl.plotCCCDotPlotFacet(
+    ...     laris_results,
+    ...     senders=['B_cell', 'T_cell'],
+    ...     receivers=['Macrophage', 'NK_cell'],
+    ...     interactions_to_plot=['CXCL13::CXCR5', 'CD40LG::CD40'],
+    ...     filter_significant=True,
+    ...     ncol=2,
+    ...     facet_by='receiver',
+    ...     save='facet_plot_receiver.pdf'
     ... )
     """
     if cmap is None:
         cmap = pos_cmap
+    
+    # Validate facet_by parameter
+    if facet_by not in ['sender', 'receiver']:
+        _log_message(
+            f"facet_by must be 'sender' or 'receiver', got '{facet_by}'",
+            1, verbosity, 'error'
+        )
+        return None
 
     # Apply filters
     laris_results_subset = laris_results.copy()
@@ -1726,7 +1836,7 @@ def plotCCCDotPlotFacet(
         )
         return None
 
-    # Determine categories for axes
+    # Determine categories for axes based on facet_by
     if senders is not None:
         sender_cats = senders
     else:
@@ -1741,6 +1851,20 @@ def plotCCCDotPlotFacet(
         interaction_cats = interactions_to_plot
     else:
         interaction_cats = sorted(data["interaction_name"].unique())
+
+    # Determine facet categories and x-axis categories based on facet_by
+    if facet_by == 'sender':
+        facet_cats = sender_cats
+        x_cats = receiver_cats
+        facet_col = 'sender'
+        x_col = 'receiver'
+        x_label = "Receiver"
+    else:  # facet_by == 'receiver'
+        facet_cats = receiver_cats
+        x_cats = sender_cats
+        facet_col = 'receiver'
+        x_col = 'sender'
+        x_label = "Sender"
 
     # Convert to categorical with specified order
     data["sender"] = pd.Categorical(
@@ -1780,11 +1904,11 @@ def plotCCCDotPlotFacet(
             2, verbosity, 'warning'
         )
 
-    # Determine number of columns
-    n_senders = len(sender_cats)
+    # Determine number of facets
+    n_facets = len(facet_cats)
     
     # Calculate number of rows
-    nrow = math.ceil(n_senders / ncol)
+    nrow = math.ceil(n_facets / ncol)
 
     # Calculate figure size based on panel dimensions
     fig_width = width_single_panel * ncol + 2.5  # Extra space for legends
@@ -1797,50 +1921,59 @@ def plotCCCDotPlotFacet(
     gs = gridspec.GridSpec(nrow, ncol, figure=fig, wspace=0.3, hspace=0.4)
     
     axes = []
-    for idx in range(n_senders):
+    for idx in range(n_facets):
         row_idx = idx // ncol
         col_idx = idx % ncol
         ax = fig.add_subplot(gs[row_idx, col_idx])
         axes.append(ax)
     
+    # Calculate global min and max for consistent color scaling
+    if len(data_plot) > 0:
+        vmin = 0  # Start from 0 for interaction scores
+        vmax = data_plot["interaction_score"].max()
+    else:
+        vmin, vmax = 0, 1
+    
     # Plot each facet
-    for idx, sender in enumerate(sender_cats):
+    for idx, facet_val in enumerate(facet_cats):
         ax = axes[idx]
         row_idx = idx // ncol
         col_idx = idx % ncol
         
-        # Get data for this sender
-        sender_data = data_plot[data_plot["sender"] == sender]
+        # Get data for this facet
+        facet_data = data_plot[data_plot[facet_col] == facet_val]
         
-        if not sender_data.empty:
+        if not facet_data.empty:
             scatter = ax.scatter(
-                x=sender_data["receiver"].cat.codes,
-                y=sender_data["interaction_name"].cat.codes,
-                c=sender_data["interaction_score"],
-                s=sender_data["bubble_size_plot"],
+                x=facet_data[x_col].cat.codes,
+                y=facet_data["interaction_name"].cat.codes,
+                c=facet_data["interaction_score"],
+                s=facet_data["bubble_size_plot"],
                 cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
                 alpha=0.8,
                 edgecolor='black',
                 linewidth=0.5
             )
         
         # Set title
-        ax.set_title(sender)
+        ax.set_title(facet_val)
         
         # Set x-axis ticks
-        ax.set_xticks(range(len(receiver_cats)))
+        ax.set_xticks(range(len(x_cats)))
         
         # Determine if this is the bottom row
-        is_bottom_row = (row_idx == nrow - 1) or (idx >= n_senders - ncol)
+        is_bottom_row = (row_idx == nrow - 1) or (idx >= n_facets - ncol)
         
         # Only show x-axis labels for bottom row panels
         if is_bottom_row or nrow == 1:
-            ax.set_xticklabels(receiver_cats, rotation=45, ha='right')
-            ax.set_xlabel("Receiving Cell Type")
+            ax.set_xticklabels(x_cats, rotation=45, ha='right')
+            ax.set_xlabel(x_label)
         else:
             ax.set_xticklabels([])
         
-        ax.set_xlim(-0.5 - x_padding, len(receiver_cats) - 0.5 + x_padding)
+        ax.set_xlim(-0.5 - x_padding, len(x_cats) - 0.5 + x_padding)
         
         # Set y-axis ticks and labels
         ax.set_yticks(range(len(interaction_cats)))
@@ -1857,6 +1990,10 @@ def plotCCCDotPlotFacet(
         # Show spines
         for spine in ax.spines.values():
             spine.set_visible(True)
+        
+        # Control grid lines
+        if not show_grid:
+            ax.grid(False)
 
     # Adjust layout to make room for legends
     fig.subplots_adjust(right=0.82)
@@ -1864,7 +2001,8 @@ def plotCCCDotPlotFacet(
     # Position legends based on number of rows
     if nrow == 1:
         # Single row: colorbar and p-value legend side by side on the right
-        cbar_ax = fig.add_axes([0.84, 0.15, 0.008, 0.5])
+        # Doubled width: 0.016 instead of 0.008, moved right to 0.88 to account for left label
+        cbar_ax = fig.add_axes([0.88, 0.15, 0.016, 0.5])
         
         if len(data_plot) > 0:
             max_score = data['interaction_score'].max()
@@ -1873,11 +2011,14 @@ def plotCCCDotPlotFacet(
             sm.set_array([])
             cbar = plt.colorbar(sm, cax=cbar_ax, ticks=[0, max_score])
             cbar.ax.set_yticklabels(['0', f'{max_score:.3f}'])
-            cbar.set_label("Interaction Score", fontsize=10)
+            # Set label on the left side
+            cbar.ax.yaxis.set_label_position('left')
+            cbar.ax.yaxis.set_ticks_position('right')
+            cbar.set_label("Interaction Score", fontsize=legend_fontsize)
 
         # P-value legend to the right of colorbar with more spacing
         if bubble_legend:
-            legend_ax = fig.add_axes([0.89, 0.15, 0.10, 0.5], frameon=False)
+            legend_ax = fig.add_axes([0.93, 0.15, 0.10, 0.5], frameon=False)
             legend_ax.axis('off')
             
             min_p = 1.0 / (n_permutations + 1)
@@ -1912,10 +2053,11 @@ def plotCCCDotPlotFacet(
                 labelspacing=1.2,
                 handletextpad=1.5
             )
-            legend.get_title().set_fontsize(10)
+            legend.get_title().set_fontsize(legend_fontsize)
     else:
         # Multiple rows: p-value legend above colorbar with more spacing
-        cbar_ax = fig.add_axes([0.84, 0.10, 0.008, 0.25])
+        # Doubled width: 0.016 instead of 0.008, moved right to 0.88 to account for left label
+        cbar_ax = fig.add_axes([0.88, 0.10, 0.016, 0.25])
         
         if len(data_plot) > 0:
             max_score = data['interaction_score'].max()
@@ -1924,11 +2066,14 @@ def plotCCCDotPlotFacet(
             sm.set_array([])
             cbar = plt.colorbar(sm, cax=cbar_ax, ticks=[0, max_score])
             cbar.ax.set_yticklabels(['0', f'{max_score:.3f}'])
-            cbar.set_label("Interaction Score", fontsize=10)
+            # Set label on the left side
+            cbar.ax.yaxis.set_label_position('left')
+            cbar.ax.yaxis.set_ticks_position('right')
+            cbar.set_label("Interaction Score", fontsize=legend_fontsize)
 
         # P-value legend above colorbar with more spacing
         if bubble_legend:
-            legend_ax = fig.add_axes([0.84, 0.42, 0.15, 0.30], frameon=False)
+            legend_ax = fig.add_axes([0.88, 0.42, 0.15, 0.30], frameon=False)
             legend_ax.axis('off')
             
             min_p = 1.0 / (n_permutations + 1)
@@ -1963,7 +2108,7 @@ def plotCCCDotPlotFacet(
                 labelspacing=1.2,
                 handletextpad=1.5
             )
-            legend.get_title().set_fontsize(10)
+            legend.get_title().set_fontsize(legend_fontsize)
 
     # Save figure
     if save is not None:
@@ -1981,9 +2126,13 @@ def plotLRDotPlot(
     adata_dotplot: ad.AnnData,
     interactions_to_plot: List[str],
     groupby: str,
-    cmap_diffusion: str = 'Spectral_r',
+    delimiter: str = '::',
+    cmap_interaction: str = 'Spectral_r',
     cmap_ligand: str = 'Blues',
     cmap_receptor: str = 'Purples',
+    standard_scale_interaction: Optional[str] = 'var',
+    standard_scale_ligand: Optional[str] = 'var',
+    standard_scale_receptor: Optional[str] = 'var',
     orientation: str = 'horizontal',
     row_height: Optional[float] = None,
     max_height: Optional[float] = None,
@@ -2005,19 +2154,31 @@ def plotLRDotPlot(
         LR pair scores and individual gene expression
         
     interactions_to_plot : list of str
-        List of LR pairs in format 'ligand::receptor'
+        List of LR pairs in format 'ligand::receptor' (or using custom delimiter)
         
     groupby : str
         Column in adata_dotplot.obs to group by
         
-    cmap_diffusion : str, default='Spectral_r'
-        Colormap for the diffused LR scores plot
+    delimiter : str, default='::'
+        Delimiter used to separate ligand and receptor in interaction names
+        
+    cmap_interaction : str, default='Spectral_r'
+        Colormap for the LR interaction scores plot
         
     cmap_ligand : str, default='Blues'
         Colormap for the ligand expression plot
         
     cmap_receptor : str, default='Purples'
         Colormap for the receptor expression plot
+        
+    standard_scale_interaction : str or None, default='var'
+        Scaling method for interaction scores plot ('var', 'group', or None)
+        
+    standard_scale_ligand : str or None, default='var'
+        Scaling method for ligand expression plot ('var', 'group', or None)
+        
+    standard_scale_receptor : str or None, default='var'
+        Scaling method for receptor expression plot ('var', 'group', or None)
         
     orientation : str, default='horizontal'
         Layout orientation: 'horizontal' for side-by-side, 'vertical' for stacked
@@ -2052,13 +2213,16 @@ def plotLRDotPlot(
     ...     adata_combined,
     ...     interactions_to_plot=['CXCL13::CXCR5', 'CD40LG::CD40'],
     ...     groupby='cell_type',
+    ...     delimiter='::',
     ...     orientation='vertical',
+    ...     standard_scale_interaction='var',
+    ...     standard_scale_ligand=None,
     ...     save='lr_dotplot.pdf'
     ... )
     """
-    # Split interactions into ligands and receptors
-    ligands = [interaction.split("::")[0] for interaction in interactions_to_plot]
-    receptors = [interaction.split("::")[1] for interaction in interactions_to_plot]
+    # Split interactions into ligands and receptors using delimiter
+    ligands = [interaction.split(delimiter)[0] for interaction in interactions_to_plot]
+    receptors = [interaction.split(delimiter)[1] for interaction in interactions_to_plot]
 
     # Compute maximum fractions
     max_frac_ligands = math.ceil(
@@ -2076,7 +2240,7 @@ def plotLRDotPlot(
     # Determine figure size
     n_interactions = len(interactions_to_plot)
     
-    titles = ["Diffused LR score", "Ligands", "Receptors"]
+    titles = ["LR interaction score", "Ligands", "Receptors"]
     
     if figsize is not None:
         fig_width, fig_height = figsize
@@ -2096,41 +2260,47 @@ def plotLRDotPlot(
     if orientation == 'horizontal':
         fig, axes = plt.subplots(ncols=3, figsize=(fig_width, fig_height))
         
-        # Plot all three
+        # Plot all three with updated legend titles
         sc.pl.dotplot(
             adata_dotplot,
             var_names=interactions_to_plot,
             groupby=groupby,
-            standard_scale='var',
-            cmap=cmap_diffusion,
+            standard_scale=standard_scale_interaction,
+            cmap=cmap_interaction,
             swap_axes=True,
             dot_max=common_dot_max,
             ax=axes[0],
             show=False,
+            colorbar_title='Mean interaction\nscore',
+            size_title='Fraction of\ncells (%)'
         )
 
         sc.pl.dotplot(
             adata_dotplot,
             var_names=ligands,
             groupby=groupby,
-            standard_scale='var',
+            standard_scale=standard_scale_ligand,
             cmap=cmap_ligand,
             swap_axes=True,
             dot_max=common_dot_max,
             ax=axes[1],
-            show=False
+            show=False,
+            colorbar_title='Mean ligand\nexpression',
+            size_title='Fraction of\ncells (%)'
         )
 
         sc.pl.dotplot(
             adata_dotplot,
             var_names=receptors,
             groupby=groupby,
-            standard_scale='var',
+            standard_scale=standard_scale_receptor,
             cmap=cmap_receptor,
             swap_axes=True,
             dot_max=common_dot_max,
             ax=axes[2],
-            show=False
+            show=False,
+            colorbar_title='Mean receptor\nexpression',
+            size_title='Fraction of\ncells (%)'
         )
 
         # Add titles above each plot
@@ -2148,31 +2318,34 @@ def plotLRDotPlot(
         # Create figure with subplots
         fig, axes = plt.subplots(nrows=3, figsize=(fig_width, fig_height))
         
-        cmaps = [cmap_diffusion, cmap_ligand, cmap_receptor]
+        cmaps = [cmap_interaction, cmap_ligand, cmap_receptor]
         var_names_list = [interactions_to_plot, ligands, receptors]
+        standard_scales = [standard_scale_interaction, standard_scale_ligand, standard_scale_receptor]
+        colorbar_titles = ['Mean interaction\nscore', 'Mean ligand\nexpression', 'Mean receptor\nexpression']
         
         for i in range(3):
             sc.pl.dotplot(
                 adata_dotplot,
                 var_names=var_names_list[i],
                 groupby=groupby,
-                standard_scale='var',
+                standard_scale=standard_scales[i],
                 cmap=cmaps[i],
                 swap_axes=True,
                 dot_max=common_dot_max,
                 ax=axes[i],
-                show=False
+                show=False,
+                colorbar_title=colorbar_titles[i],
+                size_title='Fraction of\ncells (%)'
             )
         
         # Add titles in the upper left corner of each row
         for ax, title in zip(axes, titles):
-            # Add text annotation in upper left corner
             ax.text(-0.15, 1.05, title, transform=ax.transAxes,
                    fontsize=12, fontweight='bold',
                    ha='left', va='bottom')
         
         plt.tight_layout()
-        plt.subplots_adjust(hspace=0.5, left=0.15)
+        plt.subplots_adjust(hspace=0.4, left=0.15)
 
     _save_figure(fig, save, verbosity)
     plt.show()
