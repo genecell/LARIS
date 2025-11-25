@@ -6,10 +6,9 @@ A Python package for analyzing ligand-receptor interactions in spatial transcrip
 LARIS provides tools for:
 - Calculating ligand-receptor interaction scores
 - Identifying spatially-specific ligand-receptor interactions
-- Computing cell type specificity scores
-- Analyzing spatial cell type neighborhoods
+- Inferring cell-cell communications
 
-The package follows a modular structure similar to Scanpy:
+The package follows a modular structure:
 - laris.tl: Core analytical tools
 - laris.pp: Preprocessing functions
 - laris.pl: Plotting and visualization functions
@@ -28,12 +27,12 @@ Example usage:
     >>> print(laris_results.head(10))
     >>> print(celltype_results.head(10))
 
-Authors: LARIS Development Team
+Authors: Min Dai, Tivadar Török, Dawei Sun, et al.
 Version: 1.0.0
 """
 
 __version__ = "1.0.0"
-__author__ = "LARIS Development Team"
+__author__ = "Min Dai, Tivadar Török, Dawei Sun, et al."
 
 # Import submodules
 from . import tools as tl

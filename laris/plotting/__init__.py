@@ -1,7 +1,7 @@
 """
 LARIS Plotting Module (laris.pl)
 
-Visualization functions for LARIS (Ligand-Receptor Analysis in Resolved Imaging Systems) analysis results.
+Visualization functions for LARIS analysis results.
 
 This module provides comprehensive plotting functions for visualizing:
 - Cell-cell communication (CCC) networks and heatmaps

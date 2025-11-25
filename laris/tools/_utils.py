@@ -76,15 +76,7 @@ def _rowwise_cosine_similarity(
     >>> B_sparse = csr_matrix(B)
     >>> similarities_sparse = la.tl._utils._rowwise_cosine_similarity(A_sparse, B_sparse)
     
-    Notes
-    -----
-    For sparse matrices, this function uses element-wise multiplication and
-    sum operations optimized for sparse data structures, making it efficient
-    for large, sparse datasets common in single-cell genomics.
-    
-    The cosine similarity is computed as:
-        similarity = (A · B) / (||A|| * ||B||)
-    where · denotes dot product and ||·|| denotes L2 norm.
+
     """
     if A.shape != B.shape:
         raise ValueError(f"Matrices A and B must have the same shape. Got A.shape = {A.shape}, B.shape = {B.shape}.")
@@ -142,11 +134,7 @@ def _select_top_n(
     >>> top_indices = la.tl._utils._select_top_n(scores, 3)
     >>> print(top_indices)  # [1, 3, 4] (indices of 0.9, 0.7, 0.5)
     
-    Notes
-    -----
-    This function uses np.argpartition for O(n) time complexity rather than
-    O(n log n) for full sorting, making it efficient for large arrays when
-    only the top elements are needed.
+
     """
     reference_indices = np.arange(scores.shape[0], dtype=int)
     partition = np.argpartition(scores, -n_top)[-n_top:]
@@ -390,9 +378,7 @@ def _build_adjacency_matrix(
     >>> # Build adjacency from spatial coordinates
     >>> adj_spatial = la.tl._build_adjacency_matrix(adata, use_rep='X_spatial', sigma=50)
     
-    Notes
-    -----
-    The edge weights are computed as: weight = 1 / exp(distance / sigma)
+
     """
     X_rep = adata.obsm[use_rep].copy()
     
@@ -445,14 +431,7 @@ def _build_random_adjacency_matrix(
     >>> # Generate random null model
     >>> adj_random = la.tl._build_random_adjacency_matrix(adata, adj, random_seed=42)
     
-    Notes
-    -----
-    The randomization preserves:
-    - The number of neighbors per cell
-    - The distribution of edge weights
-    But randomizes:
-    - Which cells are connected
-    - The assignment of weights to edges
+
     """
     row_ind = np.repeat(np.arange(adata.n_obs), n_nearest_neighbors)
     np.random.seed(random_seed)
@@ -512,10 +491,7 @@ def _generate_random_background(
     ...     adata, adj, genexcell, n_repeats=100
     ... )
     
-    Notes
-    -----
-    This function is typically used internally by `runLARIS()` to compute
-    statistical significance of spatial specificity scores.
+
     """
     random_gsp_list = []
     np.random.seed(random_seed)
@@ -594,11 +570,7 @@ def _calculate_ligand_receptor_specificity(
     >>> # Check specificity of a specific ligand
     >>> print(lr_specificity.loc['Vegfa', :])
     
-    Notes
-    -----
-    This function is typically used as an intermediate step in 
-    `_calculate_laris_score_by_celltype()` to determine which cell types
-    send and receive specific signals.
+
     """
     # Extract unique ligands and receptors
     lr_set = np.unique(np.hstack([laris_lr['ligand'].values, laris_lr['receptor'].values]))
@@ -692,10 +664,7 @@ def _calculate_diffused_lr_specificity(
     ...     lr_adata, groupby='cell_type'
     ... )
     
-    Notes
-    -----
-    This differs from `_calculate_ligand_receptor_specificity()` by analyzing
-    the diffused interaction scores rather than individual L/R gene expression.
+
     """
     # Perform COSG analysis
     cosg.cosg(
@@ -1286,56 +1255,6 @@ def _calculate_laris_score_by_celltype(
         
         Sorted by interaction_score in descending order.
     
-    Notes
-    -----
-    **Interaction Score Calculation:**
-    
-    The final interaction score integrates four components:
-    
-    1. Cell type specificity: outer_product(ligand_specificity, receptor_specificity)
-    2. Spatial specificity weight: (LARIS_score ** spatial_weight)
-    3. Diffused LR scores: Captures local expression of the interaction
-    4. Spatial co-localization: How often sender-receiver types are neighbors
-    
-    Formula:
-        score = ligand_spec × receptor_spec × spatial_weight × 
-                diffused_LR × sender_receiver_colocalization
-    
-    **Statistical Testing:**
-    
-    The permutation approach tests: "Is this LR pair's score unusually high for
-    this sender-receiver pair, compared to similar interactions?"
-    
-    For each (sender, receiver, LR) combination:
-    1. Identify background interactions with similar diffused score profiles
-    2. Sample n_permutations random interactions from this background
-    3. Look up their actual scores for the same sender-receiver pair
-    4. Calculate p-value as: (n_null >= observed + 1) / (n_permutations + 1)
-    
-    **Conditional P-value Logic (use_conditional_pvalue=True):**
-    
-    For sparse data, many interactions may have score=0. Standard p-values can be
-    misleading when the null distribution is zero-inflated. The conditional approach:
-    
-    - If observed score = 0: p-value = 1.0 (cannot be significant)
-    - If observed score > 0: compare only to non-zero null scores
-    - If all null scores = 0 but observed > 0: p-value = 1.0 (no evidence)
-    
-    This ensures conservative, robust p-values even with extreme sparsity.
-    
-    **FDR Correction:**
-    
-    P-values are FDR-corrected separately for each sender-receiver cell type pair
-    using the Benjamini-Hochberg procedure. This accounts for multiple testing
-    across all LR pairs tested within each pair.
-    
-    **Performance Considerations:**
-    
-    - For ~1000 LR pairs, ~10 cell types, and 1000 permutations: ~5-10 minutes
-    - Memory usage scales with n_permutations × chunk_size
-    - Set calculate_pvalues=False for exploratory analysis (much faster)
-    - Use prefilter_fdr=True to reduce testing burden on low-scoring interactions
-    
     Examples
     --------
     >>> # Basic usage with default parameters
@@ -1772,13 +1691,6 @@ def _calculate_laris_score_by_celltype(
 __all__ = [
     '_rowwise_cosine_similarity',
     '_select_top_n',
-    '_pairwise_row_multiply',
-    '_compute_avg_expression',
-    '_build_adjacency_matrix',
-    '_build_random_adjacency_matrix',
-    '_generate_random_background',
-    '_calculate_ligand_receptor_specificity',
-    '_calculate_diffused_lr_specificity',
     '_calculate_laris_score_by_celltype',
     '_calculate_specificity_in_spatial_neighborhood',
 ]

@@ -8,8 +8,6 @@ This module contains public functions for:
 - Running the LARIS algorithm to identify spatially-specific LR interactions
 - Computing cell type-specific interaction scores
 
-All functions follow the AnnData structure commonly used in single-cell analysis.
-
 Main Functions:
 - prepareLRInteraction: Calculate LR interaction scores using spatial neighborhoods
 - runLARIS: Identify spatially-specific LR pairs and compute cell type interactions
@@ -77,18 +75,7 @@ def prepareLRInteraction(
     >>> # Calculate LR integration scores
     >>> lr_adata = la.tl.prepareLRInteraction(adata, lr_df)
     >>> print(lr_adata.shape)  # (n_cells, n_lr_pairs)
-    
-    Notes
-    -----
-    The function performs the following steps:
-    1. Creates a spatial neighborhood graph using k-NN
-    2. Applies distance-based weighting to the graph
-    3. Diffuses gene expression through the spatial neighborhood
-    4. Computes element-wise multiplication of ligand and receptor scores
-    5. Filters interactions to only include cells where L or R is expressed
-    
-    The spatial diffusion captures local microenvironment effects, where ligands
-    produced by nearby cells can interact with receptors on the focal cell.
+
     """
     X_spatial = adata.obsm[use_rep_spatial].copy()
     
@@ -167,7 +154,7 @@ def runLARIS(
     """
     Identify spatially-specific ligand-receptor interactions using LARIS algorithm.
     
-    LARIS (Ligand And Receptor Interaction Spatial analysis) identifies LR pairs
+    LARIS (Ligand And Receptor Interaction in Spatial transcriptomics) identifies LR pairs
     that show spatial specificity by comparing observed spatial correlation patterns
     with randomized null distributions. When `by_celltype=True`, the function also
     computes cell type-specific interaction scores with optional statistical testing.
@@ -177,11 +164,11 @@ def runLARIS(
     1. **Spatial Specificity Analysis**: Identifies LR pairs that show non-random
        spatial co-localization patterns (higher scores = stronger spatial organization)
        
-    2. **Cell Type-Specific Scores**: Integrates spatial specificity with cell type
+    2. **Cell type-specific Scores**: Integrates spatial specificity with cell type
        expression specificity and spatial co-localization to identify which sender-
        receiver cell type pairs are communicating via which LR pairs
        
-    3. **Statistical Testing**: Optional permutation-based p-values with FDR correction
+    3. **Statistical Testing**: Optional permutation-based P values with FDR correction
        to identify statistically significant interactions
     
     Parameters
@@ -427,77 +414,11 @@ def runLARIS(
     ...     spatial_weight=2.0  # Square the spatial scores
     ... )
     
-    Notes
-    -----
-    **LARIS Spatial Specificity Score:**
-    
-    The spatial specificity score measures how much an LR pair's spatial pattern
-    differs from random expectation:
-    
-        score = observed_correlation - μ × random_correlation
-    
-    Where:
-    - observed_correlation: Cosine similarity between LR expression and its
-      spatially-diffused version
-    - random_correlation: Mean of same metric on permuted data
-    - μ: Regularization parameter (default=1)
-    
-    Higher scores indicate stronger spatial organization.
-    
-    **Cell Type-Specific Interaction Score:**
-    
-    When by_celltype=True, the final score integrates:
-    
-    1. Ligand specificity in sender cell type
-    2. Receptor specificity in receiver cell type  
-    3. Spatial specificity of the LR pair (from LARIS)
-    4. Diffused LR score distribution across cell types
-    5. Spatial co-localization of sender-receiver pair
-    
-    Formula:
-        score = L_specificity × R_specificity × (spatial_score^spatial_weight) ×
-                diffused_LR × sender_receiver_proximity
-    
-    **Statistical Testing:**
-    
-    The permutation test asks: "Is this interaction score high compared to
-    similar interactions in the same sender-receiver pair?"
-    
-    For each interaction:
-    1. Identify background interactions with similar diffused profiles
-    2. Sample n_permutations random background interactions
-    3. Look up their scores for the same sender-receiver pair
-    4. Calculate p-value: P(background_score >= observed_score)
-    5. Apply FDR correction per sender-receiver pair
-    
-    **Computational Performance:**
-    
-    Typical runtimes (on standard laptop):
-    - Spatial specificity only: 1-2 minutes
-    - Cell type scores (no p-values): 3-5 minutes
-    - Full analysis with p-values (1000 permutations): 10-20 minutes
-    - Full analysis with p-values (5000 permutations): 30-60 minutes
-    
-    Memory usage: ~1-2 GB for typical datasets (10K cells, 1000 LR pairs)
-    
-    **Choosing Parameters:**
-    
-    - **For initial exploration**: Set calculate_pvalues=False
-    - **For publication**: Use n_permutations=5000, use_conditional_pvalue=True
-    - **For sparse data**: Set use_conditional_pvalue=True, prefilter_fdr=True
-    - **For focused analysis**: Reduce n_top_lr to top interactions only
     
     See Also
     --------
     prepareLRInteraction : Prepare LR scores (prerequisite for this function)
     
-    References
-    ----------
-    .. [1] LARIS manuscript (in preparation)
-    .. [2] Suo, S. et al. (2018) "Revealing the Critical Regulators of Cell 
-           Identity in the Mouse Cell Atlas." Cell Reports 25, 1436-1445.
-    .. [3] Armingol, E. et al. (2021) "Deciphering cell-cell interactions and 
-           communication from gene expression." Nature Reviews Genetics 22, 71-88.
     """
     # Validate inputs
     if by_celltype and adata is None:
