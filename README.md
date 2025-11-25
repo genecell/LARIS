@@ -1,3 +1,9 @@
+[![Stars](https://img.shields.io/github/stars/genecell/LARIS?logo=GitHub&color=yellow)](https://github.com/genecell/LARIS/stargazers)
+[![PyPI](https://img.shields.io/pypi/v/laris?logo=PyPI)](https://pypi.org/project/laris)
+[![Total downloads](https://static.pepy.tech/personalized-badge/laris?period=total&units=international_system&left_color=black&right_color=orange&left_text=downloads)](https://pepy.tech/project/laris)
+[![Monthly downloads](https://static.pepy.tech/personalized-badge/laris?period=month&units=international_system&left_color=black&right_color=orange&left_text=downloads/month)](https://pepy.tech/project/laris)
+
+
 # LARIS: Ligand And Receptor Interaction in Spatial transcriptomics data
 
 
@@ -12,62 +18,23 @@ LARIS is a Python package for analyzing ligand-receptor interactions in spatial 
 
 ### 📦 Installation
 
+You could simply install LARIS via `pip` in your conda environment:
+```bash
+pip install laris
+```
+
 For the development version in GitHub, you could install via:
 ```bash
 pip install git+https://github.com/genecell/LARIS.git
 ```
 
-You could simply install LARIS via `pip` in your conda environment (future):
-```bash
-pip install laris
-```
+### Documentation
 
-### Quick Start
+[LARIS documentation](https://genecell.github.io/LARIS/) 
 
-```python
-import laris as la
-import scanpy as sc
-import pandas as pd
 
-# Load your spatial transcriptomics data
-adata = sc.read_h5ad('spatial_data.h5ad')
+### Citation
 
-# Define ligand-receptor pairs
-lr_df = pd.DataFrame({
-    'ligand': ['Tgfb1', 'Vegfa', 'Cxcl12'],
-    'receptor': ['Tgfbr1', 'Kdr', 'Cxcr4']
-})
+If LARIS is useful for your research, please consider citing [M. Dai, T. Török, D. Sun, et al., LARIS enables accurate and efficient ligand and receptor interaction analysis in spatial transcriptomics, bioRxiv (2025)]() (preprint will be released soon). 
 
-# Step 1: Calculate LR integration scores
-lr_adata = la.tl.prepareLRInteraction(
-    adata, 
-    lr_df,
-    number_nearest_neighbors=15,
-    use_rep_spatial='X_spatial'
-)
-
-# Step 2: Identify spatially-specific LR interactions and infer the LR interaction at cell type level
-laris_results, celltype_results = la.tl.runLARIS(
-    lr_adata,
-    adata,
-    n_nearest_neighbors=15,
-    n_repeats=100,
-    n_top_lr=1000,
-    by_celltype=True,
-    groupby='cell_type'
-)
-
-# View top spatially-specific LR pairs
-print(laris_results.head(10))
-
-# View top cell type-specific interactions
-print(celltype_results.head(10))
-
-# Filter for specific cell type pairs
-endothelial_to_tumor = celltype_results[
-    (celltype_results['sending_celltype'] == 'Endothelial') &
-    (celltype_results['receiving_celltype'] == 'Tumor')
-]
-print(endothelial_to_tumor.head(10))
-```
 
