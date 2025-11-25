@@ -1,0 +1,75 @@
+[build-system]
+build-backend = "hatchling.build"
+requires = [ "hatchling"]
+
+
+[project]
+name = "laris"
+version = "0.9.0"
+description = "LARIS enables accurate and efficient ligand and receptor interaction analysis in spatial transcriptomics"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "BSD-3-clause"
+authors = [
+    { name = "Min Dai", email = "dai@broadinstitute.org"},
+    { name = "Tivadar Török", email = "ttorok@broadinstitute.org" },
+    { name = "Dawei Sun", email = "dsun@broadinstitute.org" }
+]
+maintainers = [
+    { name = "Min Dai", email = "dai@broadinstitute.org" },
+    { name = "Tivadar Török", email = "ttorok@broadinstitute.org" },
+    { name = "Vallari Shende", email = "vshende@broadinstitute.org" }
+]
+keywords = ["spatial-transcriptomics", "ligand-receptor", "cell-communication", "bioinformatics", "single-cell"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Visualization",
+]
+dependencies = [
+    "scanpy>=1.9.1",
+    "anndata>=0.8.0",
+    "cosg>=1.0.3",
+    "numpy>=1.20.0",
+    "pandas>=1.3.0",
+    "scipy>=1.7.0",
+    "scikit-learn>=0.24.0",
+    "matplotlib>=3.4.0",
+    "seaborn>=0.11.0",
+    "tqdm",
+    "statsmodels>=0.13.2",
+    "typing-extensions",
+    
+]
+
+# https://docs.pypi.org/project_metadata/#project-urls
+[project.urls]
+Documentation = "https://genecell.github.io/LARIS/"
+Source = "https://github.com/genecell/LARIS"
+Homepage = "https://genecell.github.io/LARIS/"
+"Bug Tracker" = "https://github.com/genecell/LARIS/issues"
+
+[project.optional-dependencies]
+dev = [
+    "pre-commit", # static checking
+]
+
+[tool.hatch.build]
+exclude = [
+  "docs",
+  "docs/",
+  ".github",
+  ".git",
+  "*.pdf", 
+  "*.html"
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [ "laris" ]
