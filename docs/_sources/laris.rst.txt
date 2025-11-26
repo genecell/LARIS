@@ -1,0 +1,17 @@
+laris package
+=============
+
+.. automodule:: laris
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :private-members:
+
+Subpackages
+-----------
+
+.. toctree::
+   :maxdepth: 4
+
+   laris.plotting
+   laris.tools

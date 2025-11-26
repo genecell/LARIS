@@ -1,0 +1,7 @@
+Tutorials
+=====================================================================
+
+.. toctree::
+   :maxdepth: 1
+
+   notebooks/04_LARIS_tutorial.ipynb

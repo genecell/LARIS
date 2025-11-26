@@ -1,0 +1,17 @@
+laris.plotting package
+======================
+
+.. automodule:: laris.plotting
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :private-members:
+
+.. autofunction:: plotCCCHeatmap
+.. autofunction:: plotCCCNetwork
+.. autofunction:: plotCCCNetworkCumulative
+.. autofunction:: plotCCCDotPlot
+.. autofunction:: plotCCCDotPlotFacet
+.. autofunction:: plotLRDotPlot
+.. autofunction:: plotCCCSpatial
+.. autofunction:: prepareDotPlotAdata

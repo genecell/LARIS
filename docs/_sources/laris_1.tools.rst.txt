@@ -1,0 +1,11 @@
+laris.tools package
+===================
+
+.. automodule:: laris.tools
+   :members:
+   :undoc-members:
+   :show-inheritance:
+   :private-members:
+
+..autofunction:: prepareLRInteraction
+..autofunction:: runLARIS

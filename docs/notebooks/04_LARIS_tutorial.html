@@ -1,0 +1,3844 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>LARIS on human tonsil Slide-tags data, inference and visualization &#8212; LARIS 0.9.0 documentation</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=8878045cc6db502f8baf" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/nbsphinx-code-cells.css?v=2aa19091" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=0330b353" />
+  
+  <!-- So that users can add custom icons -->
+  <script src="../_static/scripts/fontawesome.js?digest=8878045cc6db502f8baf"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf" />
+
+    <script src="../_static/documentation_options.js?v=39bb1c6d"></script>
+    <script src="../_static/doctools.js?v=9a2dae69"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>window.MathJax = {"tex": {"inlineMath": [["$", "$"], ["\\(", "\\)"]], "processEscapes": true}, "options": {"ignoreHtmlClass": "tex2jax_ignore|mathjax_ignore|document", "processHtmlClass": "tex2jax_process|mathjax_process|math|output_area"}}</script>
+    <script defer="defer" src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'notebooks/04_LARIS_tutorial';</script>
+    <script src="../_static/sidebar_toggle.js?v=3b053ec6"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="API" href="../modules.html" />
+    <link rel="prev" title="Tutorials" href="../tutorials.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class=" navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">LARIS 0.9.0 documentation</p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class=" navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../modules.html">
+    API
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+      
+        <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/genecell/LARIS" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="../tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../modules.html">
+    API
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button pst-js-only" aria-label="Color mode" data-bs-title="Color mode"  data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <i class="theme-switch fa-solid fa-sun                fa-lg" data-mode="light" title="Light"></i>
+  <i class="theme-switch fa-solid fa-moon               fa-lg" data-mode="dark"  title="Dark"></i>
+  <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"  title="System Settings"></i>
+</button></div>
+        
+          <div class="navbar-item"><ul class="navbar-icon-links"
+    aria-label="Icon Links">
+        <li class="nav-item">
+          
+          
+          
+          
+          
+          
+          
+          
+          <a href="https://github.com/genecell/LARIS" title="GitHub" class="nav-link pst-navbar-icon" rel="noopener" target="_blank" data-bs-toggle="tooltip" data-bs-placement="bottom"><i class="fa-brands fa-square-github fa-lg" aria-hidden="true"></i>
+            <span class="sr-only">GitHub</span></a>
+        </li>
+</ul></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<h3><a href="../index.html">Table of Contents</a></h3>
+<ul class="current">
+<li class="toctree-l1"><a class="reference internal" href="../installation.html">Installation</a></li>
+<li class="toctree-l1 current"><a class="reference internal" href="../tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../modules.html">API</a></li>
+</ul>
+</div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="../tutorials.html" class="nav-link">Tutorials</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">LARIS on human tonsil Slide-tags data, inference and visualization</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="LARIS-on-human-tonsil-Slide-tags-data,-inference-and-visualization">
+<h1>LARIS on human tonsil Slide-tags data, inference and visualization<a class="headerlink" href="#LARIS-on-human-tonsil-Slide-tags-data,-inference-and-visualization" title="Link to this heading">#</a></h1>
+<section id="Import-LARIS">
+<h2>Import LARIS<a class="headerlink" href="#Import-LARIS" title="Link to this heading">#</a></h2>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[1]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>path = &#39;/data1/mdai/Analysis/Jupyter/Python/Package/LARIS&#39;
+import sys
+sys.path.append(path)
+import laris as la
+</pre></div>
+</div>
+</div>
+</section>
+<section id="Import-other-packages">
+<h2>Import other packages<a class="headerlink" href="#Import-other-packages" title="Link to this heading">#</a></h2>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[2]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>import numpy as np
+import pandas as pd
+import scanpy as sc
+import matplotlib.pyplot as plt
+import warnings
+warnings.simplefilter(action=&#39;ignore&#39;, category=FutureWarning)
+</pre></div>
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[3]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>sc.set_figure_params(dpi=96,dpi_save=300, color_map=&#39;viridis&#39;,facecolor=&#39;white&#39;)
+plt.rcParams[&#39;figure.figsize&#39;] = 4, 4
+sc.settings.verbosity = 3
+sc.logging.print_header()
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+scanpy==1.9.6 anndata==0.10.3 umap==0.5.5 numpy==1.26.2 scipy==1.11.4 pandas==2.1.3 scikit-learn==1.3.2 statsmodels==0.14.0 igraph==0.11.3 louvain==0.8.1 pynndescent==0.5.11
+</pre></div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[4]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span># Colours
+from matplotlib import cm
+from matplotlib import colors, colorbar
+cmap_own = cm.get_cmap(&#39;magma_r&#39;, 256)
+newcolors = cmap_own(np.linspace(0,0.75 , 256))
+Greys = cm.get_cmap(&#39;Greys_r&#39;, 256)
+#newcolors[:1, :] = Greys(np.linspace(0.8125, 0.8725, 1))
+newcolors[:10, :] = Greys(np.linspace(0.8125, 0.8725, 10))
+pos_cmap = colors.ListedColormap(newcolors)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+/tmp/ipykernel_3278614/2129373808.py:4: MatplotlibDeprecationWarning: The get_cmap function was deprecated in Matplotlib 3.7 and will be removed two minor releases later. Use ``matplotlib.colormaps[name]`` or ``matplotlib.colormaps.get_cmap(obj)`` instead.
+  cmap_own = cm.get_cmap(&#39;magma_r&#39;, 256)
+/tmp/ipykernel_3278614/2129373808.py:6: MatplotlibDeprecationWarning: The get_cmap function was deprecated in Matplotlib 3.7 and will be removed two minor releases later. Use ``matplotlib.colormaps[name]`` or ``matplotlib.colormaps.get_cmap(obj)`` instead.
+  Greys = cm.get_cmap(&#39;Greys_r&#39;, 256)
+</pre></div></div>
+</div>
+</section>
+<section id="Load-data">
+<h2>Load data<a class="headerlink" href="#Load-data" title="Link to this heading">#</a></h2>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>mkdir -p /data1/mdai/Result/single-cell/Methods/LARIS/tutorial
+cd /data1/mdai/Result/single-cell/Methods/LARIS/tutorial
+gdrive files download 170cY6MjzUlOyaHlHq-N8_vqgKKPwQ_8N
+</pre></div>
+</div>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[5]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>adata=sc.read(&#39;/data1/mdai/Result/single-cell/Methods/LARIS/tutorial/adata_tonsil.h5ad&#39;) # Read in the anndata object
+</pre></div>
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[6]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>adata
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[6]:
+</pre></div>
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+AnnData object with n_obs × n_vars = 5695 × 25583
+    obs: &#39;n_genes_by_counts&#39;, &#39;log1p_n_genes_by_counts&#39;, &#39;total_counts&#39;, &#39;log1p_total_counts&#39;, &#39;pct_counts_in_top_50_genes&#39;, &#39;pct_counts_in_top_100_genes&#39;, &#39;pct_counts_in_top_200_genes&#39;, &#39;pct_counts_in_top_500_genes&#39;, &#39;total_counts_mt&#39;, &#39;log1p_total_counts_mt&#39;, &#39;pct_counts_mt&#39;, &#39;total_counts_ribo&#39;, &#39;log1p_total_counts_ribo&#39;, &#39;pct_counts_ribo&#39;, &#39;n_genes&#39;, &#39;cell_type&#39;, &#39;region_name&#39;
+    var: &#39;gene_ids&#39;, &#39;feature_types&#39;, &#39;genome&#39;, &#39;mt&#39;, &#39;ribo&#39;, &#39;n_cells_by_counts&#39;, &#39;mean_counts&#39;, &#39;log1p_mean_counts&#39;, &#39;pct_dropout_by_counts&#39;, &#39;total_counts&#39;, &#39;log1p_total_counts&#39;, &#39;n_cells&#39;, &#39;highly_variable&#39;, &#39;means&#39;, &#39;dispersions&#39;, &#39;dispersions_norm&#39;, &#39;var_across_cell_types&#39;
+    uns: &#39;cell_type_colors&#39;, &#39;hvg&#39;, &#39;log1p&#39;, &#39;neighbors&#39;, &#39;pca&#39;, &#39;region_name_colors&#39;, &#39;umap&#39;
+    obsm: &#39;X_pca&#39;, &#39;X_spatial&#39;, &#39;X_umap&#39;
+    varm: &#39;PCs&#39;
+    layers: &#39;CellBender_raw_X&#39;
+    obsp: &#39;connectivities&#39;, &#39;distances&#39;
+</pre></div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[7]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span># Check spatial mapping
+x_width=adata.obsm[&#39;X_spatial&#39;][:,0].max()-adata.obsm[&#39;X_spatial&#39;][:,0].min()
+y_width=adata.obsm[&#39;X_spatial&#39;][:,1].max()-adata.obsm[&#39;X_spatial&#39;][:,1].min()
+
+plt.rcParams[&#39;figure.figsize&#39;] = 5, 5*y_width/x_width
+
+sc.pl.embedding(
+    adata,
+    basis=&#39;X_spatial&#39;,
+    color=[&#39;cell_type&#39;],
+    size=80,frameon=False)
+
+plt.rcParams[&#39;figure.figsize&#39;] = 4, 4
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+/data1/mdai/.conda/envs/scda/lib/python3.9/site-packages/scanpy/plotting/_tools/scatterplots.py:394: UserWarning: No data for colormapping provided via &#39;c&#39;. Parameters &#39;cmap&#39; will be ignored
+  cax = scatter(
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_11_1.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_11_1.png" style="width: 575px; height: 406px;" />
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[8]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span># Check spatial mapping
+x_width=adata.obsm[&#39;X_spatial&#39;][:,0].max()-adata.obsm[&#39;X_spatial&#39;][:,0].min()
+y_width=adata.obsm[&#39;X_spatial&#39;][:,1].max()-adata.obsm[&#39;X_spatial&#39;][:,1].min()
+
+plt.rcParams[&#39;figure.figsize&#39;] = 5, 5*y_width/x_width
+
+sc.pl.embedding(
+    adata,
+    basis=&#39;X_spatial&#39;,
+    color=[&#39;cell_type&#39;],
+    groups=[&#39;T_CD4&#39;],
+    size=80,frameon=False)
+
+plt.rcParams[&#39;figure.figsize&#39;] = 4, 4
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+/data1/mdai/.conda/envs/scda/lib/python3.9/site-packages/scanpy/plotting/_tools/scatterplots.py:394: UserWarning: No data for colormapping provided via &#39;c&#39;. Parameters &#39;cmap&#39; will be ignored
+  cax = scatter(
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_12_1.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_12_1.png" style="width: 485px; height: 406px;" />
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[9]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span># Check spatial mapping
+x_width=adata.obsm[&#39;X_spatial&#39;][:,0].max()-adata.obsm[&#39;X_spatial&#39;][:,0].min()
+y_width=adata.obsm[&#39;X_spatial&#39;][:,1].max()-adata.obsm[&#39;X_spatial&#39;][:,1].min()
+
+plt.rcParams[&#39;figure.figsize&#39;] = 5, 5*y_width/x_width
+
+sc.pl.embedding(
+    adata,
+    basis=&#39;X_spatial&#39;,
+    color=[&#39;cell_type&#39;],
+    groups=[&#39;T_CD8&#39;],
+    size=80,frameon=False)
+
+plt.rcParams[&#39;figure.figsize&#39;] = 4, 4
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+/data1/mdai/.conda/envs/scda/lib/python3.9/site-packages/scanpy/plotting/_tools/scatterplots.py:394: UserWarning: No data for colormapping provided via &#39;c&#39;. Parameters &#39;cmap&#39; will be ignored
+  cax = scatter(
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_13_1.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_13_1.png" style="width: 485px; height: 406px;" />
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[10]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span># Check spatial UMAP
+x_width=adata.obsm[&#39;X_umap&#39;][:,0].max()-adata.obsm[&#39;X_umap&#39;][:,0].min()
+y_width=adata.obsm[&#39;X_umap&#39;][:,1].max()-adata.obsm[&#39;X_umap&#39;][:,1].min()
+
+plt.rcParams[&#39;figure.figsize&#39;] = 5, 5*y_width/x_width
+
+sc.pl.embedding(
+    adata,
+    basis=&#39;X_umap&#39;,
+    color=[&#39;cell_type&#39;],
+    size=40,frameon=False)
+
+plt.rcParams[&#39;figure.figsize&#39;] = 4, 4
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area stderr docutils container">
+<div class="highlight"><pre>
+/data1/mdai/.conda/envs/scda/lib/python3.9/site-packages/scanpy/plotting/_tools/scatterplots.py:394: UserWarning: No data for colormapping provided via &#39;c&#39;. Parameters &#39;cmap&#39; will be ignored
+  cax = scatter(
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_14_1.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_14_1.png" style="width: 575px; height: 415px;" />
+</div>
+</div>
+</section>
+<section id="Run-LARIS">
+<h2>Run LARIS<a class="headerlink" href="#Run-LARIS" title="Link to this heading">#</a></h2>
+<section id="Load-the-cell-cell-interaction-database">
+<h3>Load the cell-cell interaction database<a class="headerlink" href="#Load-the-cell-cell-interaction-database" title="Link to this heading">#</a></h3>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[11]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>%%time
+# Any dataframe could be used as long as &#39;ligand&#39; and &#39;receptor&#39; coloumns exist
+lr_df=pd.read_csv(&#39;/data1/mdai/Result/single-cell/Methods/LARIS/tutorial/human_lr_database_CellChatDB_formatted_v2.csv&#39;,index_col=0)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+CPU times: user 55 ms, sys: 3.55 ms, total: 58.5 ms
+Wall time: 57.4 ms
+</pre></div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[12]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>lr_df.head()
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[12]:
+</pre></div>
+</div>
+<div class="output_area rendered_html docutils container">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>pathway_name</th>
+      <th>ligand</th>
+      <th>receptor</th>
+      <th>agonist</th>
+      <th>antagonist</th>
+      <th>co_A_receptor</th>
+      <th>co_I_receptor</th>
+      <th>evidence</th>
+      <th>annotation</th>
+      <th>interaction_name_2</th>
+      <th>...</th>
+      <th>receptor.symbol</th>
+      <th>receptor.family</th>
+      <th>receptor.location</th>
+      <th>receptor.keyword</th>
+      <th>receptor.surfaceome_main</th>
+      <th>receptor.surfaceome_sub</th>
+      <th>receptor.adhesome</th>
+      <th>receptor.secreted_type</th>
+      <th>receptor.transmembrane</th>
+      <th>version</th>
+    </tr>
+    <tr>
+      <th>interaction_name</th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>TGFB1_TGFBR1_TGFBR2</th>
+      <td>TGFb</td>
+      <td>TGFB1</td>
+      <td>TGFBR2</td>
+      <td>TGFb agonist</td>
+      <td>TGFb antagonist</td>
+      <td>NaN</td>
+      <td>TGFb inhibition receptor</td>
+      <td>KEGG: hsa04350</td>
+      <td>Secreted Signaling</td>
+      <td>TGFB1 - (TGFBR1+TGFBR2)</td>
+      <td>...</td>
+      <td>TGFBR2, TGFBR1</td>
+      <td>Protein kinase superfamily, TKL Ser/Thr protei...</td>
+      <td>Cell membrane, Secreted, Membrane raft, Cell s...</td>
+      <td>Membrane, Secreted, Disulfide bond, Kinase, Tr...</td>
+      <td>Receptors</td>
+      <td>Act.TGFB;Kinase</td>
+      <td>NaN</td>
+      <td>NaN</td>
+      <td>True</td>
+      <td>CellChatDB v1</td>
+    </tr>
+    <tr>
+      <th>TGFB1_TGFBR1_TGFBR2</th>
+      <td>TGFb</td>
+      <td>TGFB1</td>
+      <td>TGFBR1</td>
+      <td>TGFb agonist</td>
+      <td>TGFb antagonist</td>
+      <td>NaN</td>
+      <td>TGFb inhibition receptor</td>
+      <td>KEGG: hsa04350</td>
+      <td>Secreted Signaling</td>
+      <td>TGFB1 - (TGFBR1+TGFBR2)</td>
+      <td>...</td>
+      <td>TGFBR2, TGFBR1</td>
+      <td>Protein kinase superfamily, TKL Ser/Thr protei...</td>
+      <td>Cell membrane, Secreted, Membrane raft, Cell s...</td>
+      <td>Membrane, Secreted, Disulfide bond, Kinase, Tr...</td>
+      <td>Receptors</td>
+      <td>Act.TGFB;Kinase</td>
+      <td>NaN</td>
+      <td>NaN</td>
+      <td>True</td>
+      <td>CellChatDB v1</td>
+    </tr>
+    <tr>
+      <th>TGFB2_TGFBR1_TGFBR2</th>
+      <td>TGFb</td>
+      <td>TGFB2</td>
+      <td>TGFBR2</td>
+      <td>TGFb agonist</td>
+      <td>TGFb antagonist</td>
+      <td>NaN</td>
+      <td>TGFb inhibition receptor</td>
+      <td>KEGG: hsa04350</td>
+      <td>Secreted Signaling</td>
+      <td>TGFB2 - (TGFBR1+TGFBR2)</td>
+      <td>...</td>
+      <td>TGFBR2, TGFBR1</td>
+      <td>Protein kinase superfamily, TKL Ser/Thr protei...</td>
+      <td>Cell membrane, Secreted, Membrane raft, Cell s...</td>
+      <td>Membrane, Secreted, Disulfide bond, Kinase, Tr...</td>
+      <td>Receptors</td>
+      <td>Act.TGFB;Kinase</td>
+      <td>NaN</td>
+      <td>NaN</td>
+      <td>True</td>
+      <td>CellChatDB v1</td>
+    </tr>
+    <tr>
+      <th>TGFB2_TGFBR1_TGFBR2</th>
+      <td>TGFb</td>
+      <td>TGFB2</td>
+      <td>TGFBR1</td>
+      <td>TGFb agonist</td>
+      <td>TGFb antagonist</td>
+      <td>NaN</td>
+      <td>TGFb inhibition receptor</td>
+      <td>KEGG: hsa04350</td>
+      <td>Secreted Signaling</td>
+      <td>TGFB2 - (TGFBR1+TGFBR2)</td>
+      <td>...</td>
+      <td>TGFBR2, TGFBR1</td>
+      <td>Protein kinase superfamily, TKL Ser/Thr protei...</td>
+      <td>Cell membrane, Secreted, Membrane raft, Cell s...</td>
+      <td>Membrane, Secreted, Disulfide bond, Kinase, Tr...</td>
+      <td>Receptors</td>
+      <td>Act.TGFB;Kinase</td>
+      <td>NaN</td>
+      <td>NaN</td>
+      <td>True</td>
+      <td>CellChatDB v1</td>
+    </tr>
+    <tr>
+      <th>TGFB3_TGFBR1_TGFBR2</th>
+      <td>TGFb</td>
+      <td>TGFB3</td>
+      <td>TGFBR2</td>
+      <td>TGFb agonist</td>
+      <td>TGFb antagonist</td>
+      <td>NaN</td>
+      <td>TGFb inhibition receptor</td>
+      <td>KEGG: hsa04350</td>
+      <td>Secreted Signaling</td>
+      <td>TGFB3 - (TGFBR1+TGFBR2)</td>
+      <td>...</td>
+      <td>TGFBR2, TGFBR1</td>
+      <td>Protein kinase superfamily, TKL Ser/Thr protei...</td>
+      <td>Cell membrane, Secreted, Membrane raft, Cell s...</td>
+      <td>Membrane, Secreted, Disulfide bond, Kinase, Tr...</td>
+      <td>Receptors</td>
+      <td>Act.TGFB;Kinase</td>
+      <td>NaN</td>
+      <td>NaN</td>
+      <td>True</td>
+      <td>CellChatDB v1</td>
+    </tr>
+  </tbody>
+</table>
+<p>5 rows × 27 columns</p>
+</div></div>
+</div>
+</section>
+<section id="Remove-ligand-and-receptors-not-present-in-the-object">
+<h3>Remove ligand and receptors not present in the object<a class="headerlink" href="#Remove-ligand-and-receptors-not-present-in-the-object" title="Link to this heading">#</a></h3>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[13]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>rows_keep=np.logical_and( lr_df[&#39;ligand&#39;].isin(adata.var_names), lr_df[&#39;receptor&#39;].isin(adata.var_names) )
+</pre></div>
+</div>
+</div>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[14]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>lr_df=lr_df.loc[rows_keep].copy()
+</pre></div>
+</div>
+</div>
+</section>
+</section>
+<section id="Create-the-ligand-receptor-anndata-object">
+<h2>Create the ligand-receptor anndata object<a class="headerlink" href="#Create-the-ligand-receptor-anndata-object" title="Link to this heading">#</a></h2>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[15]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>%%time
+lr_adata=la.tl.prepareLRInteraction(
+    adata, # object used to construt the LR object
+    lr_df, # dataframe to use for interactions
+    number_nearest_neighbors=20,
+    use_rep_spatial=&#39;X_spatial&#39;
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+CPU times: user 2.41 s, sys: 168 ms, total: 2.58 s
+Wall time: 2.58 s
+</pre></div></div>
+</div>
+</section>
+<section id="id1">
+<h2>Run LARIS<a class="headerlink" href="#id1" title="Link to this heading">#</a></h2>
+<p>To:</p>
+<ol class="arabic simple">
+<li><p>identify spatially variable and specific ligand-receptor interactions</p></li>
+<li><p>infer the interation directionality at cell type level if <code class="docutils literal notranslate"><span class="pre">by_celltype</span></code> set to <code class="docutils literal notranslate"><span class="pre">True</span></code></p></li>
+</ol>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[16]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>%%time
+import warnings
+warnings.filterwarnings(&quot;ignore&quot;)
+LARIS_variable_interactions, res_LARIS=la.tl.runLARIS(
+    lr_adata,
+    adata,
+    use_rep=&#39;X_spatial&#39;,
+    n_nearest_neighbors=20,
+    random_seed=27,
+    n_repeats=5,
+    mu = 0.40, # larger value indicates more consideration for specificity
+    sigma=100,
+    remove_lowly_expressed=False,
+    expressed_pct=0.1,
+    n_cells_expressed_threshold=100,
+    n_top_lr=lr_adata.shape[1],
+
+    by_celltype=True,
+    ### Parameters for cell type-level inference when by_celltype set to True
+    groupby=&#39;cell_type&#39;, # label to group by
+    use_rep_spatial=&#39;X_spatial&#39;, # spatial coordinates
+    mu_celltype=100, # higher value puts more emphasis on cell type specificity
+    expressed_pct_celltype=0.1, # expression percentage cut off per cell type
+    remove_lowly_expressed_celltype=False,
+    mask_threshold=1e-6, # mask for cosg, lower value is less restrictive
+    n_neighbors_permutation=30,
+    score_threshold= 1e-10,
+    spatial_weight = 3.0,
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+
+======================================================================
+LARIS ANALYSIS
+======================================================================
+
+Input data: 5695 cells × 1985 LR pairs
+Mode: Cell type-specific analysis
+
+--- Step 1: Calculating spatial specificity scores ---
+  - Using 20 nearest neighbors
+  - Regularization parameter μ = 0.4
+  - Random repeats: 5
+  - Generating random permutations...
+  ✓ Identified 1985 top spatially-specific LR pairs
+  - Score range: [-0.0431, 0.6720]
+
+======================================================================
+CELL TYPE-SPECIFIC ANALYSIS
+======================================================================
+
+Analyzing 14 cell types from &#39;cell_type&#39;
+Cell types: [&#39;B_germinal_center&#39;, &#39;B_memory&#39;, &#39;B_naive&#39;, &#39;FDC_LZDZ&#39;, &#39;MRC&#39;, &#39;NK&#39;, &#39;T_CD4&#39;, &#39;T_CD8&#39;, &#39;T_double_neg&#39;, &#39;T_follicular_helper&#39;]...
+
+======================================================================
+LARIS CELL TYPE ANALYSIS
+======================================================================
+
+--- Step 1: Calculating ligand and receptor cell type specificity ---
+  ✓ Computed specificity for 962 genes across 14 cell types
+
+--- Step 2: Calculating diffused LR-score distribution ---
+  ✓ Computed diffused scores for 1985 interactions
+
+--- Step 3: Computing interaction scores (spatial_weight=3.0) ---
+  ✓ Processed 1985 interactions
+
+--- Step 3.5: Rescaling interaction scores ---
+  - Scaling factor: 0.770511 (based on top 100 scores)
+
+--- Step 4: Incorporating spatial cell type co-localization ---
+  ✓ Calculated co-localization for 1985 interactions and 196 sender-receiver pairs
+  ✓ Applied co-localization weights
+
+--- Step 4.5: Cleaning up numerical precision (threshold=1e-10) ---
+  - Before: 339,668 scores &lt; threshold, 261,703 exactly zero
+  - After: 339,668 scores set to exactly 0.0
+
+======================================================================
+STATISTICAL SIGNIFICANCE TESTING
+======================================================================
+
+--- Step 5.1: Preparing background interaction sets ---
+  - Calculating summary statistics for 1985 interactions...
+  - Building KDTree to find 30 nearest neighbors...
+  - Background set prepared: 1985 interactions
+
+--- Step 5.2: Calculating p-values (1,000 permutations) ---
+  - Method: Standard
+  - Chunk size: 50,000
+  - Testing 196 sender-receiver pairs
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "2f584ef37a7c40fc8455346e64bbc454", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+  ✓ Calculated p-values for 389,060 interaction combinations
+
+--- Step 5.3: Applying FDR correction (Benjamini-Hochberg) ---
+  - Strategy: Pre-filtered
+  - Pre-filter threshold: 0.0
+</pre></div></div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<script type="application/vnd.jupyter.widget-view+json">{"model_id": "b58d865c7ce5417388d12415e1d831b4", "version_major": 2, "version_minor": 0}</script></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+  ✓ Corrected 196 sender-receiver pairs
+  - Interactions tested: 49,392
+  - Interactions filtered: 339,668
+
+  Significant interactions:
+  - FDR &lt; 0.05: 4,498 (1.16%)
+  - FDR &lt; 0.01: 1,700 (0.44%)
+
+======================================================================
+STATISTICAL TESTING COMPLETE
+======================================================================
+
+======================================================================
+LARIS CELL TYPE ANALYSIS COMPLETE
+======================================================================
+
+Final results: 389,060 sender-receiver-LR combinations
+Score range: [0.000000, 0.900057]
+
+======================================================================
+ANALYSIS COMPLETE
+======================================================================
+
+Results summary:
+  - Spatially-specific LR pairs: 1985
+  - Cell type combinations: 389,060
+  - Significant interactions (FDR &lt; 0.05): 4,498
+CPU times: user 2min 20s, sys: 268 ms, total: 2min 20s
+Wall time: 2min 20s
+</pre></div></div>
+</div>
+<section id="Check-the-spatial-variable-LR-interaction">
+<h3>Check the spatial variable LR interaction<a class="headerlink" href="#Check-the-spatial-variable-LR-interaction" title="Link to this heading">#</a></h3>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[17]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>LARIS_variable_interactions.shape
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[17]:
+</pre></div>
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+(1985, 4)
+</pre></div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[18]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>res_LARIS.shape
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[18]:
+</pre></div>
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+(389060, 9)
+</pre></div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[19]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>LARIS_variable_interactions.head(10)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[19]:
+</pre></div>
+</div>
+<div class="output_area rendered_html docutils container">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>ligand</th>
+      <th>receptor</th>
+      <th>score</th>
+      <th>Rank</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>SEMA4A::PLXNA4</th>
+      <td>SEMA4A</td>
+      <td>PLXNA4</td>
+      <td>0.671992</td>
+      <td>0</td>
+    </tr>
+    <tr>
+      <th>LAMB1::CD44</th>
+      <td>LAMB1</td>
+      <td>CD44</td>
+      <td>0.670729</td>
+      <td>1</td>
+    </tr>
+    <tr>
+      <th>FCER2::CR2</th>
+      <td>FCER2</td>
+      <td>CR2</td>
+      <td>0.658593</td>
+      <td>2</td>
+    </tr>
+    <tr>
+      <th>APP::CD74</th>
+      <td>APP</td>
+      <td>CD74</td>
+      <td>0.658068</td>
+      <td>3</td>
+    </tr>
+    <tr>
+      <th>PTPRC::MRC1</th>
+      <td>PTPRC</td>
+      <td>MRC1</td>
+      <td>0.654901</td>
+      <td>4</td>
+    </tr>
+    <tr>
+      <th>PTPRC::CD22</th>
+      <td>PTPRC</td>
+      <td>CD22</td>
+      <td>0.641263</td>
+      <td>5</td>
+    </tr>
+    <tr>
+      <th>LAMB3::CD44</th>
+      <td>LAMB3</td>
+      <td>CD44</td>
+      <td>0.638657</td>
+      <td>6</td>
+    </tr>
+    <tr>
+      <th>SEMA4D::PLXNB1</th>
+      <td>SEMA4D</td>
+      <td>PLXNB1</td>
+      <td>0.635213</td>
+      <td>7</td>
+    </tr>
+    <tr>
+      <th>COL4A1::CD44</th>
+      <td>COL4A1</td>
+      <td>CD44</td>
+      <td>0.634731</td>
+      <td>8</td>
+    </tr>
+    <tr>
+      <th>IL4::IL4R</th>
+      <td>IL4</td>
+      <td>IL4R</td>
+      <td>0.633580</td>
+      <td>9</td>
+    </tr>
+  </tbody>
+</table>
+</div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[20]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>res_LARIS.head()
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[20]:
+</pre></div>
+</div>
+<div class="output_area rendered_html docutils container">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>sender</th>
+      <th>receiver</th>
+      <th>interaction_score</th>
+      <th>ligand</th>
+      <th>receptor</th>
+      <th>interaction_name</th>
+      <th>p_value</th>
+      <th>p_value_fdr</th>
+      <th>nlog10_p_value_fdr</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>B_naive</td>
+      <td>B_naive</td>
+      <td>0.900057</td>
+      <td>FCER2</td>
+      <td>CR2</td>
+      <td>FCER2::CR2</td>
+      <td>0.000999</td>
+      <td>0.010570</td>
+      <td>1.975922</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>B_memory</td>
+      <td>B_memory</td>
+      <td>0.538235</td>
+      <td>COL4A3</td>
+      <td>CD44</td>
+      <td>COL4A3::CD44</td>
+      <td>0.000999</td>
+      <td>0.012469</td>
+      <td>1.904168</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>B_germinal_center</td>
+      <td>B_germinal_center</td>
+      <td>0.397066</td>
+      <td>SEMA4A</td>
+      <td>PLXNB2</td>
+      <td>SEMA4A::PLXNB2</td>
+      <td>0.000999</td>
+      <td>0.014026</td>
+      <td>1.853067</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>T_double_neg</td>
+      <td>NK</td>
+      <td>0.344916</td>
+      <td>CLEC2D</td>
+      <td>KLRB1</td>
+      <td>CLEC2D::KLRB1</td>
+      <td>0.000999</td>
+      <td>0.009419</td>
+      <td>2.025989</td>
+    </tr>
+    <tr>
+      <th>4</th>
+      <td>B_memory</td>
+      <td>B_naive</td>
+      <td>0.337151</td>
+      <td>COL4A3</td>
+      <td>CD44</td>
+      <td>COL4A3::CD44</td>
+      <td>0.000999</td>
+      <td>0.012947</td>
+      <td>1.887830</td>
+    </tr>
+  </tbody>
+</table>
+</div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[21]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>pd.Series(res_LARIS[&#39;p_value&#39;]&lt;0.05).value_counts()
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[21]:
+</pre></div>
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+p_value
+False    380288
+True       8772
+Name: count, dtype: int64
+</pre></div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[22]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>pd.Series(res_LARIS[&#39;p_value_fdr&#39;]&lt;0.05).value_counts()
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[22]:
+</pre></div>
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+p_value_fdr
+False    384562
+True       4498
+Name: count, dtype: int64
+</pre></div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[23]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>sc.pl.dotplot(lr_adata,
+              LARIS_variable_interactions.index[:10],
+              groupby=&#39;region_name&#39;,
+             standard_scale=&#39;var&#39;,
+             cmap=&#39;Spectral_r&#39;)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_33_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_33_0.png" style="width: 556px; height: 361px;" />
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[24]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>sc.pl.dotplot(lr_adata,
+              LARIS_variable_interactions.index[:10],
+              groupby=&#39;cell_type&#39;,
+             standard_scale=&#39;var&#39;,
+             cmap=&#39;Spectral_r&#39;)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_34_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_34_0.png" style="width: 559px; height: 590px;" />
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[25]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>x_width=adata.obsm[&#39;X_spatial&#39;][:,0].max()-adata.obsm[&#39;X_spatial&#39;][:,0].min()
+y_width=adata.obsm[&#39;X_spatial&#39;][:,1].max()-adata.obsm[&#39;X_spatial&#39;][:,1].min()
+
+plt.rcParams[&#39;figure.figsize&#39;] = 2.5, 2.5*y_width/x_width
+
+sc.pl.embedding(
+    lr_adata,
+    basis=&#39;X_spatial&#39;,
+    color=LARIS_variable_interactions.index[:4],
+    cmap=pos_cmap,
+ #   vmin=1,
+  #  vmax=1.5,
+      # palette=self_palette2,
+       ncols=4,
+    # size=80,
+    frameon=False)
+plt.rcParams[&#39;figure.figsize&#39;] = 4, 4
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_35_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_35_0.png" style="width: 1049px; height: 236px;" />
+</div>
+</div>
+</section>
+<section id="Check-the-cell-type-level-ligand-receptor-interaction-inferred-by-LARIS">
+<h3>Check the cell type-level ligand-receptor interaction inferred by LARIS<a class="headerlink" href="#Check-the-cell-type-level-ligand-receptor-interaction-inferred-by-LARIS" title="Link to this heading">#</a></h3>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[26]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>res_LARIS.head(10)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[26]:
+</pre></div>
+</div>
+<div class="output_area rendered_html docutils container">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>sender</th>
+      <th>receiver</th>
+      <th>interaction_score</th>
+      <th>ligand</th>
+      <th>receptor</th>
+      <th>interaction_name</th>
+      <th>p_value</th>
+      <th>p_value_fdr</th>
+      <th>nlog10_p_value_fdr</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>B_naive</td>
+      <td>B_naive</td>
+      <td>0.900057</td>
+      <td>FCER2</td>
+      <td>CR2</td>
+      <td>FCER2::CR2</td>
+      <td>0.000999</td>
+      <td>0.010570</td>
+      <td>1.975922</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>B_memory</td>
+      <td>B_memory</td>
+      <td>0.538235</td>
+      <td>COL4A3</td>
+      <td>CD44</td>
+      <td>COL4A3::CD44</td>
+      <td>0.000999</td>
+      <td>0.012469</td>
+      <td>1.904168</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>B_germinal_center</td>
+      <td>B_germinal_center</td>
+      <td>0.397066</td>
+      <td>SEMA4A</td>
+      <td>PLXNB2</td>
+      <td>SEMA4A::PLXNB2</td>
+      <td>0.000999</td>
+      <td>0.014026</td>
+      <td>1.853067</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>T_double_neg</td>
+      <td>NK</td>
+      <td>0.344916</td>
+      <td>CLEC2D</td>
+      <td>KLRB1</td>
+      <td>CLEC2D::KLRB1</td>
+      <td>0.000999</td>
+      <td>0.009419</td>
+      <td>2.025989</td>
+    </tr>
+    <tr>
+      <th>4</th>
+      <td>B_memory</td>
+      <td>B_naive</td>
+      <td>0.337151</td>
+      <td>COL4A3</td>
+      <td>CD44</td>
+      <td>COL4A3::CD44</td>
+      <td>0.000999</td>
+      <td>0.012947</td>
+      <td>1.887830</td>
+    </tr>
+    <tr>
+      <th>5</th>
+      <td>B_memory</td>
+      <td>B_memory</td>
+      <td>0.324935</td>
+      <td>COL4A4</td>
+      <td>CD44</td>
+      <td>COL4A4::CD44</td>
+      <td>0.000999</td>
+      <td>0.012469</td>
+      <td>1.904168</td>
+    </tr>
+    <tr>
+      <th>6</th>
+      <td>B_memory</td>
+      <td>B_memory</td>
+      <td>0.282586</td>
+      <td>SEMA7A</td>
+      <td>PLXNC1</td>
+      <td>SEMA7A::PLXNC1</td>
+      <td>0.000999</td>
+      <td>0.012469</td>
+      <td>1.904168</td>
+    </tr>
+    <tr>
+      <th>7</th>
+      <td>pDC</td>
+      <td>B_naive</td>
+      <td>0.276228</td>
+      <td>APP</td>
+      <td>CD74</td>
+      <td>APP::CD74</td>
+      <td>0.000999</td>
+      <td>0.009686</td>
+      <td>2.013857</td>
+    </tr>
+    <tr>
+      <th>8</th>
+      <td>B_naive</td>
+      <td>B_naive</td>
+      <td>0.258380</td>
+      <td>APP</td>
+      <td>CD74</td>
+      <td>APP::CD74</td>
+      <td>0.033966</td>
+      <td>0.270686</td>
+      <td>0.567535</td>
+    </tr>
+    <tr>
+      <th>9</th>
+      <td>B_memory</td>
+      <td>B_naive</td>
+      <td>0.244977</td>
+      <td>APP</td>
+      <td>CD74</td>
+      <td>APP::CD74</td>
+      <td>0.026973</td>
+      <td>0.292850</td>
+      <td>0.533355</td>
+    </tr>
+  </tbody>
+</table>
+</div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[27]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>res_LARIS.head(10)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[27]:
+</pre></div>
+</div>
+<div class="output_area rendered_html docutils container">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>sender</th>
+      <th>receiver</th>
+      <th>interaction_score</th>
+      <th>ligand</th>
+      <th>receptor</th>
+      <th>interaction_name</th>
+      <th>p_value</th>
+      <th>p_value_fdr</th>
+      <th>nlog10_p_value_fdr</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>B_naive</td>
+      <td>B_naive</td>
+      <td>0.900057</td>
+      <td>FCER2</td>
+      <td>CR2</td>
+      <td>FCER2::CR2</td>
+      <td>0.000999</td>
+      <td>0.010570</td>
+      <td>1.975922</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>B_memory</td>
+      <td>B_memory</td>
+      <td>0.538235</td>
+      <td>COL4A3</td>
+      <td>CD44</td>
+      <td>COL4A3::CD44</td>
+      <td>0.000999</td>
+      <td>0.012469</td>
+      <td>1.904168</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>B_germinal_center</td>
+      <td>B_germinal_center</td>
+      <td>0.397066</td>
+      <td>SEMA4A</td>
+      <td>PLXNB2</td>
+      <td>SEMA4A::PLXNB2</td>
+      <td>0.000999</td>
+      <td>0.014026</td>
+      <td>1.853067</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>T_double_neg</td>
+      <td>NK</td>
+      <td>0.344916</td>
+      <td>CLEC2D</td>
+      <td>KLRB1</td>
+      <td>CLEC2D::KLRB1</td>
+      <td>0.000999</td>
+      <td>0.009419</td>
+      <td>2.025989</td>
+    </tr>
+    <tr>
+      <th>4</th>
+      <td>B_memory</td>
+      <td>B_naive</td>
+      <td>0.337151</td>
+      <td>COL4A3</td>
+      <td>CD44</td>
+      <td>COL4A3::CD44</td>
+      <td>0.000999</td>
+      <td>0.012947</td>
+      <td>1.887830</td>
+    </tr>
+    <tr>
+      <th>5</th>
+      <td>B_memory</td>
+      <td>B_memory</td>
+      <td>0.324935</td>
+      <td>COL4A4</td>
+      <td>CD44</td>
+      <td>COL4A4::CD44</td>
+      <td>0.000999</td>
+      <td>0.012469</td>
+      <td>1.904168</td>
+    </tr>
+    <tr>
+      <th>6</th>
+      <td>B_memory</td>
+      <td>B_memory</td>
+      <td>0.282586</td>
+      <td>SEMA7A</td>
+      <td>PLXNC1</td>
+      <td>SEMA7A::PLXNC1</td>
+      <td>0.000999</td>
+      <td>0.012469</td>
+      <td>1.904168</td>
+    </tr>
+    <tr>
+      <th>7</th>
+      <td>pDC</td>
+      <td>B_naive</td>
+      <td>0.276228</td>
+      <td>APP</td>
+      <td>CD74</td>
+      <td>APP::CD74</td>
+      <td>0.000999</td>
+      <td>0.009686</td>
+      <td>2.013857</td>
+    </tr>
+    <tr>
+      <th>8</th>
+      <td>B_naive</td>
+      <td>B_naive</td>
+      <td>0.258380</td>
+      <td>APP</td>
+      <td>CD74</td>
+      <td>APP::CD74</td>
+      <td>0.033966</td>
+      <td>0.270686</td>
+      <td>0.567535</td>
+    </tr>
+    <tr>
+      <th>9</th>
+      <td>B_memory</td>
+      <td>B_naive</td>
+      <td>0.244977</td>
+      <td>APP</td>
+      <td>CD74</td>
+      <td>APP::CD74</td>
+      <td>0.026973</td>
+      <td>0.292850</td>
+      <td>0.533355</td>
+    </tr>
+  </tbody>
+</table>
+</div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[28]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>x_width=adata.obsm[&#39;X_spatial&#39;][:,0].max()-adata.obsm[&#39;X_spatial&#39;][:,0].min()
+y_width=adata.obsm[&#39;X_spatial&#39;][:,1].max()-adata.obsm[&#39;X_spatial&#39;][:,1].min()
+
+plt.rcParams[&#39;figure.figsize&#39;] = 2.5, 2.5*y_width/x_width
+
+sc.pl.embedding(
+    lr_adata,
+    basis=&#39;X_spatial&#39;,
+    color=res_LARIS[&#39;interaction_name&#39;][:12].unique(),
+    cmap=pos_cmap,
+ #   vmin=1,
+  #  vmax=1.5,
+      # palette=self_palette2,
+       ncols=3,
+      # size=80,
+    frameon=False)
+plt.rcParams[&#39;figure.figsize&#39;] = 4, 4
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_39_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_39_0.png" style="width: 785px; height: 655px;" />
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[29]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>x_width=lr_adata.obsm[&#39;X_umap&#39;][:,0].max()-lr_adata.obsm[&#39;X_umap&#39;][:,0].min()
+y_width=lr_adata.obsm[&#39;X_umap&#39;][:,1].max()-lr_adata.obsm[&#39;X_umap&#39;][:,1].min()
+
+plt.rcParams[&#39;figure.figsize&#39;] = 2.5, 2.5*y_width/x_width
+
+sc.pl.embedding(
+    lr_adata,
+    basis=&#39;X_umap&#39;,
+    color=res_LARIS[&#39;interaction_name&#39;][:12].unique(),
+    cmap=pos_cmap,
+ #   vmin=1,
+  #  vmax=1.5,
+      # palette=self_palette2,
+       ncols=3,
+    # size=50,
+    frameon=False)
+plt.rcParams[&#39;figure.figsize&#39;] = 4, 4
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_40_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_40_0.png" style="width: 785px; height: 669px;" />
+</div>
+</div>
+<section id="Filter-hits-by-ligand/receptor/cell-type">
+<h4>Filter hits by ligand/receptor/cell type<a class="headerlink" href="#Filter-hits-by-ligand/receptor/cell-type" title="Link to this heading">#</a></h4>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[30]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>res_LARIS[res_LARIS[&#39;sender&#39;] == &#39;MRC&#39;].head(10)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[30]:
+</pre></div>
+</div>
+<div class="output_area rendered_html docutils container">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>sender</th>
+      <th>receiver</th>
+      <th>interaction_score</th>
+      <th>ligand</th>
+      <th>receptor</th>
+      <th>interaction_name</th>
+      <th>p_value</th>
+      <th>p_value_fdr</th>
+      <th>nlog10_p_value_fdr</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>17</th>
+      <td>MRC</td>
+      <td>T_CD4</td>
+      <td>0.184022</td>
+      <td>CCL21</td>
+      <td>CCR7</td>
+      <td>CCL21::CCR7</td>
+      <td>0.000999</td>
+      <td>0.016983</td>
+      <td>1.769986</td>
+    </tr>
+    <tr>
+      <th>37</th>
+      <td>MRC</td>
+      <td>T_CD4</td>
+      <td>0.137322</td>
+      <td>CCL19</td>
+      <td>CCR7</td>
+      <td>CCL19::CCR7</td>
+      <td>0.030969</td>
+      <td>0.324221</td>
+      <td>0.489159</td>
+    </tr>
+    <tr>
+      <th>59</th>
+      <td>MRC</td>
+      <td>B_memory</td>
+      <td>0.098216</td>
+      <td>COL1A1</td>
+      <td>CD44</td>
+      <td>COL1A1::CD44</td>
+      <td>0.000999</td>
+      <td>0.013820</td>
+      <td>1.859508</td>
+    </tr>
+    <tr>
+      <th>65</th>
+      <td>MRC</td>
+      <td>T_CD4</td>
+      <td>0.090855</td>
+      <td>COL1A1</td>
+      <td>CD44</td>
+      <td>COL1A1::CD44</td>
+      <td>0.000999</td>
+      <td>0.016983</td>
+      <td>1.769986</td>
+    </tr>
+    <tr>
+      <th>71</th>
+      <td>MRC</td>
+      <td>T_CD4</td>
+      <td>0.083999</td>
+      <td>LAMA4</td>
+      <td>CD44</td>
+      <td>LAMA4::CD44</td>
+      <td>0.028971</td>
+      <td>0.324221</td>
+      <td>0.489159</td>
+    </tr>
+    <tr>
+      <th>73</th>
+      <td>MRC</td>
+      <td>T_double_neg</td>
+      <td>0.083307</td>
+      <td>LAMA4</td>
+      <td>CD44</td>
+      <td>LAMA4::CD44</td>
+      <td>0.000999</td>
+      <td>0.008891</td>
+      <td>2.051045</td>
+    </tr>
+    <tr>
+      <th>84</th>
+      <td>MRC</td>
+      <td>B_memory</td>
+      <td>0.069352</td>
+      <td>COL1A2</td>
+      <td>CD44</td>
+      <td>COL1A2::CD44</td>
+      <td>0.000999</td>
+      <td>0.013820</td>
+      <td>1.859508</td>
+    </tr>
+    <tr>
+      <th>90</th>
+      <td>MRC</td>
+      <td>T_CD8</td>
+      <td>0.065867</td>
+      <td>COL1A2</td>
+      <td>CD44</td>
+      <td>COL1A2::CD44</td>
+      <td>0.000999</td>
+      <td>0.013362</td>
+      <td>1.874141</td>
+    </tr>
+    <tr>
+      <th>101</th>
+      <td>MRC</td>
+      <td>T_CD8</td>
+      <td>0.056886</td>
+      <td>LAMA4</td>
+      <td>CD44</td>
+      <td>LAMA4::CD44</td>
+      <td>0.000999</td>
+      <td>0.013362</td>
+      <td>1.874141</td>
+    </tr>
+    <tr>
+      <th>116</th>
+      <td>MRC</td>
+      <td>T_CD4</td>
+      <td>0.050082</td>
+      <td>COL1A2</td>
+      <td>CD44</td>
+      <td>COL1A2::CD44</td>
+      <td>0.103896</td>
+      <td>0.483723</td>
+      <td>0.315404</td>
+    </tr>
+  </tbody>
+</table>
+</div></div>
+</div>
+</section>
+</section>
+<section id="Look-for-enrichment-in-different-tissue-regions">
+<h3>Look for enrichment in different tissue regions<a class="headerlink" href="#Look-for-enrichment-in-different-tissue-regions" title="Link to this heading">#</a></h3>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[31]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span># Import cosg, could also use a Wilcoxon test as well to find region enrichment
+import cosg
+</pre></div>
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[32]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>adata.obs.head().T
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[32]:
+</pre></div>
+</div>
+<div class="output_area rendered_html docutils container">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>AAACCCAAGCGCCTTG-1</th>
+      <th>AAACCCAAGTGGACGT-1</th>
+      <th>AAACCCACAGAAGTGC-1</th>
+      <th>AAACCCAGTCATTGCA-1</th>
+      <th>AAACCCATCATCGCAA-1</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>n_genes_by_counts</th>
+      <td>1042</td>
+      <td>2382</td>
+      <td>3734</td>
+      <td>1928</td>
+      <td>441</td>
+    </tr>
+    <tr>
+      <th>log1p_n_genes_by_counts</th>
+      <td>6.949856</td>
+      <td>7.776115</td>
+      <td>8.225503</td>
+      <td>7.564757</td>
+      <td>6.09131</td>
+    </tr>
+    <tr>
+      <th>total_counts</th>
+      <td>1495.0</td>
+      <td>4036.0</td>
+      <td>7292.0</td>
+      <td>3039.0</td>
+      <td>554.0</td>
+    </tr>
+    <tr>
+      <th>log1p_total_counts</th>
+      <td>7.31055</td>
+      <td>8.303257</td>
+      <td>8.89467</td>
+      <td>8.019613</td>
+      <td>6.318968</td>
+    </tr>
+    <tr>
+      <th>pct_counts_in_top_50_genes</th>
+      <td>18.795987</td>
+      <td>15.237859</td>
+      <td>9.421284</td>
+      <td>13.754525</td>
+      <td>27.617329</td>
+    </tr>
+    <tr>
+      <th>pct_counts_in_top_100_genes</th>
+      <td>27.826087</td>
+      <td>21.382557</td>
+      <td>14.413055</td>
+      <td>20.500165</td>
+      <td>38.447653</td>
+    </tr>
+    <tr>
+      <th>pct_counts_in_top_200_genes</th>
+      <td>41.204013</td>
+      <td>30.401388</td>
+      <td>21.969281</td>
+      <td>30.404738</td>
+      <td>56.498195</td>
+    </tr>
+    <tr>
+      <th>pct_counts_in_top_500_genes</th>
+      <td>63.745819</td>
+      <td>47.59663</td>
+      <td>38.137685</td>
+      <td>50.70747</td>
+      <td>100.0</td>
+    </tr>
+    <tr>
+      <th>total_counts_mt</th>
+      <td>3.0</td>
+      <td>8.0</td>
+      <td>100.0</td>
+      <td>31.0</td>
+      <td>2.0</td>
+    </tr>
+    <tr>
+      <th>log1p_total_counts_mt</th>
+      <td>1.386294</td>
+      <td>2.197225</td>
+      <td>4.61512</td>
+      <td>3.465736</td>
+      <td>1.098612</td>
+    </tr>
+    <tr>
+      <th>pct_counts_mt</th>
+      <td>0.200669</td>
+      <td>0.198216</td>
+      <td>1.371366</td>
+      <td>1.020072</td>
+      <td>0.361011</td>
+    </tr>
+    <tr>
+      <th>total_counts_ribo</th>
+      <td>87.0</td>
+      <td>73.0</td>
+      <td>364.0</td>
+      <td>232.0</td>
+      <td>45.0</td>
+    </tr>
+    <tr>
+      <th>log1p_total_counts_ribo</th>
+      <td>4.477337</td>
+      <td>4.304065</td>
+      <td>5.899898</td>
+      <td>5.451038</td>
+      <td>3.828641</td>
+    </tr>
+    <tr>
+      <th>pct_counts_ribo</th>
+      <td>5.819398</td>
+      <td>1.808722</td>
+      <td>4.991772</td>
+      <td>7.63409</td>
+      <td>8.122744</td>
+    </tr>
+    <tr>
+      <th>n_genes</th>
+      <td>1042</td>
+      <td>2382</td>
+      <td>3734</td>
+      <td>1928</td>
+      <td>441</td>
+    </tr>
+    <tr>
+      <th>cell_type</th>
+      <td>T_CD4</td>
+      <td>plasma</td>
+      <td>B_germinal_center</td>
+      <td>B_naive</td>
+      <td>B_memory</td>
+    </tr>
+    <tr>
+      <th>region_name</th>
+      <td>Paracortex</td>
+      <td>Dark Zone</td>
+      <td>Light Zone</td>
+      <td>Marginal Zone</td>
+      <td>Interfollicular Zone</td>
+    </tr>
+  </tbody>
+</table>
+</div></div>
+</div>
+<div class="nbinput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[33]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span># Run cosg to identify markers
+n_gene=30 # number of genes to save
+groupby=&#39;region_name&#39;
+cosg.cosg(lr_adata,
+    key_added=&#39;cosg&#39;,
+    mu=100,
+    expressed_pct=0.15, # minimum % of expression to make cut off
+    remove_lowly_expressed=True,
+    n_genes_user=100, # How many genes to append
+    groupby=groupby)
+</pre></div>
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[34]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>sc.tl.dendrogram(lr_adata, groupby=groupby, use_rep=&#39;X_pca&#39;)
+df_tmp=pd.DataFrame(lr_adata.uns[&#39;cosg&#39;][&#39;names&#39;][:8,]).T
+df_tmp=df_tmp.reindex(lr_adata.uns[&#39;dendrogram_&#39;+groupby][&#39;categories_ordered&#39;])
+marker_genes_list={idx: list(row.values) for idx, row in df_tmp.iterrows()}
+marker_genes_list = {k: v for k, v in marker_genes_list.items() if not any(isinstance(x, float) for x in v)}
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+Storing dendrogram info using `.uns[&#39;dendrogram_region_name&#39;]`
+</pre></div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[35]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>sc.pl.dotplot(lr_adata, marker_genes_list,
+             groupby=groupby,
+             dendrogram=True,
+            swap_axes=False,
+             standard_scale=&#39;var&#39;,
+             cmap=&#39;Spectral_r&#39;)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_48_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_48_0.png" style="width: 1447px; height: 466px;" />
+</div>
+</div>
+</section>
+<section id="Visualize-the-ligand-receptor-interaction-score-in-spatial-plots">
+<h3>Visualize the ligand-receptor interaction score in spatial plots<a class="headerlink" href="#Visualize-the-ligand-receptor-interaction-score-in-spatial-plots" title="Link to this heading">#</a></h3>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[36]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>x_width=adata.obsm[&#39;X_spatial&#39;][:,0].max()-adata.obsm[&#39;X_spatial&#39;][:,0].min()
+y_width=adata.obsm[&#39;X_spatial&#39;][:,1].max()-adata.obsm[&#39;X_spatial&#39;][:,1].min()
+
+plt.rcParams[&#39;figure.figsize&#39;] = 2.5, 2.5*y_width/x_width
+
+sc.pl.embedding(
+    lr_adata,
+    basis=&#39;X_spatial&#39;,
+    color=[&#39;BMP7::BMPR1A&#39;,&#39;IL21::IL21R&#39;,&#39;FCER2::CR2&#39;,&#39;CCL19::CCR7&#39;],
+    cmap=pos_cmap,
+    ncols=4,
+    # size=120,
+    frameon=False)
+plt.rcParams[&#39;figure.figsize&#39;] = 4, 4
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_50_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_50_0.png" style="width: 1049px; height: 236px;" />
+</div>
+</div>
+<section id="Visualize-the-ligand-receptor-interaction-score-in-UMAP-plots">
+<h4>Visualize the ligand-receptor interaction score in UMAP plots<a class="headerlink" href="#Visualize-the-ligand-receptor-interaction-score-in-UMAP-plots" title="Link to this heading">#</a></h4>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[37]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>x_width=adata.obsm[&#39;X_spatial&#39;][:,0].max()-adata.obsm[&#39;X_spatial&#39;][:,0].min()
+y_width=adata.obsm[&#39;X_spatial&#39;][:,1].max()-adata.obsm[&#39;X_spatial&#39;][:,1].min()
+
+plt.rcParams[&#39;figure.figsize&#39;] = 2.5, 2.5*y_width/x_width
+
+sc.pl.embedding(
+    lr_adata,
+    basis=&#39;X_umap&#39;,
+    color=[&#39;BMP7::BMPR1A&#39;,&#39;IL21::IL21R&#39;,&#39;FCER2::CR2&#39;,&#39;CCL19::CCR7&#39;],
+    cmap=pos_cmap,
+    ncols=4,
+    # size=60,
+    frameon=False)
+plt.rcParams[&#39;figure.figsize&#39;] = 4, 4
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_52_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_52_0.png" style="width: 1049px; height: 236px;" />
+</div>
+</div>
+</section>
+</section>
+</section>
+<section id="Visualize-LR-interaction-and-cell-cell-communication-in-dfferent-ways">
+<h2>Visualize LR interaction and cell-cell communication in dfferent ways<a class="headerlink" href="#Visualize-LR-interaction-and-cell-cell-communication-in-dfferent-ways" title="Link to this heading">#</a></h2>
+<section id="Cell-cell-communication-(CCC)-Heatmap">
+<h3>Cell-cell communication (CCC) Heatmap<a class="headerlink" href="#Cell-cell-communication-(CCC)-Heatmap" title="Link to this heading">#</a></h3>
+<p>First, check the default settings:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[38]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCHeatmap(
+    res_LARIS
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_56_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_56_0.png" style="width: 532px; height: 462px;" />
+</div>
+</div>
+<p>Use the top ones:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[39]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>fig=la.pl.plotCCCHeatmap(
+    res_LARIS,
+    cmap=&#39;plasma&#39;,
+    filter_significant=False,
+    n_top=2000,
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_58_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_58_0.png" style="width: 547px; height: 462px;" />
+</div>
+</div>
+<p>Filter by the p value and score:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[40]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCHeatmap(
+    res_LARIS,
+    cmap=&#39;Purples&#39;,
+    # n_top=2000,
+    figsize=(6, 5),
+    axis_label_fontsize=16,
+    tick_fontsize=12,
+    cbar_label_fontsize=16,
+    cbar_tick_fontsize=12,
+    filter_significant=True,
+    p_value_col=&#39;p_value_fdr&#39;,
+    threshold=0.05,
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01,
+    show_borders=False,
+    cluster=True,
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_60_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_60_0.png" style="width: 532px; height: 462px;" />
+</div>
+</div>
+<p>Change the threshold:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[41]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCHeatmap(
+    res_LARIS,
+    cmap=&#39;Purples&#39;,
+    # n_top=2000,
+    figsize=(6, 5),
+    axis_label_fontsize=16,
+    tick_fontsize=12,
+    cbar_label_fontsize=16,
+    cbar_tick_fontsize=12,
+    filter_significant=True,
+    p_value_col=&#39;p_value_fdr&#39;,
+    threshold=0.1,
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01,
+    show_borders=False,
+    cluster=True,
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_62_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_62_0.png" style="width: 532px; height: 462px;" />
+</div>
+</div>
+</section>
+</section>
+<section id="CCC-Network">
+<h2>CCC Network<a class="headerlink" href="#CCC-Network" title="Link to this heading">#</a></h2>
+<p>First, check the default settings:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[42]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCNetwork(
+    res_LARIS,
+    &#39;B_germinal_center&#39;,
+    interaction_direction=&#39;sending&#39;,
+    adata=adata,
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_65_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_65_0.png" style="width: 917px; height: 748px;" />
+</div>
+</div>
+<p>Check the receiving pattern for a target cell type:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[43]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCNetwork(
+    res_LARIS,
+    &#39;B_germinal_center&#39;,
+    interaction_direction=&#39;receiving&#39;,
+    adata=adata,
+    # edge_width_scale=20,
+    # n_top=3000,
+    filter_significant=True,
+    p_value_col=&#39;p_value_fdr&#39;,
+    threshold=0.05,
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01,
+    figsize=[10, 10],
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_67_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_67_0.png" style="width: 768px; height: 748px;" />
+</div>
+</div>
+<p>Adjust the <code class="docutils literal notranslate"><span class="pre">edge_with_scale</span></code> parameter and <code class="docutils literal notranslate"><span class="pre">figsize</span></code> parameter:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[44]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCNetwork(
+    res_LARIS,
+    &#39;B_germinal_center&#39;,
+    interaction_direction=&#39;receiving&#39;,
+    adata=adata,
+    edge_width_scale=15,
+    # n_top=3000,
+    filter_significant=True,
+    p_value_col=&#39;p_value_fdr&#39;,
+    threshold=0.05,
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01,
+    figsize=[8, 8],
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_69_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_69_0.png" style="width: 660px; height: 602px;" />
+</div>
+</div>
+<section id="CCC-Network-(cumulative)">
+<h3>CCC Network (cumulative)<a class="headerlink" href="#CCC-Network-(cumulative)" title="Link to this heading">#</a></h3>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[45]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCNetworkCumulative(
+    res_LARIS,
+    adata=adata,
+    groupby=&#39;cell_type&#39;,
+    filter_significant=True,
+    p_value_col=&#39;p_value_fdr&#39;,
+    threshold=0.05,
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01,
+    edge_width_scale=25,
+    figsize=[10, 10],
+
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_71_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_71_0.png" style="width: 768px; height: 748px;" />
+</div>
+</div>
+<p>Add <code class="docutils literal notranslate"><span class="pre">cutoff</span> <span class="pre">=</span> <span class="pre">0.1</span></code> to filter out some edges:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[46]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCNetworkCumulative(
+    res_LARIS,
+    adata=adata,
+    groupby=&#39;cell_type&#39;,
+    filter_significant=True,
+    p_value_col=&#39;p_value_fdr&#39;,
+    threshold=0.05,
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01,
+    edge_width_scale=25,
+    # figsize=[6, 6],
+    cutoff=0.1,
+
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_73_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_73_0.png" style="width: 917px; height: 748px;" />
+</div>
+</div>
+</section>
+</section>
+<section id="CCC-DotPlot">
+<h2>CCC DotPlot<a class="headerlink" href="#CCC-DotPlot" title="Link to this heading">#</a></h2>
+<p>First, check the default:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[47]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCDotPlot(
+    res_LARIS,
+    interactions_to_plot=[&#39;CCL21::CCR7&#39;, &quot;CD40LG::CD40&quot;,  &quot;PDCD1LG2::PDCD1&quot;, &quot;PTPRC::CD22&quot;, &quot;LAMA4::CD44&quot;,
+                        &quot;COL1A1::CD44&quot;,
+                        &quot;GLS::GRIK1&quot;],
+    senders=[&quot;MRC&quot;, &quot;MRC&quot;, &quot;MRC&quot;, &quot;MRC&quot;, &quot;T_follicular_helper&quot;, &quot;B_germinal_center&quot;],
+    receivers=[&quot;T_CD4&quot;, &quot;T_follicular_helper&quot;, &quot;B_naive&quot;, &quot;B_memory&quot;,  &quot;B_germinal_center&quot;,&#39;T_follicular_helper&#39;],
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_76_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_76_0.png" style="width: 1227px; height: 552px;" />
+</div>
+</div>
+<p>Adjust paramters for <code class="docutils literal notranslate"><span class="pre">figsize</span></code> and <code class="docutils literal notranslate"><span class="pre">cmap</span></code>:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[48]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCDotPlot(
+    res_LARIS,
+    interactions_to_plot=[&#39;CCL21::CCR7&#39;, &quot;CD40LG::CD40&quot;,  &quot;PDCD1LG2::PDCD1&quot;, &quot;PTPRC::CD22&quot;, &quot;LAMA4::CD44&quot;,
+                        &quot;COL1A1::CD44&quot;,
+                        &quot;GLS::GRIK1&quot;],
+    senders=[&quot;MRC&quot;, &quot;MRC&quot;, &quot;MRC&quot;, &quot;MRC&quot;, &quot;T_follicular_helper&quot;, &quot;B_germinal_center&quot;],
+    receivers=[&quot;T_CD4&quot;, &quot;T_follicular_helper&quot;, &quot;B_naive&quot;, &quot;B_memory&quot;,  &quot;B_germinal_center&quot;,&#39;T_follicular_helper&#39;],
+
+    # n_top=3000,
+    bubble_size=500,
+    cmap=&#39;YlGn&#39;,
+    filter_significant=True,
+    p_value_col=&#39;p_value_fdr&#39;,
+    threshold=0.05,
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01,
+    figsize=[8,6],
+    show_grid=False,
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_78_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_78_0.png" style="width: 754px; height: 552px;" />
+</div>
+</div>
+<p>Adjust the <code class="docutils literal notranslate"><span class="pre">show_grid</span> <span class="pre">=</span> <span class="pre">True</span></code> parameter:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[49]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCDotPlot(
+    res_LARIS,
+    interactions_to_plot=[&#39;CCL21::CCR7&#39;, &quot;CD40LG::CD40&quot;,  &quot;PDCD1LG2::PDCD1&quot;, &quot;PTPRC::CD22&quot;, &quot;LAMA4::CD44&quot;,
+                        &quot;COL1A1::CD44&quot;,
+                        &quot;GLS::GRIK1&quot;],
+    senders=[&quot;MRC&quot;, &quot;MRC&quot;, &quot;MRC&quot;, &quot;MRC&quot;, &quot;T_follicular_helper&quot;, &quot;B_germinal_center&quot;],
+    receivers=[&quot;T_CD4&quot;, &quot;T_follicular_helper&quot;, &quot;B_naive&quot;, &quot;B_memory&quot;,  &quot;B_germinal_center&quot;,&#39;T_follicular_helper&#39;],
+
+
+    bubble_size=500,
+    cmap=&#39;Purples&#39;,
+    # filter_significant=False,
+    # n_top=3000,
+    filter_significant=True,
+    p_value_col=&#39;p_value_fdr&#39;,
+    threshold=0.05,
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01,
+    figsize=[8,6],
+    show_grid=True,
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_80_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_80_0.png" style="width: 754px; height: 552px;" />
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[50]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>res_LARIS.head(30)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[50]:
+</pre></div>
+</div>
+<div class="output_area rendered_html docutils container">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>sender</th>
+      <th>receiver</th>
+      <th>interaction_score</th>
+      <th>ligand</th>
+      <th>receptor</th>
+      <th>interaction_name</th>
+      <th>p_value</th>
+      <th>p_value_fdr</th>
+      <th>nlog10_p_value_fdr</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>0</th>
+      <td>B_naive</td>
+      <td>B_naive</td>
+      <td>0.900057</td>
+      <td>FCER2</td>
+      <td>CR2</td>
+      <td>FCER2::CR2</td>
+      <td>0.000999</td>
+      <td>0.010570</td>
+      <td>1.975922</td>
+    </tr>
+    <tr>
+      <th>1</th>
+      <td>B_memory</td>
+      <td>B_memory</td>
+      <td>0.538235</td>
+      <td>COL4A3</td>
+      <td>CD44</td>
+      <td>COL4A3::CD44</td>
+      <td>0.000999</td>
+      <td>0.012469</td>
+      <td>1.904168</td>
+    </tr>
+    <tr>
+      <th>2</th>
+      <td>B_germinal_center</td>
+      <td>B_germinal_center</td>
+      <td>0.397066</td>
+      <td>SEMA4A</td>
+      <td>PLXNB2</td>
+      <td>SEMA4A::PLXNB2</td>
+      <td>0.000999</td>
+      <td>0.014026</td>
+      <td>1.853067</td>
+    </tr>
+    <tr>
+      <th>3</th>
+      <td>T_double_neg</td>
+      <td>NK</td>
+      <td>0.344916</td>
+      <td>CLEC2D</td>
+      <td>KLRB1</td>
+      <td>CLEC2D::KLRB1</td>
+      <td>0.000999</td>
+      <td>0.009419</td>
+      <td>2.025989</td>
+    </tr>
+    <tr>
+      <th>4</th>
+      <td>B_memory</td>
+      <td>B_naive</td>
+      <td>0.337151</td>
+      <td>COL4A3</td>
+      <td>CD44</td>
+      <td>COL4A3::CD44</td>
+      <td>0.000999</td>
+      <td>0.012947</td>
+      <td>1.887830</td>
+    </tr>
+    <tr>
+      <th>5</th>
+      <td>B_memory</td>
+      <td>B_memory</td>
+      <td>0.324935</td>
+      <td>COL4A4</td>
+      <td>CD44</td>
+      <td>COL4A4::CD44</td>
+      <td>0.000999</td>
+      <td>0.012469</td>
+      <td>1.904168</td>
+    </tr>
+    <tr>
+      <th>6</th>
+      <td>B_memory</td>
+      <td>B_memory</td>
+      <td>0.282586</td>
+      <td>SEMA7A</td>
+      <td>PLXNC1</td>
+      <td>SEMA7A::PLXNC1</td>
+      <td>0.000999</td>
+      <td>0.012469</td>
+      <td>1.904168</td>
+    </tr>
+    <tr>
+      <th>7</th>
+      <td>pDC</td>
+      <td>B_naive</td>
+      <td>0.276228</td>
+      <td>APP</td>
+      <td>CD74</td>
+      <td>APP::CD74</td>
+      <td>0.000999</td>
+      <td>0.009686</td>
+      <td>2.013857</td>
+    </tr>
+    <tr>
+      <th>8</th>
+      <td>B_naive</td>
+      <td>B_naive</td>
+      <td>0.258380</td>
+      <td>APP</td>
+      <td>CD74</td>
+      <td>APP::CD74</td>
+      <td>0.033966</td>
+      <td>0.270686</td>
+      <td>0.567535</td>
+    </tr>
+    <tr>
+      <th>9</th>
+      <td>B_memory</td>
+      <td>B_naive</td>
+      <td>0.244977</td>
+      <td>APP</td>
+      <td>CD74</td>
+      <td>APP::CD74</td>
+      <td>0.026973</td>
+      <td>0.292850</td>
+      <td>0.533355</td>
+    </tr>
+    <tr>
+      <th>10</th>
+      <td>B_memory</td>
+      <td>T_CD8</td>
+      <td>0.237543</td>
+      <td>COL4A3</td>
+      <td>CD44</td>
+      <td>COL4A3::CD44</td>
+      <td>0.000999</td>
+      <td>0.012488</td>
+      <td>1.903524</td>
+    </tr>
+    <tr>
+      <th>11</th>
+      <td>B_germinal_center</td>
+      <td>B_germinal_center</td>
+      <td>0.212287</td>
+      <td>PTPRC</td>
+      <td>CD22</td>
+      <td>PTPRC::CD22</td>
+      <td>0.000999</td>
+      <td>0.014026</td>
+      <td>1.853067</td>
+    </tr>
+    <tr>
+      <th>12</th>
+      <td>B_germinal_center</td>
+      <td>B_germinal_center</td>
+      <td>0.208078</td>
+      <td>MIF</td>
+      <td>CD74</td>
+      <td>MIF::CD74</td>
+      <td>0.000999</td>
+      <td>0.014026</td>
+      <td>1.853067</td>
+    </tr>
+    <tr>
+      <th>13</th>
+      <td>B_memory</td>
+      <td>B_germinal_center</td>
+      <td>0.199604</td>
+      <td>PTPRC</td>
+      <td>CD22</td>
+      <td>PTPRC::CD22</td>
+      <td>0.000999</td>
+      <td>0.013986</td>
+      <td>1.854306</td>
+    </tr>
+    <tr>
+      <th>14</th>
+      <td>B_naive</td>
+      <td>B_memory</td>
+      <td>0.194665</td>
+      <td>FCER2</td>
+      <td>CR2</td>
+      <td>FCER2::CR2</td>
+      <td>0.000999</td>
+      <td>0.013387</td>
+      <td>1.873330</td>
+    </tr>
+    <tr>
+      <th>15</th>
+      <td>B_naive</td>
+      <td>B_memory</td>
+      <td>0.192835</td>
+      <td>COL4A3</td>
+      <td>CD44</td>
+      <td>COL4A3::CD44</td>
+      <td>0.028971</td>
+      <td>0.286856</td>
+      <td>0.542336</td>
+    </tr>
+    <tr>
+      <th>16</th>
+      <td>plasma</td>
+      <td>plasma</td>
+      <td>0.186626</td>
+      <td>WNT5B</td>
+      <td>FZD6</td>
+      <td>WNT5B::FZD6</td>
+      <td>0.000999</td>
+      <td>0.010347</td>
+      <td>1.985195</td>
+    </tr>
+    <tr>
+      <th>17</th>
+      <td>MRC</td>
+      <td>T_CD4</td>
+      <td>0.184022</td>
+      <td>CCL21</td>
+      <td>CCR7</td>
+      <td>CCL21::CCR7</td>
+      <td>0.000999</td>
+      <td>0.016983</td>
+      <td>1.769986</td>
+    </tr>
+    <tr>
+      <th>18</th>
+      <td>pDC</td>
+      <td>B_memory</td>
+      <td>0.179336</td>
+      <td>APP</td>
+      <td>CD74</td>
+      <td>APP::CD74</td>
+      <td>0.000999</td>
+      <td>0.009078</td>
+      <td>2.042016</td>
+    </tr>
+    <tr>
+      <th>19</th>
+      <td>T_double_neg</td>
+      <td>B_germinal_center</td>
+      <td>0.178474</td>
+      <td>PECAM1</td>
+      <td>CD38</td>
+      <td>PECAM1::CD38</td>
+      <td>0.000999</td>
+      <td>0.008242</td>
+      <td>2.083981</td>
+    </tr>
+    <tr>
+      <th>20</th>
+      <td>B_naive</td>
+      <td>B_naive</td>
+      <td>0.177099</td>
+      <td>PTPRC</td>
+      <td>CD22</td>
+      <td>PTPRC::CD22</td>
+      <td>0.070929</td>
+      <td>0.323121</td>
+      <td>0.490635</td>
+    </tr>
+    <tr>
+      <th>21</th>
+      <td>B_germinal_center</td>
+      <td>B_naive</td>
+      <td>0.170844</td>
+      <td>MIF</td>
+      <td>CD74</td>
+      <td>MIF::CD74</td>
+      <td>0.000999</td>
+      <td>0.012367</td>
+      <td>1.907738</td>
+    </tr>
+    <tr>
+      <th>22</th>
+      <td>B_naive</td>
+      <td>B_memory</td>
+      <td>0.167823</td>
+      <td>APP</td>
+      <td>CD74</td>
+      <td>APP::CD74</td>
+      <td>0.063936</td>
+      <td>0.368617</td>
+      <td>0.433425</td>
+    </tr>
+    <tr>
+      <th>23</th>
+      <td>plasma</td>
+      <td>plasma</td>
+      <td>0.165556</td>
+      <td>PECAM1</td>
+      <td>CD38</td>
+      <td>PECAM1::CD38</td>
+      <td>0.000999</td>
+      <td>0.010347</td>
+      <td>1.985195</td>
+    </tr>
+    <tr>
+      <th>24</th>
+      <td>B_memory</td>
+      <td>B_naive</td>
+      <td>0.162031</td>
+      <td>PTPRC</td>
+      <td>CD22</td>
+      <td>PTPRC::CD22</td>
+      <td>0.067932</td>
+      <td>0.343595</td>
+      <td>0.463954</td>
+    </tr>
+    <tr>
+      <th>25</th>
+      <td>B_naive</td>
+      <td>B_memory</td>
+      <td>0.159976</td>
+      <td>TGFB1</td>
+      <td>TGFBR2</td>
+      <td>TGFB1::TGFBR2</td>
+      <td>0.067932</td>
+      <td>0.368617</td>
+      <td>0.433425</td>
+    </tr>
+    <tr>
+      <th>26</th>
+      <td>T_follicular_helper</td>
+      <td>B_germinal_center</td>
+      <td>0.158691</td>
+      <td>PTPRC</td>
+      <td>CD22</td>
+      <td>PTPRC::CD22</td>
+      <td>0.000999</td>
+      <td>0.010323</td>
+      <td>1.986194</td>
+    </tr>
+    <tr>
+      <th>27</th>
+      <td>B_naive</td>
+      <td>B_naive</td>
+      <td>0.158079</td>
+      <td>TGFB1</td>
+      <td>TGFBR2</td>
+      <td>TGFB1::TGFBR2</td>
+      <td>0.023976</td>
+      <td>0.245754</td>
+      <td>0.609499</td>
+    </tr>
+    <tr>
+      <th>28</th>
+      <td>B_memory</td>
+      <td>B_memory</td>
+      <td>0.154764</td>
+      <td>APP</td>
+      <td>CD74</td>
+      <td>APP::CD74</td>
+      <td>0.101898</td>
+      <td>0.397187</td>
+      <td>0.401005</td>
+    </tr>
+    <tr>
+      <th>29</th>
+      <td>B_naive</td>
+      <td>B_memory</td>
+      <td>0.151714</td>
+      <td>ANGPTL1</td>
+      <td>ITGB1</td>
+      <td>ANGPTL1::ITGB1</td>
+      <td>0.064935</td>
+      <td>0.368617</td>
+      <td>0.433425</td>
+    </tr>
+  </tbody>
+</table>
+</div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[51]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>res_LARIS[res_LARIS[&#39;sender&#39;]==&#39;FDC_LZDZ&#39;]
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[51]:
+</pre></div>
+</div>
+<div class="output_area rendered_html docutils container">
+<div>
+<style scoped>
+    .dataframe tbody tr th:only-of-type {
+        vertical-align: middle;
+    }
+
+    .dataframe tbody tr th {
+        vertical-align: top;
+    }
+
+    .dataframe thead th {
+        text-align: right;
+    }
+</style>
+<table border="1" class="dataframe">
+  <thead>
+    <tr style="text-align: right;">
+      <th></th>
+      <th>sender</th>
+      <th>receiver</th>
+      <th>interaction_score</th>
+      <th>ligand</th>
+      <th>receptor</th>
+      <th>interaction_name</th>
+      <th>p_value</th>
+      <th>p_value_fdr</th>
+      <th>nlog10_p_value_fdr</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th>109</th>
+      <td>FDC_LZDZ</td>
+      <td>B_memory</td>
+      <td>0.054153</td>
+      <td>FN1</td>
+      <td>ITGA4</td>
+      <td>FN1::ITGA4</td>
+      <td>0.000999</td>
+      <td>0.013291</td>
+      <td>1.876441</td>
+    </tr>
+    <tr>
+      <th>124</th>
+      <td>FDC_LZDZ</td>
+      <td>B_memory</td>
+      <td>0.046145</td>
+      <td>FN1</td>
+      <td>CD44</td>
+      <td>FN1::CD44</td>
+      <td>0.000999</td>
+      <td>0.013291</td>
+      <td>1.876441</td>
+    </tr>
+    <tr>
+      <th>135</th>
+      <td>FDC_LZDZ</td>
+      <td>mDC</td>
+      <td>0.043458</td>
+      <td>FN1</td>
+      <td>ITGA4</td>
+      <td>FN1::ITGA4</td>
+      <td>0.000999</td>
+      <td>0.007473</td>
+      <td>2.126533</td>
+    </tr>
+    <tr>
+      <th>149</th>
+      <td>FDC_LZDZ</td>
+      <td>FDC_LZDZ</td>
+      <td>0.039254</td>
+      <td>SLC1A2</td>
+      <td>GRIA3</td>
+      <td>SLC1A2::GRIA3</td>
+      <td>0.000999</td>
+      <td>0.012916</td>
+      <td>1.888884</td>
+    </tr>
+    <tr>
+      <th>151</th>
+      <td>FDC_LZDZ</td>
+      <td>T_CD8</td>
+      <td>0.038067</td>
+      <td>FN1</td>
+      <td>CD44</td>
+      <td>FN1::CD44</td>
+      <td>0.000999</td>
+      <td>0.011748</td>
+      <td>1.930027</td>
+    </tr>
+    <tr>
+      <th>...</th>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+      <td>...</td>
+    </tr>
+    <tr>
+      <th>389053</th>
+      <td>FDC_LZDZ</td>
+      <td>FDC_LZDZ</td>
+      <td>0.000000</td>
+      <td>NRG2</td>
+      <td>ERBB4</td>
+      <td>NRG2::ERBB4</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>0.000000</td>
+    </tr>
+    <tr>
+      <th>389054</th>
+      <td>FDC_LZDZ</td>
+      <td>FDC_LZDZ</td>
+      <td>0.000000</td>
+      <td>LAMC2</td>
+      <td>ITGB4</td>
+      <td>LAMC2::ITGB4</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>0.000000</td>
+    </tr>
+    <tr>
+      <th>389055</th>
+      <td>FDC_LZDZ</td>
+      <td>FDC_LZDZ</td>
+      <td>0.000000</td>
+      <td>NRG1</td>
+      <td>ITGB4</td>
+      <td>NRG1::ITGB4</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>0.000000</td>
+    </tr>
+    <tr>
+      <th>389056</th>
+      <td>FDC_LZDZ</td>
+      <td>FDC_LZDZ</td>
+      <td>0.000000</td>
+      <td>NRG3</td>
+      <td>ERBB4</td>
+      <td>NRG3::ERBB4</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>0.000000</td>
+    </tr>
+    <tr>
+      <th>389057</th>
+      <td>FDC_LZDZ</td>
+      <td>FDC_LZDZ</td>
+      <td>0.000000</td>
+      <td>LAMA3</td>
+      <td>ITGB4</td>
+      <td>LAMA3::ITGB4</td>
+      <td>1.000000</td>
+      <td>1.000000</td>
+      <td>0.000000</td>
+    </tr>
+  </tbody>
+</table>
+<p>27790 rows × 9 columns</p>
+</div></div>
+</div>
+</section>
+<section id="CCC-DotPlot-(Facet)">
+<h2>CCC DotPlot (Facet)<a class="headerlink" href="#CCC-DotPlot-(Facet)" title="Link to this heading">#</a></h2>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[52]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCDotPlotFacet(
+    res_LARIS,
+    senders=[&quot;MRC&quot;, &quot;FDC_LZDZ&quot;, &quot;B_naive&quot;, &#39;T_follicular_helper&#39;,&#39;B_germinal_center&#39;, &#39;T_CD8&#39;, &#39;T_CD4&#39;],
+    receivers=[
+        &quot;B_naive&quot;,
+        &quot;B_germinal_center&quot;,
+        &quot;B_memory&quot;,
+        &quot;plasma&quot;,
+        &#39;T_follicular_helper&#39;,
+        &#39;MRC&#39;,
+        &#39;T_CD4&#39;,
+        &#39;T_CD8&#39;
+
+    ],
+    interactions_to_plot=[
+        &quot;COL1A1::CD44&quot;,
+        &#39;APP::CD74&#39;,
+        &quot;IL7::IL7R&quot;,
+        &quot;IL21::IL21R&quot;,
+        &#39;PDCD1LG2::PDCD1&#39;,
+        &quot;C3::CR2&quot;,  &quot;CLEC2D::KLRB1&quot;,
+        &#39;FN1::ITGA4&#39;,
+        &#39;PDGFD::PDGFRB&#39;,&#39;PTPRC::CD22&#39;, ],
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_84_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_84_0.png" style="width: 1528px; height: 1180px;" />
+</div>
+</div>
+<p>Use top ones, no filtering on P values or scores:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[53]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCDotPlotFacet(
+    res_LARIS,
+    senders=[&quot;MRC&quot;, &quot;FDC_LZDZ&quot;, &quot;B_naive&quot;, &#39;T_follicular_helper&#39;,&#39;B_germinal_center&#39;, &#39;T_CD8&#39;, &#39;T_CD4&#39;],
+    receivers=[
+        &quot;B_naive&quot;,
+        &quot;B_germinal_center&quot;,
+        &quot;B_memory&quot;,
+        &quot;plasma&quot;,
+        &#39;T_follicular_helper&#39;,
+        &#39;MRC&#39;,
+        &#39;T_CD4&#39;,
+        &#39;T_CD8&#39;
+
+    ],
+    interactions_to_plot=[
+        &quot;COL1A1::CD44&quot;,
+        &#39;APP::CD74&#39;,
+        &quot;IL7::IL7R&quot;,
+        &quot;IL21::IL21R&quot;,
+        &#39;PDCD1LG2::PDCD1&#39;,
+        &quot;C3::CR2&quot;,  &quot;CLEC2D::KLRB1&quot;,
+        &#39;FN1::ITGA4&#39;,
+        &#39;PDGFD::PDGFRB&#39;,&#39;PTPRC::CD22&#39;, ],
+
+    cmap=&#39;YlGn&#39;,
+
+    filter_significant=False, filter_by_interaction_score=False, n_top=3000,
+
+    # filter_significant=True, filter_by_interaction_score=True,
+    p_value_col=&#39;p_value&#39;,
+    threshold=0.05,
+    threshold_interaction_score=0.01,
+    # ncol=6,
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+No filters applied. Using top 3000 interactions.
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_86_1.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_86_1.png" style="width: 1528px; height: 1180px;" />
+</div>
+</div>
+<p>Change the <code class="docutils literal notranslate"><span class="pre">ncol</span></code> to control the number of columns, and also turn off the grid lines by <code class="docutils literal notranslate"><span class="pre">show_grid</span> <span class="pre">=</span> <span class="pre">False</span></code>:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[54]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCDotPlotFacet(
+    res_LARIS,
+    senders=[&quot;MRC&quot;, &quot;FDC_LZDZ&quot;, &quot;B_naive&quot;, &#39;T_follicular_helper&#39;,&#39;B_germinal_center&#39;, &#39;T_CD8&#39;, &#39;T_CD4&#39;],
+    receivers=[
+        &quot;B_naive&quot;,
+        &quot;B_germinal_center&quot;,
+        &quot;B_memory&quot;,
+        &quot;plasma&quot;,
+        &#39;T_follicular_helper&#39;,
+        &#39;MRC&#39;,
+        &#39;T_CD4&#39;,
+        &#39;T_CD8&#39;
+
+    ],
+    interactions_to_plot=[
+        &quot;COL1A1::CD44&quot;,
+        &#39;APP::CD74&#39;,
+        &quot;IL7::IL7R&quot;,
+        &quot;IL21::IL21R&quot;,
+        &#39;PDCD1LG2::PDCD1&#39;,
+        &quot;C3::CR2&quot;,  &quot;CLEC2D::KLRB1&quot;,
+        &#39;FN1::ITGA4&#39;,
+        &#39;PDGFD::PDGFRB&#39;,&#39;PTPRC::CD22&#39;, ],
+
+
+    cmap=pos_cmap,
+
+    filter_significant=False, filter_by_interaction_score=False, n_top=3000,
+
+    # filter_significant=True, filter_by_interaction_score=True,
+    p_value_col=&#39;p_value&#39;,
+    threshold=0.05,
+    threshold_interaction_score=0.01,
+    ncol=4,
+    show_grid = False
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+No filters applied. Using top 3000 interactions.
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_88_1.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_88_1.png" style="width: 1895px; height: 851px;" />
+</div>
+</div>
+<section id="CCC-DotPlot-(Facet),-facet-by-receiver">
+<h3>CCC DotPlot (Facet), facet by receiver<a class="headerlink" href="#CCC-DotPlot-(Facet),-facet-by-receiver" title="Link to this heading">#</a></h3>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[55]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCDotPlotFacet(
+    res_LARIS,
+    facet_by=&#39;receiver&#39;,
+    senders=[&quot;MRC&quot;, &quot;FDC_LZDZ&quot;, &quot;B_naive&quot;, &#39;T_follicular_helper&#39;,&#39;B_germinal_center&#39;, &#39;T_CD8&#39;, &#39;T_CD4&#39;],
+    receivers=[
+        &quot;B_naive&quot;,
+        &quot;B_germinal_center&quot;,
+        &quot;B_memory&quot;,
+        &quot;plasma&quot;,
+        &#39;T_follicular_helper&#39;,
+        &#39;MRC&#39;,
+        &#39;T_CD4&#39;,
+        &#39;T_CD8&#39;
+
+    ],
+    interactions_to_plot=[
+        &quot;COL1A1::CD44&quot;,
+        &#39;APP::CD74&#39;,
+        &quot;IL7::IL7R&quot;,
+        &quot;IL21::IL21R&quot;,
+        &#39;PDCD1LG2::PDCD1&#39;,
+        &quot;C3::CR2&quot;,  &quot;CLEC2D::KLRB1&quot;,
+        &#39;FN1::ITGA4&#39;,
+        &#39;PDGFD::PDGFRB&#39;,&#39;PTPRC::CD22&#39;, ],
+
+
+    cmap=pos_cmap,
+    # filter_significant=False, n_top=3000,
+
+    filter_significant=True,
+    p_value_col=&#39;p_value&#39;,
+    threshold=0.05,
+    filter_by_interaction_score=True,
+    threshold_interaction_score=0.01,
+    ncol=3,
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_90_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_90_0.png" style="width: 1528px; height: 1180px;" />
+</div>
+</div>
+</section>
+</section>
+<section id="Create-combined-object-with-LR-scores-and-gene-expression-combined">
+<h2>Create combined object with LR scores and gene expression combined<a class="headerlink" href="#Create-combined-object-with-LR-scores-and-gene-expression-combined" title="Link to this heading">#</a></h2>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[56]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>adata_dotplot = la.pl.prepareDotPlotAdata(lr_adata, adata)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+Created combined AnnData: 5695 cells × 27568 features
+</pre></div></div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[57]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotLRDotPlot(
+    adata_dotplot,
+    [&quot;FCER2::CR2&quot;, &quot;IL7::IL7R&quot;, &#39;PDCD1LG2::PDCD1&#39;, &quot;C3::CR2&quot;, &quot;IL21::IL21R&quot;,&#39;PDGFD::PDGFRB&#39;,&#39;TNFSF13B::TNFRSF13C&#39;],
+    groupby=&#39;cell_type&#39;,
+    cmap_interaction=&#39;Spectral_r&#39;,
+    cmap_ligand=&#39;Purples&#39;,
+    cmap_receptor=&#39;Reds&#39;,
+    figsize=[18, 5],
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_94_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_94_0.png" style="width: 1708px; height: 462px;" />
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[58]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotLRDotPlot(
+    adata_dotplot,
+    [&#39;ENTPD1::TMIGD3&#39;, &#39;TGFB1::ACVR1&#39;, &#39;COL6A3::ITGA10&#39;],
+    groupby=&#39;cell_type&#39;,
+    cmap_interaction=&#39;Purples&#39;,
+    cmap_ligand=&#39;Blues&#39;,
+    cmap_receptor=&#39;Reds&#39;,
+    figsize=[18, 4],
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_95_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_95_0.png" style="width: 1713px; height: 372px;" />
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[59]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotLRDotPlot(
+    adata_dotplot,
+    [&#39;ENTPD1::TMIGD3&#39;, &#39;TGFB1::ACVR1&#39;, &#39;COL6A3::ITGA10&#39;],
+    groupby=&#39;cell_type&#39;,
+    cmap_interaction=&#39;Spectral_r&#39;,
+    cmap_ligand=&#39;Purples&#39;,
+    cmap_receptor=&#39;Reds&#39;,
+    figsize=[6, 10],
+    orientation=&#39;vertical&#39;
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_96_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_96_0.png" style="width: 626px; height: 937px;" />
+</div>
+</div>
+</section>
+<section id="Spatial-plot-of-participating-cells-for-an-interaction">
+<h2>Spatial plot of participating cells for an interaction<a class="headerlink" href="#Spatial-plot-of-participating-cells-for-an-interaction" title="Link to this heading">#</a></h2>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[60]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span># Plot selected cells that have an interaction score for a certain interaction ((participating in an interaction))
+la.pl.plotCCCSpatial(
+    lr_adata=lr_adata,
+    basis=&quot;X_spatial&quot;,
+    interaction=&#39;C3::CR2&#39;,
+    cell_type=&quot;cell_type&quot;,
+    selected_cell_types=[&#39;B_naive&#39;, &#39;B_germinal_center&#39;,&#39;B_memory&#39;,&#39;plasma&#39;,&#39;MRC&#39;,&#39;FDC_LZDZ&#39;],
+    background_color=&#39;lightgrey&#39;,
+    colors=[&#39;#da6c42&#39;,&#39;#7db0ea&#39;,&#39;#fbc2a9&#39;,&#39;#6b200c&#39;,&#39;#5c4799&#39;,&#39;#b31130&#39;],  # [&#39;#d53e4f&#39;,&#39;#fdae61&#39;,&#39;#3288bd&#39;,&#39;#3288bd&#39;,&#39;#3288bd&#39;,&#39;#3288bd&#39;,&#39;#3288bd&#39;]
+    size=120,
+    fig_width=6,
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_98_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_98_0.png" style="width: 765px; height: 519px;" />
+</div>
+</div>
+<section id="Spatial-plot-of-participating-cells-for-an-interaction,-all-cells">
+<h3>Spatial plot of participating cells for an interaction, all cells<a class="headerlink" href="#Spatial-plot-of-participating-cells-for-an-interaction,-all-cells" title="Link to this heading">#</a></h3>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[61]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span># Plot any cell that has an interaction score for a cetrain LR pair (participating in an interaction)
+lr_adata.uns[&#39;cell_type_colors&#39;] = adata.uns[&#39;cell_type_colors&#39;].copy()
+# Highlight all expressing cells with original colors by setting `highlight_all_expressing=True`
+la.pl.plotCCCSpatial(
+    lr_adata,
+    basis=&#39;X_spatial&#39;,
+    interaction=&#39;PDCD1LG2::PDCD1&#39;,
+    cell_type=&#39;cell_type&#39;,
+    background_color=&#39;lightgrey&#39;,
+    highlight_all_expressing=True,
+    size=120,
+    fig_width=6,
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_100_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_100_0.png" style="width: 840px; height: 499px;" />
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[62]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span># Plot any cell that has an interaction score for a cetrain LR pair (participating in an interaction)
+lr_adata.uns[&#39;cell_type_colors&#39;] = adata.uns[&#39;cell_type_colors&#39;].copy()
+# Highlight all expressing cells with original colors by setting `highlight_all_expressing=True`
+la.pl.plotCCCSpatial(
+    lr_adata,
+    basis=&#39;X_spatial&#39;,
+    interaction=&#39;TNXB::ITGB1&#39;,
+    cell_type=&#39;cell_type&#39;,
+    background_color=&#39;lightgrey&#39;,
+    highlight_all_expressing=True,
+    size=120,
+    fig_width=6,
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_101_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_101_0.png" style="width: 840px; height: 499px;" />
+</div>
+</div>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[63]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span># Plot any cell that has an interaction score for a cetrain LR pair (participating in an interaction)
+lr_adata.uns[&#39;cell_type_colors&#39;] = adata.uns[&#39;cell_type_colors&#39;].copy()
+# Highlight all expressing cells with original colors by setting `highlight_all_expressing=True`
+la.pl.plotCCCSpatial(
+    lr_adata,
+    basis=&#39;X_spatial&#39;,
+    interaction=&#39;CCL19::CCR7&#39;,
+    cell_type=&#39;cell_type&#39;,
+    background_color=&#39;lightgrey&#39;,
+    highlight_all_expressing=True,
+    size=120,
+    fig_width=6,
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_102_0.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_102_0.png" style="width: 840px; height: 499px;" />
+</div>
+</div>
+</section>
+</section>
+<section id="Save-the-plot">
+<h2>Save the plot<a class="headerlink" href="#Save-the-plot" title="Link to this heading">#</a></h2>
+<p>To save the plot, please use the <code class="docutils literal notranslate"><span class="pre">save</span></code> parameter in each plotting function within LARIS:</p>
+<div class="nbinput docutils container">
+<div class="prompt highlight-none notranslate"><div class="highlight"><pre><span></span>[64]:
+</pre></div>
+</div>
+<div class="input_area highlight-ipython3 notranslate"><div class="highlight"><pre><span></span>la.pl.plotCCCHeatmap(
+    res_LARIS,
+    save=&#39;./LARIS_ccc_heatmap.pdf&#39;
+)
+</pre></div>
+</div>
+</div>
+<div class="nboutput docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<div class="highlight"><pre>
+Figure saved to: ./LARIS_ccc_heatmap.pdf
+</pre></div></div>
+</div>
+<div class="nboutput nblast docutils container">
+<div class="prompt empty docutils container">
+</div>
+<div class="output_area docutils container">
+<img alt="../_images/notebooks_04_LARIS_tutorial_105_1.png" class="no-scaled-link" src="../_images/notebooks_04_LARIS_tutorial_105_1.png" style="width: 532px; height: 462px;" />
+</div>
+</div>
+</section>
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+    <a class="left-prev"
+       href="../tutorials.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">Tutorials</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="../modules.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">API</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav class="bd-toc-nav page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#Import-LARIS">Import LARIS</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#Import-other-packages">Import other packages</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#Load-data">Load data</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#Run-LARIS">Run LARIS</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#Load-the-cell-cell-interaction-database">Load the cell-cell interaction database</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#Remove-ligand-and-receptors-not-present-in-the-object">Remove ligand and receptors not present in the object</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#Create-the-ligand-receptor-anndata-object">Create the ligand-receptor anndata object</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Run LARIS</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#Check-the-spatial-variable-LR-interaction">Check the spatial variable LR interaction</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#Check-the-cell-type-level-ligand-receptor-interaction-inferred-by-LARIS">Check the cell type-level ligand-receptor interaction inferred by LARIS</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#Filter-hits-by-ligand/receptor/cell-type">Filter hits by ligand/receptor/cell type</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#Look-for-enrichment-in-different-tissue-regions">Look for enrichment in different tissue regions</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#Visualize-the-ligand-receptor-interaction-score-in-spatial-plots">Visualize the ligand-receptor interaction score in spatial plots</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#Visualize-the-ligand-receptor-interaction-score-in-UMAP-plots">Visualize the ligand-receptor interaction score in UMAP plots</a></li>
+</ul>
+</li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#Visualize-LR-interaction-and-cell-cell-communication-in-dfferent-ways">Visualize LR interaction and cell-cell communication in dfferent ways</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#Cell-cell-communication-(CCC)-Heatmap">Cell-cell communication (CCC) Heatmap</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#CCC-Network">CCC Network</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#CCC-Network-(cumulative)">CCC Network (cumulative)</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#CCC-DotPlot">CCC DotPlot</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#CCC-DotPlot-(Facet)">CCC DotPlot (Facet)</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#CCC-DotPlot-(Facet),-facet-by-receiver">CCC DotPlot (Facet), facet by receiver</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#Create-combined-object-with-LR-scores-and-gene-expression-combined">Create combined object with LR scores and gene expression combined</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#Spatial-plot-of-participating-cells-for-an-interaction">Spatial plot of participating cells for an interaction</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#Spatial-plot-of-participating-cells-for-an-interaction,-all-cells">Spatial plot of participating cells for an interaction, all cells</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#Save-the-plot">Save the plot</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=8878045cc6db502f8baf"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=8878045cc6db502f8baf"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2025, Min Dai, Tivadar Török, Dawei Sun, et al.
+      <br/>
+    
+  </p>
+</div>
+      
+        <div class="footer-item">
+
+  <p class="sphinx-version">
+    Created using <a href="https://www.sphinx-doc.org/">Sphinx</a> 7.3.7.
+    <br/>
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.16.1.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>

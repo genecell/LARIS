@@ -1,0 +1,13 @@
+## Installation
+
+### Stable version
+
+```
+pip install laris
+```
+
+### Development version
+ 
+```
+pip install git+https://github.com/genecell/LARIS.git
+```

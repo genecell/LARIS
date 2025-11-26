@@ -1,0 +1,35 @@
+.. LARIS documentation master file, created by
+   sphinx-quickstart on Tue Nov 25 16:58:25 2025.
+   You can adapt this file completely to your liking, but it should at least
+   contain the root `toctree` directive.
+
+LARIS: Ligand And Receptor Interaction in Spatial transcriptomics data
+======================================================================
+
+LARIS is a Python package for analyzing ligand-receptor interactions in spatial transcriptomics data. It identifies spatially-specific cell-cell communication patterns by integrating gene expression, spatial information, and cell type annotations.
+
+Features
+~~~~~~~~~
+
+- **Spatial LR interaction strength:** Calculate ligand-receptor interaction scores using spatial adjacency information
+
+- **Spatial specificity:** Identify LR pairs with significant spatial variable patterns
+
+- **Inference at cell type level:** Compute sender-receiver cell type interaction scores
+
+- **Spatial neighborhoods:** Analyze interactions in the context of spatial cell type neighborhoods
+
+.. toctree::
+   :maxdepth: 1
+
+   installation
+   tutorials
+   modules
+
+
+Indices and tables
+==================
+
+* :ref:`genindex`
+* :ref:`modindex`
+* :ref:`search`
