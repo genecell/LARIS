@@ -31,17 +31,19 @@ Authors: Min Dai, Tivadar Török, Dawei Sun, et al.
 Version: 1.0.0
 """
 
-__version__ = "1.0.0"
+__version__ = "0.9.3"
 __author__ = "Min Dai, Tivadar Török, Dawei Sun, et al."
 
 # Import submodules
 from . import tools as tl
 from . import preprocessing as pp
 from . import plotting as pl
+from . import datasets
 
 # Define public API
 __all__ = [
     'tl',
-    'pp', 
+    'pp',
     'pl',
+    'datasets',
 ]
