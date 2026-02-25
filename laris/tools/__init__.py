@@ -94,16 +94,22 @@ def prepareLRInteraction(
 
     X_spatial = adata.obsm[use_rep_spatial].copy()
 
+    # Ensure adata.X is sparse so downstream .multiply() / .maximum() work.
+    # If adata.X is a dense numpy array, convert to CSR sparse matrix.
+    X = adata.X
+    if not sp.issparse(X):
+        X = sp.csr_matrix(X)
+
     # Create the diffused ligand/receptor matrix
     cellxcell = kneighbors_graph(
-        X_spatial, 
-        n_neighbors=number_nearest_neighbors, 
-        mode='distance', 
+        X_spatial,
+        n_neighbors=number_nearest_neighbors,
+        mode='distance',
         include_self=True
     )
     cellxcell.data = 1 / np.exp(cellxcell.data / (np.mean(cellxcell.data) / 2))
 
-    genexcell = adata.X.copy().T
+    genexcell = X.copy().T
     order1 = genexcell @ cellxcell.T
 
     # Estimate diffused ligand-receptor activity
@@ -125,8 +131,8 @@ def prepareLRInteraction(
     ligand_idx = sorter[np.searchsorted(adata.var_names, lr_df['ligand'], sorter=sorter)]
     receptor_idx = sorter[np.searchsorted(adata.var_names, lr_df['receptor'], sorter=sorter)]
 
-    ligand_mask = adata.X[:, ligand_idx] != 0   # True where ligand is expressed
-    receptor_mask = adata.X[:, receptor_idx] != 0  # True where receptor is expressed
+    ligand_mask = X[:, ligand_idx] != 0   # True where ligand is expressed
+    receptor_mask = X[:, receptor_idx] != 0  # True where receptor is expressed
 
     non_zero_mask = ligand_mask.maximum(receptor_mask)  # elementwise OR for sparse matrices
     lr_adata.X = lr_adata.X.multiply(non_zero_mask)
@@ -516,8 +522,8 @@ def runLARIS(
         ascending=False
     ).copy()
     
-    n_cells_expressed = lr_var['n_cells_by_counts'].values
-    gsp_score_for_ranking = lr_var['LR_SpatialSpecificity'].values
+    n_cells_expressed = lr_var['n_cells_by_counts'].values.copy()
+    gsp_score_for_ranking = lr_var['LR_SpatialSpecificity'].values.copy()
     
     # Penalize LR pairs with low cell counts
     min_score = np.min(gsp_score_for_ranking)
