@@ -77,8 +77,23 @@ def prepareLRInteraction(
     >>> print(lr_adata.shape)  # (n_cells, n_lr_pairs)
 
     """
+    # Deduplicate lr_df to prevent duplicate var_names in lr_adata, which
+    # causes identical background sets and duplicate p-values downstream.
+    n_before = len(lr_df)
+    lr_df = lr_df.drop_duplicates(subset=['ligand', 'receptor']).reset_index(drop=True)
+    n_dropped = n_before - len(lr_df)
+    if n_dropped > 0:
+        import warnings
+        warnings.warn(
+            f"prepareLRInteraction: removed {n_dropped} duplicate ligand-receptor "
+            f"pair(s) from lr_df. Duplicate pairs cause identical p-values in "
+            f"runLARIS. Ensure each (ligand, receptor) pair is unique.",
+            UserWarning,
+            stacklevel=2,
+        )
+
     X_spatial = adata.obsm[use_rep_spatial].copy()
-    
+
     # Create the diffused ligand/receptor matrix
     cellxcell = kneighbors_graph(
         X_spatial, 

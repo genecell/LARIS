@@ -1525,9 +1525,11 @@ def _calculate_laris_score_by_celltype(
             total=n_cell_type_pairs,
             desc="  Processing pairs"
         ):
-            # Create score lookup for this cell type pair
+            # Create score lookup for this cell type pair.
+            # Key is the full "ligand::receptor" interaction_name string to avoid
+            # collisions when multiple rows share the same (ligand, receptor) pair.
             score_lookup = {
-                (row.ligand, row.receptor): row.interaction_score 
+                row.interaction_name: row.interaction_score
                 for row in group_df.itertuples()
             }
             
@@ -1553,16 +1555,14 @@ def _calculate_laris_score_by_celltype(
                 
                 control_interaction_names = all_interaction_names[control_indices]
                 
-                # Look up scores for background interactions
+                # Look up scores for background interactions using the full
+                # interaction_name string (e.g. "Tgfb1::Tgfbr1") as the key,
+                # consistent with how score_lookup is built above.
                 control_interaction_names_flat = control_interaction_names.flatten()
-                null_scores_flat = []
-                
-                for name in control_interaction_names_flat:
-                    try:
-                        L, R = name.split('::')
-                        null_scores_flat.append(score_lookup.get((L, R), 0.0))
-                    except ValueError:
-                        null_scores_flat.append(0.0)
+                null_scores_flat = [
+                    score_lookup.get(name, 0.0)
+                    for name in control_interaction_names_flat
+                ]
                 
                 null_distribution = np.array(
                     null_scores_flat, 
