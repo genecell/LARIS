@@ -75,5 +75,3 @@ exclude = [
 [tool.hatch.build.targets.wheel]
 packages = [ "laris" ]
 
-[tool.hatch.build.targets.wheel.force-include]
-"laris/datasets/_data" = "laris/datasets/_data"
