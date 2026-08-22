@@ -24,6 +24,7 @@ from sklearn.neighbors import kneighbors_graph
 from sklearn.preprocessing import normalize
 from sklearn.metrics.pairwise import cosine_similarity
 import cosg
+import warnings
 from typing import Optional, Union, List, Tuple
 from tqdm.auto import tqdm
 from statsmodels.stats.multitest import multipletests
@@ -136,6 +137,10 @@ def _select_top_n(
     
 
     """
+    # Clamp n_top to the array length: argpartition raises for kth out of
+    # bounds when fewer elements than n_top are available (e.g. a small LR
+    # database with the default n_top_lr=4000).
+    n_top = min(n_top, scores.shape[0])
     reference_indices = np.arange(scores.shape[0], dtype=int)
     partition = np.argpartition(scores, -n_top)[-n_top:]
     partial_indices = np.argsort(scores[partition])[::-1]
@@ -246,10 +251,11 @@ def _pairwise_row_multiply(
 
 
 def _compute_avg_expression(
-    adata: ad.AnnData, 
-    groupby: str = 'Leiden', 
-    genes: Optional[List[str]] = None, 
-    groups: Optional[List[str]] = None
+    adata: ad.AnnData,
+    groupby: str = 'Leiden',
+    genes: Optional[List[str]] = None,
+    groups: Optional[List[str]] = None,
+    warn: bool = True
 ) -> pd.DataFrame:
     """
     Compute the average expression levels of genes across cell groups.
@@ -317,9 +323,9 @@ def _compute_avg_expression(
         missing_groups = [group for group in groups if group not in adata.obs[groupby].cat.categories]
         raise ValueError(f"The following groups are not found in adata.obs['{groupby}']: {', '.join(missing_groups)}")
 
-    # Warning checks
-    if not genes and not groups:
-        import warnings
+    # Warning checks (suppressed for internal calls that intentionally
+    # compute over an already-subset AnnData, via warn=False)
+    if warn and not genes and not groups:
         warnings.warn("No genes or groups specified; computing average expression for all genes and groups. "
                       "This may be memory-intensive for large datasets.")
     
@@ -1087,8 +1093,23 @@ def _prepare_background_interactions(
     # Create feature matrix: each interaction is represented by (mean, variance)
     features = np.column_stack([mean_scores, var_scores])
     
+    # Clamp to the number of available interactions: the KDTree query needs
+    # k <= n points (k = n_nearest_neighbors + 1, +1 for self). Warn because a
+    # smaller background set weakens the permutation null.
+    max_neighbors = features.shape[0] - 1
+    if n_nearest_neighbors > max_neighbors:
+        warnings.warn(
+            f"n_neighbors_permutation={n_nearest_neighbors} exceeds the "
+            f"number of other interactions ({max_neighbors}); using "
+            f"{max_neighbors}. With this few LR pairs the permutation null "
+            f"is weak - interpret p-values with caution.",
+            UserWarning,
+            stacklevel=2,
+        )
+        n_nearest_neighbors = max_neighbors
+
     print(f"  - Building KDTree to find {n_nearest_neighbors} nearest neighbors...")
-    
+
     # Build KDTree for efficient nearest neighbor search
     # We query for n+1 neighbors because the first neighbor is always the point itself
     kdt = KDTree(features, leaf_size=leaf_size, metric='euclidean')
@@ -1130,7 +1151,8 @@ def _calculate_laris_score_by_celltype(
     prefilter_threshold: float = 0.0,
     score_threshold: float = 1e-6,
     spatial_weight: float = 1.0,
-    use_conditional_pvalue: bool = False
+    use_conditional_pvalue: bool = False,
+    rescale: bool = True
 ) -> pd.DataFrame:
     """
     Calculate cell type-specific LARIS interaction scores with statistical testing.
@@ -1328,8 +1350,9 @@ def _calculate_laris_score_by_celltype(
     
     # Compute average expression per cell type
     avg_gene_expr_lr = _compute_avg_expression(
-        lr_adata_percentage, 
-        groupby=groupby
+        lr_adata_percentage,
+        groupby=groupby,
+        warn=False
     ).T
     del lr_adata_percentage
     
@@ -1425,20 +1448,29 @@ def _calculate_laris_score_by_celltype(
     # =========================================================================
     # STEP 3.5: Rescale Scores
     # =========================================================================
-    print("\n--- Step 3.5: Rescaling interaction scores ---")
-    
-    if not res_laris.empty:
-        n_for_scaling = min(100, len(res_laris))
-        top_scores_mean = res_laris['interaction_score'].head(n_for_scaling).mean()
-        
-        if top_scores_mean > 0:
-            scale_factor = 0.1 / top_scores_mean
-            print(f"  - Scaling factor: {scale_factor:.6f} (based on top {n_for_scaling} scores)")
-            res_laris['interaction_score'] *= scale_factor
+    # The scale factor is dataset-dependent (it pins the top-100 mean score to
+    # 0.1), so it is recorded in lr_adata.uns and res_laris.attrs to allow
+    # putting separate runs back on a common scale. Pass rescale=False to keep
+    # raw interaction scores.
+    scale_factor = 1.0
+    if rescale:
+        print("\n--- Step 3.5: Rescaling interaction scores ---")
+
+        if not res_laris.empty:
+            n_for_scaling = min(100, len(res_laris))
+            top_scores_mean = res_laris['interaction_score'].head(n_for_scaling).mean()
+
+            if top_scores_mean > 0:
+                scale_factor = 0.1 / top_scores_mean
+                print(f"  - Scaling factor: {scale_factor:.6f} (based on top {n_for_scaling} scores)")
+                res_laris['interaction_score'] *= scale_factor
+            else:
+                print("  ⚠ Skipping rescaling: Mean of top scores is 0")
         else:
-            print("  ⚠ Skipping rescaling: Mean of top scores is 0")
+            print("  ⚠ Skipping rescaling: No interaction scores")
     else:
-        print("  ⚠ Skipping rescaling: No interaction scores")
+        print("\n--- Step 3.5: Rescaling disabled (rescale=False) ---")
+    lr_adata.uns['laris_scale_factor'] = float(scale_factor)
     
     # =========================================================================
     # STEP 4: Incorporate Spatial Cell Type Neighborhood Information
@@ -1613,6 +1645,7 @@ def _calculate_laris_score_by_celltype(
         n_pairs_corrected = 0
         n_interactions_tested = 0
         n_interactions_filtered = 0
+        n_groups_fdr_floor_above_005 = 0
 
         for (sender, receiver), group_df in tqdm(
             res_laris.groupby(['sender', 'receiver']),
@@ -1634,11 +1667,13 @@ def _calculate_laris_score_by_celltype(
 
                 if not p_values_to_test.empty:
                     _, p_values_corrected, _, _ = multipletests(
-                        p_values_to_test, 
+                        p_values_to_test,
                         method='fdr_bh'
                     )
                     res_laris.loc[p_values_to_test.index, 'p_value_fdr'] = p_values_corrected
-                
+                    if len(p_values_to_test) / (n_permutations + 1) > 0.05:
+                        n_groups_fdr_floor_above_005 += 1
+
                 # Filtered interactions get FDR = 1.0
                 if not p_values.empty:
                     res_laris.loc[p_values[~filter_mask].index, 'p_value_fdr'] = 1.0
@@ -1646,18 +1681,40 @@ def _calculate_laris_score_by_celltype(
                 _, p_values_corrected, _, _ = multipletests(p_values, method='fdr_bh')
                 res_laris.loc[group_df.index, 'p_value_fdr'] = p_values_corrected
                 n_interactions_tested += len(p_values)
-            
+                if len(p_values) / (n_permutations + 1) > 0.05:
+                    n_groups_fdr_floor_above_005 += 1
+
             n_pairs_corrected += 1
 
-        # Clean up FDR values
+        # Clean up FDR values. Direct assignment instead of chained
+        # .fillna(inplace=True), which stops working in pandas 3.0
+        # (chained assignment on a Series view).
         res_laris['p_value_fdr'] = res_laris['p_value_fdr'].clip(upper=1.0)
-        res_laris['p_value_fdr'].fillna(1.0, inplace=True)
+        res_laris['p_value_fdr'] = res_laris['p_value_fdr'].fillna(1.0)
 
         # Calculate -log10(FDR) for visualization
         res_laris['nlog10_p_value_fdr'] = -np.log10(res_laris['p_value_fdr'] + 1e-10)
         res_laris['nlog10_p_value_fdr'] = res_laris['nlog10_p_value_fdr'].clip(lower=0)
-        
+
         print(f"  ✓ Corrected {n_pairs_corrected} sender-receiver pairs")
+
+        # Permutation p-values have a floor of 1/(n_permutations+1); within-
+        # group BH multiplies that floor by the number of tests in the group,
+        # so the smallest achievable FDR in a group testing m interactions is
+        # m/(n_permutations+1). Warn when that bound exceeds 0.05: results at
+        # FDR < 0.05 would then be impossible for purely numerical reasons.
+        if n_groups_fdr_floor_above_005 > 0:
+            warnings.warn(
+                f"{n_groups_fdr_floor_above_005} of {n_pairs_corrected} "
+                f"sender-receiver groups have a minimum achievable FDR above "
+                f"0.05 with n_permutations={n_permutations} (the smallest "
+                f"possible FDR in a group testing m interactions is "
+                f"m/(n_permutations+1)). Increase n_permutations to make "
+                f"smaller FDR values attainable, e.g. >= 5,000 for FDR < 0.01 "
+                f"and >= 20,000 for FDR < 0.001 in groups of ~1,000 tests.",
+                UserWarning,
+                stacklevel=2,
+            )
         print(f"  - Interactions tested: {n_interactions_tested:,}")
         if prefilter_fdr:
             print(f"  - Interactions filtered: {n_interactions_filtered:,}")
@@ -1684,7 +1741,11 @@ def _calculate_laris_score_by_celltype(
     print(f"\nFinal results: {len(res_laris):,} sender-receiver-LR combinations")
     print(f"Score range: [{res_laris['interaction_score'].min():.6f}, "
           f"{res_laris['interaction_score'].max():.6f}]")
-    
+
+    # Set attrs at the end: intermediate DataFrame operations do not reliably
+    # propagate .attrs. The factor is also stored in lr_adata.uns above.
+    res_laris.attrs['laris_scale_factor'] = float(scale_factor)
+
     return res_laris
 
 # Define public API for utility functions (advanced users)

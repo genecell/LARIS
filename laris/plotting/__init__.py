@@ -55,6 +55,7 @@ Examples
 import numpy as np
 import pandas as pd
 import scanpy as sc
+import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import seaborn as sns
@@ -87,10 +88,48 @@ except ImportError:
 # CUSTOM COLORMAP
 # ============================================================================
 
+def _get_cmap(name, lutsize=None):
+    """Look up a colormap compatibly across matplotlib versions.
+
+    matplotlib.cm.get_cmap was removed in matplotlib 3.9; the
+    matplotlib.colormaps registry (with .resampled) is available from 3.6.
+    """
+    try:
+        cmap = matplotlib.colormaps[name]
+        return cmap.resampled(lutsize) if lutsize is not None else cmap
+    except AttributeError:  # matplotlib < 3.6
+        return cm.get_cmap(name, lutsize)
+
+
+def _resolve_cell_type_colors(adata, groupby, cell_type_color_key=None):
+    """Map cell-type labels to colors.
+
+    Uses ``adata.uns[cell_type_color_key]`` when available (default key:
+    ``f"{groupby}_colors"``, the scanpy convention), pairing colors with the
+    categorical *categories* order (scanpy stores palettes in that order, not
+    in appearance order). Falls back to a generated palette when no stored
+    palette fits, instead of raising KeyError.
+    """
+    col = adata.obs[groupby]
+    if hasattr(col, 'cat'):
+        labels = list(col.cat.categories)
+    else:
+        labels = list(pd.unique(col))
+    key = cell_type_color_key if cell_type_color_key is not None else f"{groupby}_colors"
+    if key in adata.uns and len(adata.uns[key]) >= len(labels):
+        palette = list(adata.uns[key])[:len(labels)]
+    else:
+        cmap = _get_cmap('tab20')
+        palette = [
+            colors.to_hex(cmap(i % cmap.N)) for i in range(len(labels))
+        ]
+    return dict(zip(labels, palette))
+
+
 # Define custom colormap for interaction scores
-cmap_own = cm.get_cmap('magma_r', 256)
+cmap_own = _get_cmap('magma_r', 256)
 newcolors = cmap_own(np.linspace(0, 0.75, 256))
-Greys = cm.get_cmap('Greys_r', 256)
+Greys = _get_cmap('Greys_r', 256)
 newcolors[:10, :] = Greys(np.linspace(0.8125, 0.8725, 10))
 pos_cmap = colors.ListedColormap(newcolors)
 
@@ -582,7 +621,7 @@ def plotCCCNetwork(
     edge_width_scale: float = 30,
     interaction_cutoff: float = 0.0,
     groupby: str = "cell_type",
-    cell_type_color_key: str = "cell_type_colors",
+    cell_type_color_key: Optional[str] = None,
     custom_color_mapping: Optional[dict] = None,
     figsize: Tuple[float, float] = (12, 10),
     margins: float = 0.2,
@@ -635,7 +674,10 @@ def plotCCCNetwork(
     groupby : str, default='cell_type'
         Column name in adata.obs containing cell type labels
         
-    cell_type_color_key : str, default='cell_type_colors'
+    cell_type_color_key : str, optional
+        Key in ``adata.uns`` holding the cell-type palette. Defaults to
+        ``f"{groupby}_colors"`` (the scanpy convention). When the key is
+        missing, a palette is generated automatically instead of raising.
         Key in adata.uns containing cell type colors
         
     custom_color_mapping : dict, optional
@@ -803,9 +845,9 @@ def plotCCCNetwork(
     if custom_color_mapping is not None:
         cell_type_to_color = custom_color_mapping
     elif adata is not None:
-        cell_type_labels = adata.obs[groupby].unique()
-        cell_type_colors = adata.uns[cell_type_color_key]
-        cell_type_to_color = dict(zip(cell_type_labels, cell_type_colors))
+        cell_type_to_color = _resolve_cell_type_colors(
+            adata, groupby, cell_type_color_key
+        )
     else:
         cell_type_to_color = {}
 
@@ -908,7 +950,7 @@ def plotCCCNetworkCumulative(
     cutoff: float = 0,
     n_top: int = 3000,
     groupby: str = "cell_type",
-    cell_type_color_key: str = "cell_type_colors",
+    cell_type_color_key: Optional[str] = None,
     custom_color_mapping: Optional[dict] = None,
     figsize: Tuple[float, float] = (12, 10),
     margins: float = 0.2,
@@ -953,7 +995,10 @@ def plotCCCNetworkCumulative(
     groupby : str, default='cell_type'
         Column in adata.obs containing cell type labels
         
-    cell_type_color_key : str, default='cell_type_colors'
+    cell_type_color_key : str, optional
+        Key in ``adata.uns`` holding the cell-type palette. Defaults to
+        ``f"{groupby}_colors"`` (the scanpy convention). When the key is
+        missing, a palette is generated automatically instead of raising.
         Key in adata.uns for cell type colors
         
     custom_color_mapping : dict, optional
@@ -1128,9 +1173,9 @@ def plotCCCNetworkCumulative(
     if custom_color_mapping is not None:
         cell_type_to_color = custom_color_mapping
     elif adata is not None:
-        cell_type_labels = adata.obs[groupby].unique()
-        cell_type_colors = adata.uns[cell_type_color_key]
-        cell_type_to_color = dict(zip(cell_type_labels, cell_type_colors))
+        cell_type_to_color = _resolve_cell_type_colors(
+            adata, groupby, cell_type_color_key
+        )
     else:
         cell_type_to_color = {}
 
@@ -1397,28 +1442,27 @@ def plotCCCDotPlot(
         for pair in sender_receiver_pairs:
             parts = pair.split(delimiter_pair)
             if len(parts) != 2:
-                _log_message(
-                    f"Invalid pair format: '{pair}'. Expected format: 'sender{delimiter_pair}receiver'",
-                    1, verbosity, 'error'
+                raise ValueError(
+                    f"Invalid pair format: '{pair}'. Expected format: "
+                    f"'sender{delimiter_pair}receiver'"
                 )
-                return None
             senders.append(parts[0].strip())
             receivers.append(parts[1].strip())
-    
-    # Validate inputs
+
+    # Validate inputs. Raise instead of print-and-return-None so failures
+    # cannot be silently overlooked in batch scripts.
     if senders is None or receivers is None:
-        _log_message(
-            "Must provide either (senders, receivers) or sender_receiver_pairs",
-            1, verbosity, 'error'
+        raise ValueError(
+            "Must provide either (senders, receivers) or sender_receiver_pairs"
         )
-        return None
-    
+
     if len(senders) != len(receivers):
-        _log_message(
-            "Length of senders and receivers must match",
-            1, verbosity, 'error'
+        raise ValueError(
+            f"Length of senders ({len(senders)}) and receivers "
+            f"({len(receivers)}) must match: plotCCCDotPlot pairs them "
+            f"element-wise. To plot every sender-receiver combination "
+            f"(Cartesian product), use plotCCCDotPlotFacet instead."
         )
-        return None
 
     # Apply filters
     laris_results_subset = laris_results.copy()
@@ -2494,7 +2538,7 @@ def plotCCCSpatial(
                         f"Color for {ct} not found. Using default.",
                         2, verbosity, 'warning'
                     )
-                    default_colors = plt.cm.get_cmap('tab10')(
+                    default_colors = _get_cmap('tab10')(
                         np.linspace(0, 1, len(full_categories))
                     )
                     palette[ct] = default_colors[i]

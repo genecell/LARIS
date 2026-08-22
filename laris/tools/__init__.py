@@ -30,7 +30,8 @@ def prepareLRInteraction(
     adata: ad.AnnData,
     lr_df: pd.DataFrame,
     number_nearest_neighbors: int = 10,
-    use_rep_spatial: str = 'X_spatial'
+    use_rep_spatial: str = 'X_spatial',
+    unmatched: str = 'drop'
 ) -> ad.AnnData:
     """
     Calculate ligand-receptor integration scores using spatial neighborhood information.
@@ -51,6 +52,14 @@ def prepareLRInteraction(
         Number of nearest neighbors to consider for spatial diffusion.
     use_rep_spatial : str, default='X_spatial'
         Key in adata.obsm containing spatial coordinates.
+    unmatched : {'drop', 'error'}, default='drop'
+        How to handle ligand or receptor names in `lr_df` that are absent from
+        `adata.var_names`. With 'drop', unmatched pairs are removed and a
+        UserWarning summarises how many were dropped and lists example missing
+        names; this is convenient for targeted panels (e.g. Xenium, MERFISH)
+        where most database genes are legitimately absent. With 'error', a
+        ValueError is raised instead, which is safer when supplying a custom
+        database where a missing name likely indicates a typo.
         
     Returns
     -------
@@ -90,6 +99,51 @@ def prepareLRInteraction(
             f"runLARIS. Ensure each (ligand, receptor) pair is unique.",
             UserWarning,
             stacklevel=2,
+        )
+
+    # Validate ligand/receptor names against adata.var_names BEFORE indexing.
+    # np.searchsorted below returns insertion positions, so an unmatched name
+    # would otherwise silently resolve to a neighbouring gene with no error.
+    if unmatched not in ('drop', 'error'):
+        raise ValueError(
+            f"unmatched must be 'drop' or 'error', got {unmatched!r}"
+        )
+    var_names_set = set(adata.var_names)
+    ligand_present = lr_df['ligand'].isin(var_names_set)
+    receptor_present = lr_df['receptor'].isin(var_names_set)
+    matched_mask = ligand_present & receptor_present
+    if not matched_mask.all():
+        missing_names = sorted(
+            set(lr_df.loc[~ligand_present, 'ligand'])
+            | set(lr_df.loc[~receptor_present, 'receptor'])
+        )
+        n_unmatched_pairs = int((~matched_mask).sum())
+        example_names = ', '.join(missing_names[:10])
+        if len(missing_names) > 10:
+            example_names += ', ...'
+        message = (
+            f"prepareLRInteraction: {n_unmatched_pairs} ligand-receptor pair(s) "
+            f"reference {len(missing_names)} gene name(s) absent from "
+            f"adata.var_names (e.g. {example_names})."
+        )
+        if unmatched == 'error':
+            raise ValueError(
+                message + " Filter lr_df with .isin(adata.var_names) or pass "
+                "unmatched='drop' to remove these pairs automatically."
+            )
+        import warnings
+        warnings.warn(
+            message + " These pairs were dropped. Pass unmatched='error' to "
+            "raise instead (recommended when using a custom database, where a "
+            "missing name may be a typo).",
+            UserWarning,
+            stacklevel=2,
+        )
+        lr_df = lr_df.loc[matched_mask].reset_index(drop=True)
+    if len(lr_df) == 0:
+        raise ValueError(
+            "prepareLRInteraction: no ligand-receptor pairs remain after "
+            "matching against adata.var_names."
         )
 
     X_spatial = adata.obsm[use_rep_spatial].copy()
@@ -150,7 +204,7 @@ def runLARIS(
     sigma: float = 100,
     remove_lowly_expressed: bool = True,
     expressed_pct: float = 0.1,
-    n_cells_expressed_threshold: int = 100,
+    n_cells_expressed_threshold: Union[int, float] = 100,
     n_top_lr: int = 4000,
     # Cell Type & Statistical Testing Parameters
     by_celltype: bool = True,
@@ -170,7 +224,8 @@ def runLARIS(
     prefilter_threshold: float = 0.0,
     score_threshold: float = 1e-6,
     spatial_weight: float = 1.0,
-    use_conditional_pvalue: bool = False
+    use_conditional_pvalue: bool = False,
+    rescale: bool = True
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
     """
     Identify spatially-specific ligand-receptor interactions using LARIS algorithm.
@@ -240,9 +295,13 @@ def runLARIS(
     expressed_pct : float, default=0.1
         Minimum fraction of cells expressing an LR pair (if remove_lowly_expressed=True).
         
-    n_cells_expressed_threshold : int, default=100
+    n_cells_expressed_threshold : int or float, default=100
         Minimum number of cells expressing an LR pair for it to be ranked.
         Pairs below this threshold receive a penalty in ranking.
+        A value >= 1 is an absolute cell count; a float in (0, 1) is
+        interpreted as a fraction of the total number of cells
+        (e.g. 0.001 = 0.1% of cells), which scales better across platforms
+        with very different cell/bin counts (e.g. 8 um Visium HD bins).
         
     n_top_lr : int, default=4000
         Number of top-ranked spatially-specific LR pairs to return.
@@ -322,6 +381,16 @@ def runLARIS(
         for sparse datasets**. When True:
         - Interactions with score=0 get p-value=1.0
         - Non-zero scores compared only to non-zero background
+
+    rescale : bool, default=True
+        Rescale interaction scores so that the mean of the top-100 scores is
+        0.1. The applied factor is dataset-dependent and is recorded in
+        ``lr_adata.uns['laris_scale_factor']`` and
+        ``celltype_results.attrs['laris_scale_factor']`` (1.0 when
+        rescale=False), so separate runs can be put back on a common scale
+        by dividing scores by their respective factors. Because the factor
+        varies between runs (and with subsampling), never compare or subtract
+        rescaled ``interaction_score`` values across runs directly.
         - Prevents spurious significance from sparse null distributions
         
     Returns
@@ -510,9 +579,11 @@ def runLARIS(
     lr_adata.var['LRSS_Random'] = np.array(random_gsp).ravel()
     lr_adata.var['LR_SpatialSpecificity'] = gsp_score
     
-    # Calculate QC metrics
+    # Calculate QC metrics. percent_top values must not exceed the number of
+    # features, otherwise scanpy raises IndexError (e.g. < 100 LR pairs).
     if lr_adata.shape[1] < 500:
-        sc.pp.calculate_qc_metrics(lr_adata, inplace=True, percent_top=[50, 100])
+        percent_top = [p for p in (50, 100) if p <= lr_adata.shape[1]] or None
+        sc.pp.calculate_qc_metrics(lr_adata, inplace=True, percent_top=percent_top)
     else:
         sc.pp.calculate_qc_metrics(lr_adata, inplace=True)
     
@@ -525,9 +596,17 @@ def runLARIS(
     n_cells_expressed = lr_var['n_cells_by_counts'].values.copy()
     gsp_score_for_ranking = lr_var['LR_SpatialSpecificity'].values.copy()
     
-    # Penalize LR pairs with low cell counts
+    # Penalize LR pairs with low cell counts. A float threshold in (0, 1) is
+    # interpreted as a fraction of the number of cells (sklearn-style),
+    # a value >= 1 as an absolute cell count.
+    if 0 < n_cells_expressed_threshold < 1:
+        cells_expressed_cutoff = int(np.ceil(
+            n_cells_expressed_threshold * lr_adata.shape[0]
+        ))
+    else:
+        cells_expressed_cutoff = int(n_cells_expressed_threshold)
     min_score = np.min(gsp_score_for_ranking)
-    low_count_mask = n_cells_expressed < n_cells_expressed_threshold
+    low_count_mask = n_cells_expressed < cells_expressed_cutoff
     gsp_score_for_ranking[low_count_mask] = min_score - 0.001
     
     # Select top N LR pairs
@@ -589,7 +668,8 @@ def runLARIS(
             prefilter_threshold=prefilter_threshold,
             score_threshold=score_threshold,
             spatial_weight=spatial_weight,
-            use_conditional_pvalue=use_conditional_pvalue
+            use_conditional_pvalue=use_conditional_pvalue,
+            rescale=rescale
         )
         
         print("\n" + "="*70)

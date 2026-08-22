@@ -5,7 +5,7 @@ requires = [ "hatchling"]
 
 [project]
 name = "laris"
-version = "0.9.3"
+version = "0.9.4"
 description = "LARIS enables accurate and efficient ligand and receptor interaction analysis in spatial transcriptomics"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -36,11 +36,12 @@ classifiers = [
 dependencies = [
     "scanpy>=1.9.1",
     "anndata>=0.8.0",
-    "cosg>=1.0.3",
+    "cosg>=1.0.3,!=1.1.0,!=1.1.1",
     "numpy>=1.20.0",
     "pandas>=1.3.0",
     "scipy>=1.7.0",
     "scikit-learn>=0.24.0",
+    "networkx>=2.8",
     "matplotlib>=3.4.0",
     "seaborn>=0.11.0",
     "tqdm",
