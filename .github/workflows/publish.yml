@@ -1,32 +1,106 @@
-name: Publish to PyPI
+name: Build and publish to PyPI
+
+# LARIS is pure Python, so this is the pure-Python adaptation of the
+# PIASO/cosg/cytome publish workflow: one universal py3 wheel + sdist via
+# `python -m build` (no maturin, no per-Python matrix, no compiled-kernel
+# gate). The safety structure is the same: publish only on a published
+# release, tag must match the built version, twine-check the metadata,
+# and authenticate via PyPI Trusted Publishing (OIDC).
 
 on:
-  push:
-    branches:
-      - master
+  release:
+    # `published`, not `created`: GitHub does not fire `created` for draft
+    # releases, and composing a release in the web UI saves a draft first,
+    # so a `created` trigger silently never fires on the normal path.
+    types: [published]
+  workflow_dispatch:
 
 jobs:
-  build-and-publish:
+  build:
+    name: Build sdist and wheel
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.9"
+          python-version: "3.11"
 
-      - name: Install build tools
-        run: pip install build twine
+      - name: Build
+        run: |
+          pip install build
+          python -m build --outdir dist
 
-      - name: Build package
-        run: python -m build
+      - name: Wheel must contain the bundled LR databases
+        run: |
+          python - <<'PYEOF'
+          import glob, sys, zipfile
+          for whl in glob.glob("dist/*.whl"):
+              names = zipfile.ZipFile(whl).namelist()
+              missing = [f for f in (
+                  "laris/datasets/_data/human_lr_CellChatDB.csv",
+                  "laris/datasets/_data/mouse_lr_CellChatDB.csv",
+              ) if f not in names]
+              if missing:
+                  sys.exit(f"::error::{whl} is missing {missing}")
+              print(f"{whl}: bundled databases present")
+          PYEOF
 
+      - name: Install wheel and run the test suite
+        run: |
+          pip install dist/*.whl pytest
+          python -c "import laris; print('import OK', laris.__version__)"
+          pytest tests/ -q
 
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
+
+  publish:
+    name: Publish to PyPI
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write        # OIDC identity for PyPI Trusted Publishing
+      contents: read
+    # Only publish on an actual release (not manual dispatch test runs)
+    if: github.event_name == 'release'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+      - name: Tag must match the package version
+        run: |
+          BUILT=$(ls dist/*.tar.gz | sed -E 's/.*-([0-9][^-]*)\.tar\.gz/\1/')
+          TAG=${GITHUB_REF_NAME#v}
+          echo "tag=$TAG built=$BUILT"
+          if [ "$TAG" != "$BUILT" ]; then
+            echo "::error::Release tag '$GITHUB_REF_NAME' does not match the" \
+                 "built version '$BUILT'. A PyPI version cannot be re-uploaded."
+            exit 1
+          fi
+
+      - name: Check metadata renders on PyPI
+        run: |
+          pip install twine
+          twine check dist/*
+
+      # Trusted Publishing (OIDC) -- no API token. ONE-TIME SETUP on
+      # pypi.org -> laris -> Publishing -> Add a trusted publisher:
+      #   owner        genecell
+      #   repository   LARIS
+      #   workflow     publish.yml
+      #   environment  (leave blank)
+      # Until that exists this step cannot authenticate; the old
+      # PYPI_API_TOKEN secret can be revoked once the first OIDC upload
+      # succeeds.
       - name: Publish to PyPI
-        env:
-          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-        run: twine upload dist/*
-
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Re-running a release whose version is already on PyPI becomes a
+          # no-op rather than a red build. A forgotten version bump is still
+          # caught by the tag-vs-version guard above.
+          skip-existing: true
