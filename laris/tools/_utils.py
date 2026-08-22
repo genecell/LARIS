@@ -102,6 +102,48 @@ def _rowwise_cosine_similarity(
     return cosine_similarities
 
 
+def _apply_knn_kernel(
+    cellxcell: sp.csr_matrix,
+    sigma: Union[float, str] = 'adaptive'
+) -> sp.csr_matrix:
+    """
+    Convert k-NN graph distances to edge weights with an exponential kernel.
+
+    The weight of an edge with distance d is ``exp(-d / bandwidth)``.
+
+    Parameters
+    ----------
+    cellxcell : scipy.sparse.csr_matrix
+        k-NN graph in 'distance' mode (as returned by kneighbors_graph).
+        Modified in place: ``.data`` is replaced by kernel weights.
+    sigma : float or 'adaptive', default='adaptive'
+        Kernel bandwidth. 'adaptive' uses half the mean k-NN edge distance
+        of this graph (``mean(d) / 2``), which makes the kernel independent
+        of the coordinate units (chip pixels, image pixels, or micrometres)
+        and of the platform's physical spot spacing. A numeric value is an
+        absolute distance in the same units as the coordinates; note that
+        the adaptive bandwidth also depends on the chosen number of
+        neighbors, since larger k includes longer edges in the mean.
+
+    Returns
+    -------
+    scipy.sparse.csr_matrix
+        The same matrix with kernel weights in ``.data``.
+    """
+    if isinstance(sigma, str):
+        if sigma != 'adaptive':
+            raise ValueError(
+                f"sigma must be a number or 'adaptive', got {sigma!r}"
+            )
+        bandwidth = np.mean(cellxcell.data) / 2
+    else:
+        bandwidth = float(sigma)
+        if bandwidth <= 0:
+            raise ValueError(f"sigma must be positive, got {sigma!r}")
+    cellxcell.data = 1 / np.exp(cellxcell.data / bandwidth)
+    return cellxcell
+
+
 def _select_top_n(
     scores: np.ndarray, 
     n_top: int
@@ -350,7 +392,7 @@ def _build_adjacency_matrix(
     adata: ad.AnnData,
     use_rep: str = 'X_pca',
     n_nearest_neighbors: int = 10,
-    sigma: float = 100.0
+    sigma: Union[float, str] = 'adaptive'
 ) -> sp.csr_matrix:
     """
     Build an adjacency matrix from low-dimensional representations.
@@ -387,17 +429,15 @@ def _build_adjacency_matrix(
 
     """
     X_rep = adata.obsm[use_rep].copy()
-    
+
     cellxcell = kneighbors_graph(
         X_rep,
         n_neighbors=n_nearest_neighbors,
-        mode='distance', 
+        mode='distance',
         include_self=False
     )
-    
-    cellxcell.data = 1 / np.exp(cellxcell.data / sigma)
-    
-    return cellxcell
+
+    return _apply_knn_kernel(cellxcell, sigma=sigma)
 
 
 def _build_random_adjacency_matrix(
@@ -736,6 +776,7 @@ def _calculate_specificity_in_spatial_neighborhood(
     use_rep_spatial: str = 'X_spatial',
     number_nearest_neighbors: int = 10,
     mu: float = 100,
+    sigma: Union[float, str] = 'adaptive',
     return_by_group: bool = True,
     key_added: str = 'cosg',
     column_delimiter: str = '@@'
@@ -851,12 +892,12 @@ def _calculate_specificity_in_spatial_neighborhood(
     # Create spatial neighborhood graph
     X_spatial = adata.obsm[use_rep_spatial].copy()
     cellxcell = kneighbors_graph(
-        X_spatial, 
+        X_spatial,
         n_neighbors=number_nearest_neighbors,
-        mode='distance', 
+        mode='distance',
         include_self=False
     )
-    cellxcell.data = 1 / np.exp(cellxcell.data / (np.mean(cellxcell.data) / 2))
+    cellxcell = _apply_knn_kernel(cellxcell, sigma=sigma)
     
     # Calculate first-order neighborhood composition
     order1 = cluster_mat @ cellxcell.T
@@ -1139,6 +1180,7 @@ def _calculate_laris_score_by_celltype(
     use_rep_spatial: str = 'X_spatial',
     number_nearest_neighbors: int = 10,
     mu: float = 100,
+    sigma: Union[float, str] = 'adaptive',
     expressed_pct: float = 0.1,
     remove_lowly_expressed: bool = True,
     mask_threshold: float = 1e-6,
@@ -1389,11 +1431,16 @@ def _calculate_laris_score_by_celltype(
         # Get diffused LR scores per cell type
         lr_by_group_cosg_i = avg_gene_expr_lr.loc[interaction_name]
         
-        # Apply spatial weight transformation
+        # Apply spatial weight transformation. The spatial specificity score
+        # (delta) can be negative; clamp at 0 before powering, because
+        # np.power(negative, w) is NaN for fractional w and positive for even
+        # w (a sign flip that would rank an anti-correlated pair as
+        # interacting). A non-positive spatial specificity should remove the
+        # interaction, not flip its sign.
         if spatial_weight == 0:
             spatial_factor = 1.0
         else:
-            spatial_factor = np.power(spatial_score, spatial_weight)
+            spatial_factor = np.power(max(spatial_score, 0.0), spatial_weight)
         
         # Create interaction matrix: outer product of ligand and receptor specificity
         interaction_matrix = np.outer(ligand_scores, receptor_scores) * spatial_factor
@@ -1484,6 +1531,7 @@ def _calculate_laris_score_by_celltype(
         use_rep_spatial=use_rep_spatial,
         number_nearest_neighbors=number_nearest_neighbors,
         mu=mu,
+        sigma=sigma,
         return_by_group=True,
         key_added='cosg_lr',
         column_delimiter='@@'

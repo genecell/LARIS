@@ -5,7 +5,7 @@ requires = [ "hatchling"]
 
 [project]
 name = "laris"
-version = "0.9.4"
+version = "0.10.0"
 description = "LARIS enables accurate and efficient ligand and receptor interaction analysis in spatial transcriptomics"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -61,6 +61,9 @@ Homepage = "https://genecell.github.io/LARIS/"
 dev = [
     "pre-commit",
     "pytest>=7.0",
+]
+cytome = [
+    "cytome>=0.2.3,<1.0",
 ]
 
 [tool.hatch.build]
