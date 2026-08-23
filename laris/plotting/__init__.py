@@ -62,6 +62,7 @@ import seaborn as sns
 import scipy
 from matplotlib import cm
 from matplotlib import colors, colorbar
+from matplotlib import colors as colors_mod
 from matplotlib.lines import Line2D
 import math
 import anndata as ad
@@ -2403,11 +2404,195 @@ def plotLRDotPlot(
 # SPATIAL VISUALIZATION FUNCTIONS
 # ============================================================================
 
+def _render_score_overlay(lr_adata, basis, interaction, ctx,
+                          size, alpha_img, cmap, vmax_quantile,
+                          score_threshold, crop, margin, colorbar,
+                          fig_width, fig_height, save, verbosity, return_fig):
+    """Continuous per-spot interaction-score rendering, optionally over a
+    tissue image (plotCCCSpatial's color_by='score' mode)."""
+    if interaction not in lr_adata.var_names:
+        raise ValueError(
+            f"Interaction {interaction!r} not found in lr_adata.var_names."
+        )
+    col = lr_adata[:, interaction]
+    values = col.X
+    scores = np.asarray(
+        values.toarray() if issparse(values) else values
+    ).ravel().astype(float)
+    coords = np.asarray(lr_adata.obsm[basis])[:, :2].astype(float)
+
+    w = fig_width if fig_width is not None else 8
+    h = fig_height if fig_height is not None else w
+    fig, ax = plt.subplots(figsize=(w, h))
+
+    # The image is drawn in COORDINATE units (extent), so spots are never
+    # scaled and y-inversion comes from the extent alone.
+    px = coords
+    if ctx is not None:
+        _draw_image_overlay(ax, ctx, alpha_img=alpha_img)
+    else:
+        ax.set_aspect('equal')
+        ax.invert_yaxis()
+
+    if cmap is None:
+        cmap = pos_cmap
+    elif isinstance(cmap, str):
+        cmap = _get_cmap(cmap)
+
+    positive = scores > score_threshold
+    vmax = (np.quantile(scores[positive], vmax_quantile)
+            if positive.any() else 1.0)
+    if vmax <= 0:
+        vmax = scores.max() if scores.max() > 0 else 1.0
+
+    marker = size * 0.1
+    ax.scatter(px[~positive, 0], px[~positive, 1],
+               s=marker * 0.4, c='lightgrey', alpha=0.25, linewidths=0)
+    order = np.argsort(scores[positive])
+    sc_plot = ax.scatter(px[positive, 0][order], px[positive, 1][order],
+                         c=scores[positive][order], cmap=cmap,
+                         vmin=0, vmax=vmax, s=marker, linewidths=0)
+
+    if crop and len(px):
+        if ctx is not None:
+            _image_axis_limits(ax, px, ctx, pad_frac=margin)
+        else:
+            x0, x1 = px[:, 0].min(), px[:, 0].max()
+            y0, y1 = px[:, 1].min(), px[:, 1].max()
+            dx, dy = (x1 - x0) * margin, (y1 - y0) * margin
+            ax.set_xlim(x0 - dx, x1 + dx)
+            ax.set_ylim(y1 + dy, y0 - dy)
+
+    if colorbar and positive.any():
+        cb = fig.colorbar(sc_plot, ax=ax, shrink=0.6, pad=0.02)
+        cb.set_label('interaction score')
+
+    ax.set_title(interaction)
+    ax.set_xticks([]); ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    if save is not None:
+        fig.savefig(save, bbox_inches='tight', dpi=300)
+        _log_message(f"Figure saved to: {save}", 2, verbosity, 'info')
+    if return_fig:
+        return fig
+    return None
+
+
+def _resolve_background_image(lr_adata, adata=None, library_id=None,
+                              img_key='hires', img=None, scale_factor=None,
+                              library_values=None):
+    """Resolve a tissue image and place it in COORDINATE units.
+
+    Waterfall: explicit ``img`` (requires ``scale_factor``) -> a cytome
+    ``spatial_images`` accessor or ``uns['spatial']`` on ``adata`` -> the
+    same on ``lr_adata`` -> no image.
+
+    Returns ``{'img', 'extent', 'scalef', 'spot_diameter', 'library'}`` or
+    ``None``. ``extent`` is the matplotlib 4-tuple
+    ``(0, W/scalef, H/scalef, 0)``: the image is scaled UP into
+    full-resolution coordinate units with y increasing downward, so spot
+    coordinates are drawn unscaled and no ``invert_yaxis()`` is needed
+    (calling it as well would mirror the spots against the tissue). Axis
+    limits, crops and spot diameters then all live in one unit system -
+    the same units as the spatial embedding.
+
+    Adapted from ``piaso.plotting._spatial_image`` (PIASO 1.2.2); copied
+    rather than imported so LARIS installs without piaso-tools. Keep the
+    two in step if the overlay contract changes.
+    """
+    from ..tools._io import _spatial_uns_from
+
+    if img is not None:
+        if scale_factor is None:
+            raise ValueError(
+                "scale_factor is required with an explicit img= (pass 1.0 "
+                "when coordinates are already in image pixels)."
+            )
+        arr = np.asarray(img)
+        sf = float(scale_factor)
+        h, w = arr.shape[0], arr.shape[1]
+        return {'img': arr, 'extent': (0.0, w / sf, h / sf, 0.0),
+                'scalef': sf, 'spot_diameter': None, 'library': None}
+
+    spatial = {}
+    for source in (adata, lr_adata):
+        if source is None:
+            continue
+        spatial = _spatial_uns_from(source)
+        if spatial:
+            break
+    if not spatial:
+        return None
+
+    # Which library to draw: explicit argument, else the only one, else the
+    # single library the plotted cells belong to; never silently the first.
+    libs = sorted(spatial)
+    if library_id is not None:
+        if library_id not in spatial:
+            raise KeyError(
+                f"library {library_id!r} has no stored image; available: {libs}")
+        library = library_id
+    elif len(libs) == 1:
+        library = libs[0]
+    else:
+        narrowed = None
+        if library_values is not None:
+            present = {str(v) for v in np.asarray(library_values)}
+            candidates = [l for l in libs if l in present]
+            if len(candidates) == 1:
+                narrowed = candidates[0]
+        if narrowed is None:
+            raise ValueError(
+                f"Multiple libraries have images ({libs}); pass library_id= "
+                f"or subset to one library."
+            )
+        library = narrowed
+
+    entry = spatial[library]
+    images = entry.get('images', {})
+    if img_key not in images:
+        raise KeyError(
+            f"library {library!r} has no image {img_key!r}; available: "
+            f"{sorted(images)}")
+    arr = np.asarray(images[img_key])
+    sfs = entry.get('scalefactors', {})
+    sf = float(scale_factor) if scale_factor is not None else \
+        float(sfs.get(f'tissue_{img_key}_scalef', 1.0))
+    spot_d = sfs.get('spot_diameter_fullres')
+    h, w = arr.shape[0], arr.shape[1]
+    return {'img': arr, 'extent': (0.0, w / sf, h / sf, 0.0), 'scalef': sf,
+            'spot_diameter': (float(spot_d) if spot_d is not None else None),
+            'library': library}
+
+
+def _draw_image_overlay(ax, ctx, alpha_img=1.0):
+    """Draw the resolved image under the scatter, in coordinate units."""
+    img = ctx['img']
+    kwargs = {'cmap': 'gray'} if img.ndim == 2 else {}
+    ax.imshow(img, extent=ctx['extent'], origin='upper', zorder=0,
+              alpha=alpha_img, aspect='equal', interpolation='antialiased',
+              **kwargs)
+
+
+def _image_axis_limits(ax, coords, ctx, pad_frac=0.02):
+    """Crop to the plotted cells (coord bbox padded by one spot diameter),
+    y inverted to match the image's top-down orientation."""
+    coords = np.asarray(coords, dtype=float)
+    x0, x1 = float(np.min(coords[:, 0])), float(np.max(coords[:, 0]))
+    y0, y1 = float(np.min(coords[:, 1])), float(np.max(coords[:, 1]))
+    pad = (ctx.get('spot_diameter') if ctx else None) or 0.0
+    pad = max(pad, pad_frac * max(x1 - x0, y1 - y0, 1.0))
+    ax.set_xlim(x0 - pad, x1 + pad)
+    ax.set_ylim(y1 + pad, y0 - pad)
+
+
 def plotCCCSpatial(
     lr_adata: ad.AnnData,
     basis: str,
     interaction: str,
-    cell_type: str,
+    cell_type: Optional[str] = None,
     selected_cell_types: Optional[List[str]] = None,
     highlight_all_expressing: bool = False,
     background_color: str = 'lightgrey',
@@ -2418,7 +2603,22 @@ def plotCCCSpatial(
     max_title_chars: int = 60,
     save: Optional[str] = None,
     verbosity: int = 2,
-    return_fig: bool = False
+    return_fig: bool = False,
+    # --- score mode + tissue-image overlay (v0.10.0, GitHub issue #1) ---
+    color_by: str = 'cell_type',
+    adata: Optional[ad.AnnData] = None,
+    library_id: Optional[str] = None,
+    img_key: str = 'hires',
+    library_key: Optional[str] = None,
+    img: Optional[np.ndarray] = None,
+    scale_factor: Optional[float] = None,
+    alpha_img: float = 1.0,
+    cmap: Union[str, colors_mod.Colormap, None] = None,
+    vmax_quantile: float = 0.995,
+    score_threshold: float = 0.0,
+    crop: bool = True,
+    margin: float = 0.05,
+    colorbar: bool = True,
 ) -> Optional[plt.Figure]:
     """
     Plot spatial distribution of ligand-receptor interactions.
@@ -2497,11 +2697,39 @@ def plotCCCSpatial(
     try:
         # Check if interaction exists
         if interaction not in lr_adata.var_names:
-            _log_message(
-                f"{interaction} not found in lr_adata.var_names.",
-                1, verbosity, 'error'
+            # Raise, not print-and-return-None: silent failures hide in
+            # batch scripts (same rationale as the v0.9.4 dot-plot fix).
+            raise ValueError(
+                f"Interaction {interaction!r} not found in "
+                f"lr_adata.var_names."
             )
-            return None
+
+        if color_by not in ('cell_type', 'score'):
+            raise ValueError(
+                f"color_by must be 'cell_type' or 'score', got {color_by!r}"
+            )
+        if color_by == 'cell_type' and cell_type is None:
+            raise ValueError(
+                "cell_type is required with color_by='cell_type' "
+                "(pass color_by='score' for a continuous score overlay)."
+            )
+
+        ctx = _resolve_background_image(
+            lr_adata, adata=adata, library_id=library_id,
+            img_key=img_key, img=img, scale_factor=scale_factor,
+            library_values=(lr_adata.obs[library_key].to_numpy()
+                            if library_key is not None
+                            and library_key in lr_adata.obs else None))
+
+        # --- continuous score mode: matplotlib renderer, optional image ---
+        if color_by == 'score':
+            return _render_score_overlay(
+                lr_adata, basis, interaction, ctx,
+                size=size, alpha_img=alpha_img, cmap=cmap,
+                vmax_quantile=vmax_quantile, score_threshold=score_threshold,
+                crop=crop, margin=margin, colorbar=colorbar,
+                fig_width=fig_width, fig_height=fig_height,
+                save=save, verbosity=verbosity, return_fig=return_fig)
 
         # Compute expression mask
         gene_idx = lr_adata.var_names.get_loc(interaction)
@@ -2628,6 +2856,36 @@ def plotCCCSpatial(
             figsize = (6, 6 * aspect_ratio)
 
         plt.rcParams['figure.figsize'] = figsize
+
+        # --- categorical over a tissue image: matplotlib renderer ---
+        if ctx is not None:
+            fig, ax = plt.subplots(figsize=figsize)
+            _draw_image_overlay(ax, ctx, alpha_img=alpha_img)
+            px = np.asarray(lr_adata_sorted.obsm[basis])[:, :2]
+            cats = lr_adata_sorted.obs[color_column]
+            point_colors = [palette.get(c, background_color) for c in cats]
+            ax.scatter(px[:, 0], px[:, 1], c=point_colors,
+                       s=size * 0.1, linewidths=0)
+            if crop and len(px):
+                _image_axis_limits(ax, px, ctx, pad_frac=margin)
+            handles = [Line2D([0], [0], marker='o', linestyle='',
+                              markerfacecolor=palette[c], markeredgewidth=0,
+                              label=str(c))
+                       for c in palette if c not in ('background', 'other')]
+            if handles:
+                ax.legend(handles=handles, loc='center left',
+                          bbox_to_anchor=(1.0, 0.5), frameon=False)
+            ax.set_title(title_text)
+            ax.set_xticks([]); ax.set_yticks([])
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            if save is not None:
+                fig.savefig(save, bbox_inches='tight', dpi=300)
+                _log_message(f"Figure saved to: {save}", 2, verbosity, 'info')
+            plt.show()
+            if return_fig:
+                return fig
+            return None
 
         # Plot
         sc.pl.embedding(
@@ -2792,227 +3050,6 @@ def _compute_max_fraction(
 
 
 
-def plotCCCSpatialOverlay(
-    lr_adata: ad.AnnData,
-    interaction: str,
-    basis: str = 'spatial',
-    adata: Optional[ad.AnnData] = None,
-    library_id: Optional[str] = None,
-    img_key: str = 'hires',
-    img: Optional[np.ndarray] = None,
-    scale_factor: Optional[float] = None,
-    layer: Optional[str] = None,
-    cmap: Union[str, colors.Colormap, None] = None,
-    size: float = 8,
-    alpha_img: float = 1.0,
-    vmax_quantile: float = 0.995,
-    score_threshold: float = 0.0,
-    crop: bool = True,
-    margin: float = 0.05,
-    title: Optional[str] = None,
-    colorbar: bool = True,
-    figsize: Tuple[float, float] = (8, 8),
-    ax: Optional[plt.Axes] = None,
-    save: Optional[str] = None,
-    return_fig: bool = False,
-) -> Optional[plt.Figure]:
-    """
-    Overlay per-spot ligand-receptor interaction scores on a tissue image.
-
-    Displays the diffused LR interaction score of one pair (a column of
-    ``lr_adata.X``) as a color layer over the histology or nuclear-stain
-    image -- H&E for Visium / Visium HD, ssDNA for Stereo-seq.
-
-    The image is found in one of two ways:
-
-    1. **Visium convention** (scanpy / squidpy layout):
-       ``uns['spatial'][library_id]['images'][img_key]`` with the matching
-       ``scalefactors['tissue_<img_key>_scalef']``, read from ``adata`` if
-       given, else from ``lr_adata``. This is what ``sc.read_visium`` /
-       ``sc.datasets.visium_sge`` produce.
-    2. **Explicit image**: pass ``img=`` (a registered image array) and
-       ``scale_factor=`` (spot-coordinate -> image-pixel scaling; use 1.0
-       when coordinates are already in image pixels). Use this for
-       Stereo-seq ssDNA images or any custom registration.
-
-    With neither available, scores are plotted without a background image.
-
-    Parameters
-    ----------
-    lr_adata : AnnData
-        LARIS output of `prepareLRInteraction` (cells x LR pairs).
-    interaction : str
-        Interaction to display, e.g. ``'Tgfb1::Tgfbr1'``
-        (must be in ``lr_adata.var_names``).
-    basis : str, default='spatial'
-        Key in ``.obsm`` with spatial coordinates (x, y).
-    adata : AnnData, optional
-        Object carrying ``uns['spatial']`` when ``lr_adata`` does not
-        (e.g. the original expression AnnData).
-    library_id : str, optional
-        Library in ``uns['spatial']``; defaults to the only entry.
-    img_key : str, default='hires'
-        Image resolution key ('hires' or 'lowres' for Visium).
-    img : np.ndarray, optional
-        Explicit background image; overrides the Visium convention.
-    scale_factor : float, optional
-        Spot-to-pixel scaling for ``img``. Required with ``img`` unless
-        coordinates are already in pixels (then pass 1.0). For the Visium
-        convention it is read from the scalefactors automatically.
-    layer : str, optional
-        Layer of ``lr_adata`` to read scores from instead of ``.X``.
-    cmap : str or Colormap, optional
-        Colormap for scores (default: LARIS ``pos_cmap``).
-    size : float, default=8
-        Spot marker size.
-    alpha_img : float, default=1.0
-        Opacity of the background image.
-    vmax_quantile : float, default=0.995
-        Color scale is clipped at this quantile of the positive scores, so a
-        few extreme spots do not wash out the rest.
-    score_threshold : float, default=0.0
-        Spots with score <= this value are drawn small and transparent so
-        the tissue stays visible where the interaction is absent.
-    crop : bool, default=True
-        Crop the image to the extent of the spots (with ``margin``).
-    margin : float, default=0.05
-        Fractional margin around the spot extent when cropping.
-    title : str, optional
-        Plot title (defaults to the interaction name).
-    colorbar : bool, default=True
-        Draw a colorbar.
-    figsize : tuple, default=(8, 8)
-        Figure size when ``ax`` is not given.
-    ax : matplotlib Axes, optional
-        Draw into an existing Axes.
-    save : str, optional
-        Path to save the figure.
-    return_fig : bool, default=False
-        Return the Figure object.
-
-    Examples
-    --------
-    >>> # Visium with bundled H&E (scanpy convention)
-    >>> la.pl.plotCCCSpatialOverlay(lr_adata, 'TGFB1::TGFBR1', adata=adata)
-    >>> # Stereo-seq with a registered ssDNA image
-    >>> la.pl.plotCCCSpatialOverlay(lr_adata, 'Tgfb1::Tgfbr1',
-    ...                             img=ssdna_img, scale_factor=1.0)
-    """
-    if interaction not in lr_adata.var_names:
-        raise ValueError(
-            f"Interaction {interaction!r} not found in lr_adata.var_names."
-        )
-
-    # --- scores -----------------------------------------------------------
-    col = lr_adata[:, interaction]
-    values = col.layers[layer] if layer is not None else col.X
-    scores = np.asarray(
-        values.toarray() if issparse(values) else values
-    ).ravel().astype(float)
-
-    # --- coordinates ------------------------------------------------------
-    coords_source = lr_adata if basis in lr_adata.obsm else adata
-    if coords_source is None or basis not in coords_source.obsm:
-        raise ValueError(
-            f"Spatial basis {basis!r} not found in lr_adata.obsm"
-            + ("" if adata is None else " or adata.obsm")
-        )
-    coords = np.asarray(coords_source.obsm[basis])[:, :2].astype(float)
-
-    # --- background image -------------------------------------------------
-    sf = scale_factor
-    if img is None:
-        for source in (adata, lr_adata):
-            if source is None or 'spatial' not in source.uns:
-                continue
-            spatial_uns = source.uns['spatial']
-            lib = library_id
-            if lib is None:
-                if len(spatial_uns) != 1:
-                    raise ValueError(
-                        f"Multiple libraries in uns['spatial'] "
-                        f"({list(spatial_uns)}); pass library_id."
-                    )
-                lib = next(iter(spatial_uns))
-            entry = spatial_uns[lib]
-            images = entry.get('images', {})
-            if img_key in images:
-                img = images[img_key]
-                if sf is None:
-                    sf = entry.get('scalefactors', {}).get(
-                        f'tissue_{img_key}_scalef', 1.0
-                    )
-                break
-    if img is not None and sf is None:
-        raise ValueError(
-            "scale_factor is required with an explicit img= (pass 1.0 when "
-            "coordinates are already in image pixels)."
-        )
-
-    # --- figure -----------------------------------------------------------
-    if ax is None:
-        fig, ax = plt.subplots(figsize=figsize)
-    else:
-        fig = ax.get_figure()
-
-    if img is not None:
-        ax.imshow(img, alpha=alpha_img, origin='upper')
-        px = coords * sf
-    else:
-        px = coords
-        ax.set_aspect('equal')
-        ax.invert_yaxis()
-
-    if cmap is None:
-        cmap = pos_cmap
-    elif isinstance(cmap, str):
-        cmap = _get_cmap(cmap)
-
-    positive = scores > score_threshold
-    vmax = (
-        np.quantile(scores[positive], vmax_quantile) if positive.any() else 1.0
-    )
-    if vmax <= 0:
-        vmax = scores.max() if scores.max() > 0 else 1.0
-
-    # Absent spots first (faint), then expressing spots ordered so the
-    # strongest draw on top.
-    ax.scatter(
-        px[~positive, 0], px[~positive, 1],
-        s=size * 0.4, c='lightgrey', alpha=0.25, linewidths=0,
-    )
-    order = np.argsort(scores[positive])
-    sc_plot = ax.scatter(
-        px[positive, 0][order], px[positive, 1][order],
-        c=scores[positive][order], cmap=cmap, vmin=0, vmax=vmax,
-        s=size, linewidths=0,
-    )
-
-    if crop and len(px):
-        x0, x1 = px[:, 0].min(), px[:, 0].max()
-        y0, y1 = px[:, 1].min(), px[:, 1].max()
-        dx, dy = (x1 - x0) * margin, (y1 - y0) * margin
-        ax.set_xlim(x0 - dx, x1 + dx)
-        # imshow uses top-left origin: keep y inverted.
-        ax.set_ylim(y1 + dy, y0 - dy)
-
-    if colorbar and positive.any():
-        cb = fig.colorbar(sc_plot, ax=ax, shrink=0.6, pad=0.02)
-        cb.set_label('interaction score')
-
-    ax.set_title(title if title is not None else interaction)
-    ax.set_xticks([])
-    ax.set_yticks([])
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-
-    if save:
-        fig.savefig(save, dpi=300, bbox_inches='tight')
-    if return_fig:
-        return fig
-    return None
-
-
 __all__ = [
     # Main plotting functions
     'plotCCCHeatmap',
@@ -3022,7 +3059,6 @@ __all__ = [
     'plotCCCDotPlotFacet',
     'plotLRDotPlot',
     'plotCCCSpatial',
-    'plotCCCSpatialOverlay',
     
     # Utility functions
     'prepareDotPlotAdata',

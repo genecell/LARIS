@@ -135,7 +135,17 @@ def _apply_knn_kernel(
             raise ValueError(
                 f"sigma must be a number or 'adaptive', got {sigma!r}"
             )
-        bandwidth = np.mean(cellxcell.data) / 2
+        bandwidth = np.mean(cellxcell.data) / 2 if cellxcell.data.size else 0.0
+        if not np.isfinite(bandwidth) or bandwidth <= 0:
+            # Degenerate geometry (all coordinates identical, or a single
+            # cell): every k-NN distance is 0, so the kernel is uniform.
+            # Dividing by a zero bandwidth would make every weight NaN.
+            warnings.warn(
+                "adaptive kernel: all k-NN distances are zero (identical "
+                "spatial coordinates?); using uniform edge weights.",
+                UserWarning, stacklevel=2)
+            cellxcell.data = np.ones_like(cellxcell.data)
+            return cellxcell
     else:
         bandwidth = float(sigma)
         if bandwidth <= 0:

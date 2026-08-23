@@ -168,7 +168,7 @@ class TestBasicFunctionality:
             sampleToSubject=s2s,
         )
         required = ['interaction_name', 'ligand', 'receptor', 'comparison',
-                     'rank_diff', 'pvalue', 'pvalue_fdr', 'test_method']
+                     'log_diff', 'pvalue', 'pvalue_fdr', 'test_method']
         for col in required:
             assert col in lr_comp.columns, f"Missing column: {col}"
 
@@ -179,7 +179,7 @@ class TestBasicFunctionality:
             sampleToSubject=s2s,
         )
         required = ['sender', 'receiver', 'interaction_name', 'ligand',
-                     'receptor', 'comparison', 'rank_diff', 'pvalue',
+                     'receptor', 'comparison', 'log_diff', 'pvalue',
                      'pvalue_fdr', 'estimable', 'test_method']
         for col in required:
             assert col in triple_comp.columns, f"Missing column: {col}"
@@ -229,7 +229,7 @@ class TestEffectDetection:
         ]
         assert len(hit) > 0, "Expected triple not found in output"
         assert hit['pvalue'].iloc[0] < 0.05, "Expected significant p-value"
-        assert hit['rank_diff'].iloc[0] > 0, "Expected positive rank_diff"
+        assert hit['log_diff'].iloc[0] > 0, "Expected positive log_diff"
 
     def test_no_effect_lr_not_significant(self, simple_data):
         """LR2 (no effect) should not be significant."""
@@ -264,7 +264,7 @@ class TestEffectDetection:
             (triple_comp['comparison'] == 'DSS9_vs_Healthy')
         ]
         assert len(hit) == 1
-        assert hit['rank_diff'].iloc[0] > 0
+        assert hit['log_diff'].iloc[0] > 0
 
     def test_descriptive_stats_present(self, simple_data):
         """log2fc and mean scores should be in triple output."""
@@ -293,9 +293,10 @@ class TestReplicateHandling:
         )
         # Should produce results (model ran on slice-level data)
         assert len(triple_comp) > 0
-        # Test method should be mixed_model when tech replicates exist
-        methods = triple_comp['test_method'].unique()
-        assert 'mixed_model' in methods or 'ols_fallback' in methods
+        # One estimator regardless of replicate structure: slices are
+        # averaged into their subject before the moderated t.
+        methods = set(triple_comp['test_method'].unique())
+        assert methods <= {'moderated_t', 'insufficient_subjects'}
 
     def test_pseudoreplication_warning(self, simple_data):
         """Should warn when sampleToSubject is not provided."""
@@ -310,8 +311,8 @@ class TestReplicateHandling:
                                if 'pseudoreplication' in str(x.message).lower()]
             assert len(pseudo_warnings) > 0
 
-    def test_no_tech_replicates_uses_ols(self, rng):
-        """When each sample IS a subject, use OLS (no random effect needed)."""
+    def test_no_tech_replicates_same_estimator(self, rng):
+        """Subjects == samples uses the same moderated t (no OLS branch)."""
         conditions = ['A', 'B']
         n_mice = {'A': 5, 'B': 5}
         pairs = [('X', 'Y')]
@@ -328,9 +329,8 @@ class TestReplicateHandling:
             results, cond_map, referenceCondition='A',
             sampleToSubject=s2s,
         )
-        # Should use OLS (no tech replicates)
         assert len(triple_comp) > 0
-        assert triple_comp['test_method'].iloc[0] in ('ols', 'ols_fallback')
+        assert triple_comp['test_method'].iloc[0] == 'moderated_t' 
 
 
 class TestEstimability:
@@ -452,8 +452,9 @@ class TestEdgeCases:
         self_pairs = triple_comp[triple_comp['sender'] == triple_comp['receiver']]
         assert len(self_pairs) > 0
 
-    def test_wilcoxon_fallback(self, rng):
-        """With very few cell type pairs, should fall back to Wilcoxon."""
+    def test_single_pair_still_tested(self, rng):
+        """One cell-type pair is fine: aggregation has no per-pair minimum
+        (the Wilcoxon fallback is retired with the redesign)."""
         conditions = ['A', 'B']
         n_mice = {'A': 4, 'B': 4}
         # Only 1 cell type pair — below minCellTypePairs=3
@@ -471,5 +472,98 @@ class TestEdgeCases:
             sampleToSubject=s2s,
             minCellTypePairs=3,
         )
-        # Level 1 should use Wilcoxon fallback
-        assert lr_comp['test_method'].iloc[0] == 'wilcoxon'
+        assert lr_comp['test_method'].iloc[0] == 'moderated_t'
+        assert lr_comp['pvalue'].notna().any()
+
+
+# ---------------------------------------------------------------------------
+# Redesign contracts (v0.10.0): the properties the validation established
+# ---------------------------------------------------------------------------
+
+class TestRedesignContracts:
+    def _data(self, rng, n_mice=4, n_slices=1, effect=0.0):
+        conditions = ['A', 'B']
+        pairs = [('X', 'Y'), ('Y', 'X'), ('X', 'X')]
+        lr_pairs = [(f'L{i}', f'R{i}') for i in range(12)]
+
+        def effect_fn(snd, rcv, lig, rec, cond, mouse, rng):
+            base = rng.uniform(1.0, 5.0)
+            if cond == 'B' and lig == 'L0':
+                base *= np.exp(effect)
+            return base
+
+        return _build_multi_sample_data(
+            {'A': n_mice, 'B': n_mice}, n_slices, conditions, pairs,
+            lr_pairs, effect_fn, rng)
+
+    def test_invariant_to_per_sample_scale(self, rng):
+        """Multiplying any sample's scores by a constant changes nothing -
+        the property whose absence produced 41% false FDR calls under
+        condition-confounded rescale drift."""
+        results, cond_map, s2s = self._data(rng)
+        lr_a, tr_a = la.tl.compareLARIS(
+            results, cond_map, referenceCondition='A', sampleToSubject=s2s)
+        scaled = {
+            s: df.assign(interaction_score=df['interaction_score']
+                         * (0.31 if i % 2 else 3.7))
+            for i, (s, df) in enumerate(results.items())
+        }
+        lr_b, tr_b = la.tl.compareLARIS(
+            scaled, cond_map, referenceCondition='A', sampleToSubject=s2s)
+        for a, b in ((lr_a, lr_b), (tr_a, tr_b)):
+            m = a.merge(b, on=[c for c in ('sender', 'receiver',
+                                           'interaction_name', 'comparison')
+                               if c in a.columns], suffixes=('_a', '_b'))
+            assert np.allclose(m['pvalue_a'].fillna(-1),
+                               m['pvalue_b'].fillna(-1))
+            assert np.allclose(m['log_diff_a'].fillna(0),
+                               m['log_diff_b'].fillna(0))
+
+    def test_level_fast_path(self, rng):
+        results, cond_map, s2s = self._data(rng)
+        lr_only, tr_empty = la.tl.compareLARIS(
+            results, cond_map, referenceCondition='A', sampleToSubject=s2s,
+            level='lr')
+        assert len(lr_only) > 0 and len(tr_empty) == 0
+        lr_empty, tr_only = la.tl.compareLARIS(
+            results, cond_map, referenceCondition='A', sampleToSubject=s2s,
+            level='triple')
+        assert len(lr_empty) == 0 and len(tr_only) > 0
+        with pytest.raises(ValueError, match="level must be"):
+            la.tl.compareLARIS(results, cond_map, referenceCondition='A',
+                               sampleToSubject=s2s, level='banana')
+
+    def test_null_calibration_smoke(self, rng):
+        """Under the null the raw false-positive rate must be near nominal -
+        the OLS branch this replaces ran at ~34% here."""
+        fps = []
+        for seed in range(6):
+            r = np.random.default_rng(seed)
+            results, cond_map, s2s = self._data(r, n_mice=4)
+            lr_comp, _ = la.tl.compareLARIS(
+                results, cond_map, referenceCondition='A',
+                sampleToSubject=s2s, level='lr')
+            p = lr_comp['pvalue'].dropna()
+            fps.append(float((p < 0.05).mean()))
+        assert np.mean(fps) < 0.15, f"null FPR {np.mean(fps):.3f} looks inflated"
+
+    def test_slices_average_into_subject(self, rng):
+        """Duplicating every sample as a technical replicate (same subject)
+        must not manufacture significance."""
+        results, cond_map, s2s = self._data(rng, n_slices=2)
+        lr_comp, _ = la.tl.compareLARIS(
+            results, cond_map, referenceCondition='A', sampleToSubject=s2s,
+            level='lr')
+        # n_subjects reflects subjects, not slices
+        assert (lr_comp['n_subjects_ref'] <= 4).all()
+        assert (lr_comp['n_subjects_alt'] <= 4).all()
+
+    def test_insufficient_subjects_yields_nan(self, rng):
+        results, cond_map, s2s = self._data(rng, n_mice=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            lr_comp, _ = la.tl.compareLARIS(
+                results, cond_map, referenceCondition='A',
+                sampleToSubject=s2s, level='lr')
+        assert lr_comp['pvalue'].isna().all()
+        assert (lr_comp['test_method'] == 'insufficient_subjects').all()

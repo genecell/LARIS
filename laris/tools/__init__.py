@@ -199,6 +199,11 @@ def prepareLRInteraction(
     lr_adata.obsm = adata.obsm.copy()
     lr_adata.var_names = lr_names
 
+    # Carry tissue images along so plotCCCSpatial can overlay from lr_adata
+    # alone (no adata= argument needed). Cheap: the same array objects.
+    if 'spatial' in getattr(adata, 'uns', {}):
+        lr_adata.uns['spatial'] = adata.uns['spatial']
+
     # Filter to only include cells where ligand or receptor is expressed
     ligand_idx = sorter[np.searchsorted(adata.var_names, lr_df['ligand'], sorter=sorter)]
     receptor_idx = sorter[np.searchsorted(adata.var_names, lr_df['receptor'], sorter=sorter)]
@@ -779,13 +784,24 @@ def compareLARIS(
     minCellTypePairs: int = 3,
     pseudocount: float = 1e-6,
     fdrMethod: str = 'fdr_bh',
+    level: str = 'both',
 ):
     """
     Compare LARIS cell-cell communication results across experimental conditions.
 
-    Uses per-triple mixed models with (1|Subject) random intercept on
-    percentile-ranked interaction scores. Keeps slice-level data to properly
-    handle technical replicates.
+    Method: each sample's interaction scores are log-transformed and
+    centred on the sample's median log-score (removing any per-sample
+    multiplicative factor - the step-3.5 rescaling, sequencing depth,
+    batch - exactly); all rows belonging to a subject (cell-type pairs
+    and technical-replicate slices) are averaged to one value per
+    (subject, LR pair), making the subject the unit of inference; and
+    conditions are compared with an empirical-Bayes moderated t-test
+    (limma-style variance shrinkage across LR pairs), which keeps power
+    at the 3-5 subjects per condition typical of spatial cohorts.
+    Calibration was verified by simulation (3-6% false-positive rate at
+    nominal 5% under every null, including condition-confounded rescale
+    drift) and on real multi-condition datasets; see
+    docs/discussion for the validation study.
 
     Parameters
     ----------
@@ -798,29 +814,41 @@ def compareLARIS(
     sampleToSubject : dict, optional
         {sample_name: subject_id} mapping samples to biological replicates.
         Required when samples include technical replicates (e.g., multiple
-        slices per mouse). If None, each sample is treated as independent.
+        slices per mouse): slices of one subject are averaged before
+        testing. If None, each sample is treated as an independent subject
+        (a warning is emitted).
     scoreCol : str
         Column name for interaction scores in celltype_results. Default
-        'interaction_score'.
+        'interaction_score'. Scores may be rescaled or raw - the
+        per-sample centring makes the test invariant to any per-sample
+        scale factor.
     minSubjectsObserved : int
-        Minimum subjects per condition for a cell type pair to be estimable.
+        Minimum subjects per condition for a result to be flagged
+        estimable (Level 2; Level-2 FDR is computed over estimable rows
+        only). Tests need at least 2 subjects per condition regardless.
     minCellTypePairs : int
-        Minimum cell type pairs per LR pair for Level 1 mixed model.
-        Falls back to Wilcoxon if fewer.
+        Retired (the aggregated design has no per-pair model to gate);
+        accepted for backward compatibility and ignored.
     pseudocount : float
-        Added to scores before log2FC computation.
+        Added to raw scores for the descriptive log2FC columns.
     fdrMethod : str
         Method for multiple testing correction (default 'fdr_bh').
+        Level 1 is corrected globally; Level 2 within each LR pair.
+    level : {'both', 'lr', 'triple'}, default 'both'
+        'lr' computes only the per-LR-pair table (fast - recommended as a
+        first pass on large cohorts), 'triple' only the per-triple table,
+        'both' computes both.
 
     Returns
     -------
     lr_comparison : pd.DataFrame
-        Level 1 results — one row per (LR pair x comparison). Columns include
-        interaction_name, comparison, rank_diff, pvalue, pvalue_fdr, log2fc.
+        Level 1 - one row per (LR pair x comparison). Columns include
+        interaction_name, comparison, log_diff (difference of centred
+        log scores, alt minus reference), pvalue, pvalue_fdr, log2fc.
     triple_comparison : pd.DataFrame
-        Level 2 results — one row per (sender, receiver, LR pair x comparison).
-        Columns include sender, receiver, interaction_name, comparison,
-        rank_diff, pvalue, pvalue_fdr, log2fc, estimable.
+        Level 2 - one row per (sender, receiver, LR pair x comparison),
+        with the same statistics plus estimable and per-condition
+        descriptive means.
     """
     return compare_laris_internal(
         results=results,
@@ -832,6 +860,7 @@ def compareLARIS(
         minCellTypePairs=minCellTypePairs,
         pseudocount=pseudocount,
         fdrMethod=fdrMethod,
+        level=level,
     )
 
 

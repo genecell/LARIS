@@ -14,6 +14,7 @@ construction.
 cytome is an optional dependency: ``pip install laris[cytome]``.
 """
 
+import warnings
 from pathlib import Path
 from typing import List, Optional, Union
 
@@ -103,6 +104,61 @@ def _open_cytome(source):
     return source, False
 
 
+
+def _strip_embedding_prefix(key: str, modality: str = 'RNA'):
+    """Short obsm name for a cytome embedding key, or None if not ours.
+
+    Cytome 0.2.6 renamed embeddings from ``{modality}_obsm_{key}`` to
+    ``{modality}_{key}``; both generations remain readable, so both forms
+    must resolve. Never hard-code either literal.
+    """
+    for prefix in (f"{modality}_obsm_", f"{modality}_"):
+        if key.startswith(prefix):
+            return key[len(prefix):]
+    return None
+
+
+def _spatial_uns_from(source) -> dict:
+    """A scanpy-style ``uns['spatial']`` dict from any source, or ``{}``.
+
+    Cytome first (the ``spatial_images`` accessor, cytome >= 0.2.6), then
+    AnnData ``uns``. A file-backed image whose decoder is missing (PIL for
+    PNG/JPEG, tifffile for TIFF, imagecodecs for JPEG-2000 OME-TIFF)
+    degrades to no-image with a warning rather than failing a plot.
+
+    Adapted from ``piaso.plotting._spatial_image`` (PIASO 1.2.2); kept as a
+    copy so LARIS installs without piaso-tools. Keep the two in step if the
+    overlay contract changes.
+    """
+    if isinstance(source, (str, Path)):
+        if not _is_cytome_source(source):
+            return {}
+        try:
+            ds, opened = _open_cytome(source)
+        except Exception as exc:  # unreadable path: no image, not a crash
+            warnings.warn(f"could not read spatial images from {source!r}: {exc}")
+            return {}
+        try:
+            return _spatial_uns_from(ds)
+        finally:
+            if opened:
+                ds.close()
+    acc = getattr(source, 'spatial_images', None)
+    if acc is not None:
+        try:
+            return acc.as_uns() or {}
+        except ImportError as exc:      # optional decoder missing
+            warnings.warn(f"spatial image present but not decodable: {exc}")
+            return {}
+        except Exception as exc:        # e.g. tifffile needs imagecodecs
+            warnings.warn(f"spatial image could not be read: {exc}")
+            return {}
+    uns = getattr(source, 'uns', None)
+    if uns is not None and 'spatial' in uns and isinstance(uns['spatial'], dict):
+        return uns['spatial']
+    return {}
+
+
 def readCytome(
     source,
     genes: Optional[List[str]] = None,
@@ -144,8 +200,11 @@ def readCytome(
     -------
     AnnData
         With ``.X`` (CSR), ``.obs`` from the cells table, and every
-        ``{modality}_obsm_*`` embedding exposed under its original obsm key
-        (e.g. ``RNA_obsm_X_spatial`` -> ``obsm['X_spatial']``).
+        each embedding exposed under its short obsm key (``RNA_spatial``
+        or the pre-0.2.6 ``RNA_obsm_X_spatial`` both give
+        ``obsm['spatial']`` / ``obsm['X_spatial']``), and, when the
+        dataset stores tissue images (cytome >= 0.2.6),
+        ``uns['spatial']`` in the scanpy convention.
     """
     cytome = _import_cytome()
     ds, opened_here = _open_cytome(source)
@@ -210,10 +269,21 @@ def readCytome(
             var=pd.DataFrame(index=pd.Index(found, name=None)),
         )
 
-        prefix = f"{modality}_obsm_"
+        # Embedding names differ across cytome generations: files written
+        # before 0.2.6 store obsm arrays as "{modality}_obsm_{key}", 0.2.6+
+        # as "{modality}_{key}". Accept BOTH - a hard-coded prefix works on
+        # one generation and KeyErrors on the other.
         for key in ds.embeddings.keys():
-            if key.startswith(prefix):
-                adata.obsm[key[len(prefix):]] = np.asarray(ds.embeddings[key])
+            short = _strip_embedding_prefix(key, modality)
+            if short is not None:
+                adata.obsm[short] = np.asarray(ds.embeddings[key])
+
+        # Tissue images (cytome >= 0.2.6) travel with the data: expose them
+        # in the scanpy convention so every downstream consumer - including
+        # laris.pl.plotCCCSpatial - needs no cytome-specific branch.
+        spatial_uns = _spatial_uns_from(ds)
+        if spatial_uns:
+            adata.uns['spatial'] = spatial_uns
         return adata
     finally:
         if opened_here:

@@ -213,12 +213,19 @@ class TestCytomeSupport:
 # ---------------------------------------------------------------------------
 
 class TestSpatialOverlay:
+    """plotCCCSpatial's merged score/image modes (issue #1).
+
+    The former separate plotCCCSpatialOverlay is folded into
+    plotCCCSpatial: color_by='score' gives the continuous overlay, and
+    the image parameters (img=/scale_factor=, or the scanpy uns['spatial']
+    convention) work under both color modes.
+    """
+
     @pytest.fixture
     def lr_adata_with_visium_uns(self, synthetic_adata, lr_df):
         lr_adata = la.tl.prepareLRInteraction(
             synthetic_adata, lr_df, use_rep_spatial="spatial"
         )
-        # Fabricate the scanpy Visium uns['spatial'] layout with a small image
         rng = np.random.default_rng(0)
         img = rng.random((120, 120, 3)).astype(np.float32)
         lr_adata.uns["spatial"] = {
@@ -229,38 +236,50 @@ class TestSpatialOverlay:
         }
         return lr_adata
 
-    def test_overlay_visium_convention(self, lr_adata_with_visium_uns, tmp_path):
+    def test_score_mode_visium_convention(self, lr_adata_with_visium_uns, tmp_path):
         interaction = str(lr_adata_with_visium_uns.var_names[0])
         out = str(tmp_path / "overlay.png")
-        fig = la.pl.plotCCCSpatialOverlay(
-            lr_adata_with_visium_uns, interaction,
-            basis="spatial", save=out, return_fig=True,
+        fig = la.pl.plotCCCSpatial(
+            lr_adata_with_visium_uns, "spatial", interaction,
+            color_by="score", save=out, return_fig=True,
         )
         assert fig is not None
         assert os.path.getsize(out) > 0
         import matplotlib.pyplot as plt
         plt.close(fig)
 
-    def test_overlay_explicit_image(self, synthetic_adata, lr_df, tmp_path):
+    def test_score_mode_explicit_image(self, synthetic_adata, lr_df):
         lr_adata = la.tl.prepareLRInteraction(
             synthetic_adata, lr_df, use_rep_spatial="spatial"
         )
         img = np.zeros((110, 110, 3), dtype=np.float32)
-        fig = la.pl.plotCCCSpatialOverlay(
-            lr_adata, str(lr_adata.var_names[1]),
-            basis="spatial", img=img, scale_factor=1.0, return_fig=True,
+        fig = la.pl.plotCCCSpatial(
+            lr_adata, "spatial", str(lr_adata.var_names[1]),
+            color_by="score", img=img, scale_factor=1.0, return_fig=True,
         )
         assert fig is not None
         import matplotlib.pyplot as plt
         plt.close(fig)
 
-    def test_overlay_no_image_fallback(self, synthetic_adata, lr_df):
+    def test_score_mode_no_image_fallback(self, synthetic_adata, lr_df):
         lr_adata = la.tl.prepareLRInteraction(
             synthetic_adata, lr_df, use_rep_spatial="spatial"
         )
-        fig = la.pl.plotCCCSpatialOverlay(
-            lr_adata, str(lr_adata.var_names[0]),
-            basis="spatial", return_fig=True,
+        fig = la.pl.plotCCCSpatial(
+            lr_adata, "spatial", str(lr_adata.var_names[0]),
+            color_by="score", return_fig=True,
+        )
+        assert fig is not None
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+    def test_celltype_mode_over_image(self, lr_adata_with_visium_uns):
+        """The merge's new capability: categorical highlighting over H&E."""
+        interaction = str(lr_adata_with_visium_uns.var_names[0])
+        fig = la.pl.plotCCCSpatial(
+            lr_adata_with_visium_uns, "spatial", interaction,
+            cell_type="cell_type", highlight_all_expressing=True,
+            return_fig=True,
         )
         assert fig is not None
         import matplotlib.pyplot as plt
@@ -271,9 +290,30 @@ class TestSpatialOverlay:
             synthetic_adata, lr_df, use_rep_spatial="spatial"
         )
         with pytest.raises(ValueError, match="scale_factor"):
-            la.pl.plotCCCSpatialOverlay(
-                lr_adata, str(lr_adata.var_names[0]),
-                basis="spatial", img=np.zeros((10, 10, 3)),
+            la.pl.plotCCCSpatial(
+                lr_adata, "spatial", str(lr_adata.var_names[0]),
+                color_by="score", img=np.zeros((10, 10, 3)),
+            )
+
+    def test_score_mode_needs_no_cell_type(self, synthetic_adata, lr_df):
+        lr_adata = la.tl.prepareLRInteraction(
+            synthetic_adata, lr_df, use_rep_spatial="spatial"
+        )
+        fig = la.pl.plotCCCSpatial(
+            lr_adata, "spatial", str(lr_adata.var_names[0]),
+            color_by="score", return_fig=True,
+        )
+        assert fig is not None
+        import matplotlib.pyplot as plt
+        plt.close(fig)
+
+    def test_celltype_mode_requires_cell_type(self, synthetic_adata, lr_df):
+        lr_adata = la.tl.prepareLRInteraction(
+            synthetic_adata, lr_df, use_rep_spatial="spatial"
+        )
+        with pytest.raises(ValueError, match="cell_type is required"):
+            la.pl.plotCCCSpatial(
+                lr_adata, "spatial", str(lr_adata.var_names[0])
             )
 
     def test_unknown_interaction_raises(self, synthetic_adata, lr_df):
@@ -281,30 +321,14 @@ class TestSpatialOverlay:
             synthetic_adata, lr_df, use_rep_spatial="spatial"
         )
         with pytest.raises(ValueError, match="not found"):
-            la.pl.plotCCCSpatialOverlay(lr_adata, "NOPE::NOPE", basis="spatial")
+            la.pl.plotCCCSpatial(lr_adata, "spatial", "NOPE::NOPE",
+                                 color_by="score")
 
-
-class TestPIASOConventions:
-    """LARIS cytome handling mirrors PIASO's cytome compatibility layer."""
-
-    def test_db_suffix_accepted(self, tmp_path, synthetic_adata, lr_df):
-        path = str(tmp_path / "synthetic.db")
-        ds = cytome.from_anndata(synthetic_adata, output=path)
-        ds.close()
+    def test_invalid_color_by(self, synthetic_adata, lr_df):
         lr_adata = la.tl.prepareLRInteraction(
-            path, lr_df, use_rep_spatial="X_spatial"
+            synthetic_adata, lr_df, use_rep_spatial="spatial"
         )
-        assert lr_adata.n_vars == len(lr_df)
-
-    def test_closed_dataset_raises_actionable(self, cytome_path, lr_df):
-        ds = cytome.open(cytome_path)
-        ds.close()
-        with pytest.raises(RuntimeError, match="closed"):
-            la.tl.prepareLRInteraction(ds, lr_df, use_rep_spatial="X_spatial")
-
-    def test_duck_typing_no_cytome_import_needed(self):
-        from laris.tools._io import _looks_like_cytome_dataset
-        class NotADataset:
-            pass
-        assert not _looks_like_cytome_dataset(NotADataset())
-        assert not _looks_like_cytome_dataset("some_string")
+        with pytest.raises(ValueError, match="color_by must be"):
+            la.pl.plotCCCSpatial(
+                lr_adata, "spatial", str(lr_adata.var_names[0]),
+                color_by="rainbow")

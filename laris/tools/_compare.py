@@ -1,21 +1,52 @@
 """
 Internal implementation for compareLARIS().
 
-Per-triple mixed models for multi-condition comparison of LARIS results.
+Multi-condition comparison of per-sample LARIS results via per-sample
+median-centred log scores, subject-level aggregation, and an
+empirical-Bayes moderated t-test (limma-style).
+
+Why this design (validated in analysis/comparelaris_calibration.py and on
+the Kuppe MI and Satb2 Slide-seqV2 datasets):
+
+1. **Within-sample centring.** ``log(score + eps)`` minus the sample's
+   median log-score removes any per-sample multiplicative factor exactly
+   (step-3.5 rescaling, depth, batch) - the quantity compared across
+   conditions is an interaction's prominence *within its own sample*.
+   Ranking scores across samples, by contrast, is shifted coherently by
+   per-sample scale and confounds condition with processing batch.
+2. **Subject-level aggregation (the pseudobulk principle).** All rows of
+   a subject - cell-type pairs and technical-replicate slices alike - are
+   averaged to one value per (subject, LR pair) before testing, so the
+   subject is the unit of inference and pseudoreplication is impossible.
+   Feeding pairs x samples rows into one regression instead inflates the
+   false-positive rate to ~34% in simulation and called 64% of all LR
+   pairs "significant" on a real 5v5 knockout design.
+3. **Moderated t.** Per-LR variances are shrunk toward a prior fitted
+   across all LR pairs (Smyth 2004 moments estimator), recovering power
+   at the 3-5 subjects per condition typical of spatial cohorts while
+   keeping calibration (verified: 3-6% false-positive rate at nominal 5%
+   in every simulated null, including condition-confounded rescale
+   drift).
 """
 
 import warnings
+
 import numpy as np
 import pandas as pd
-from scipy.stats import rankdata, mannwhitneyu
+from scipy import special
+from scipy.stats import t as t_dist
 from statsmodels.stats.multitest import multipletests
-import statsmodels.formula.api as smf
+
+#: Added to scores before the log transform. Scores are non-negative;
+#: zeros (absent / prefiltered interactions) map to the floor log(eps).
+_LOG_EPS = 1e-8
 
 
 def _assemble_comparison_data(results, conditionMap, sampleToSubject, scoreCol):
     """
-    Concat per-sample LARIS celltype results into a single long-format DataFrame.
-    Keeps slice-level data (no averaging).
+    Concat per-sample LARIS celltype results into a single long-format
+    DataFrame with per-sample median-centred log scores. Keeps slice-level
+    rows (aggregation to subjects happens at test time).
     """
     frames = []
     for sample_name, df in results.items():
@@ -27,13 +58,14 @@ def _assemble_comparison_data(results, conditionMap, sampleToSubject, scoreCol):
         sub = df[['sender', 'receiver', 'ligand', 'receptor',
                    'interaction_name', scoreCol]].copy()
         sub = sub.rename(columns={scoreCol: 'score'})
+        logs = np.log(sub['score'].to_numpy(dtype=float) + _LOG_EPS)
+        sub['centred'] = logs - np.median(logs)
         sub['sample'] = sample_name
         sub['condition'] = conditionMap[sample_name]
         frames.append(sub)
 
     long_df = pd.concat(frames, ignore_index=True)
 
-    # Add subject column
     if sampleToSubject is not None:
         missing = set(long_df['sample'].unique()) - set(sampleToSubject.keys())
         if missing:
@@ -55,332 +87,113 @@ def _assemble_comparison_data(results, conditionMap, sampleToSubject, scoreCol):
     return long_df
 
 
-def _fit_single_triple_mixed(triple_data, referenceCondition, conditions,
-                              has_tech_replicates):
-    """
-    Fit mixed model for a single (LR pair, cell_type_pair).
-    Returns dict with condition contrasts.
-    """
-    results = []
-    alt_conditions = [c for c in conditions if c != referenceCondition]
+def _fit_variance_prior(s2, df):
+    """Smyth (2004) moments estimator for the scaled-inverse-chi2 variance
+    prior. Returns (d0, s2_0); d0 = inf means no shrinkage (degenerate fit).
 
-    if not alt_conditions:
-        return results
+    ``df`` may be a scalar or an array aligned with ``s2`` (subjects per
+    test can differ when some subjects lack an LR pair entirely).
+    """
+    s2 = np.asarray(s2, dtype=float)
+    df = np.broadcast_to(np.asarray(df, dtype=float), s2.shape)
+    ok = np.isfinite(s2) & (s2 > 0) & (df > 0)
+    if ok.sum() < 3:
+        med = float(np.median(s2[ok])) if ok.any() else 1.0
+        return np.inf, med
+    s2, df = s2[ok], df[ok]
+    z = np.log(s2)
+    e = z - special.digamma(df / 2) + np.log(df / 2)
+    emean = e.mean()
+    evar = e.var(ddof=1) - special.polygamma(1, df / 2).mean()
+    if evar <= 0:
+        return np.inf, float(np.exp(emean))
+    x = 2.0 / evar
+    for _ in range(50):
+        tri = special.polygamma(1, x / 2)
+        step = tri * (1 - tri / evar) / special.polygamma(2, x / 2) * 2
+        x = max(x + step, 0.05)
+    d0 = float(x)
+    s2_0 = float(np.exp(emean + special.digamma(d0 / 2) - np.log(d0 / 2)))
+    return d0, s2_0
 
-    try:
-        if has_tech_replicates:
-            model = smf.mixedlm(
-                f'pct_rank ~ C(condition, Treatment("{referenceCondition}"))',
-                data=triple_data,
-                groups='subject',
-            )
-            fit = model.fit(reml=True, method='lbfgs', maxiter=200)
-            sigma2_subject = float(fit.cov_re.iloc[0, 0])
-            sigma2_resid = float(fit.scale)
-            test_method = 'mixed_model'
+
+def _moderated_test_table(agg, agg_cols, referenceCondition, alt_condition,
+                          min_subjects):
+    """One moderated-t contrast over subject-level aggregates.
+
+    ``agg`` has one row per (*agg_cols, subject, condition) with column
+    'centred'. Returns a DataFrame with one row per agg_cols key.
+    """
+    agg = agg[agg['condition'].isin([referenceCondition, alt_condition])]
+    rows = []
+    for key, grp in agg.groupby(agg_cols, sort=False, observed=True):
+        if not isinstance(key, tuple):
+            key = (key,)
+        ref = grp.loc[grp['condition'] == referenceCondition, 'centred'].to_numpy()
+        alt = grp.loc[grp['condition'] == alt_condition, 'centred'].to_numpy()
+        n1, n2 = len(alt), len(ref)
+        if n1 >= 2 and n2 >= 2:
+            diff = float(alt.mean() - ref.mean())
+            s2 = (((n1 - 1) * alt.var(ddof=1) + (n2 - 1) * ref.var(ddof=1))
+                  / (n1 + n2 - 2))
         else:
-            # No technical replicates — use OLS
-            import statsmodels.api as sm
-            model = smf.ols(
-                f'pct_rank ~ C(condition, Treatment("{referenceCondition}"))',
-                data=triple_data,
-            )
-            fit = model.fit()
-            sigma2_subject = np.nan
-            sigma2_resid = float(fit.mse_resid)
-            test_method = 'ols'
+            diff, s2 = np.nan, np.nan
+        rows.append((*key, diff, s2, n1, n2))
 
-        params = fit.params
-        pvalues = fit.pvalues
+    out = pd.DataFrame(rows, columns=list(agg_cols) + ['log_diff', 's2',
+                                                       'n_subjects_alt',
+                                                       'n_subjects_ref'])
+    out['comparison'] = f'{alt_condition}_vs_{referenceCondition}'
+    out['estimable'] = ((out['n_subjects_ref'] >= min_subjects)
+                        & (out['n_subjects_alt'] >= min_subjects))
+    out['pvalue'] = np.nan
+    out['test_method'] = 'moderated_t'
 
-        for alt_cond in alt_conditions:
-            coef_name = f'C(condition, Treatment("{referenceCondition}"))[T.{alt_cond}]'
-            if coef_name in params.index:
-                results.append({
-                    'rank_diff': float(params[coef_name]),
-                    'pvalue': float(pvalues[coef_name]),
-                    'comparison': f'{alt_cond}_vs_{referenceCondition}',
-                    'sigma2_subject': sigma2_subject,
-                    'sigma2_resid': sigma2_resid,
-                    'test_method': test_method,
-                })
+    testable = out['s2'].notna()
+    if testable.any():
+        df_resid = (out.loc[testable, 'n_subjects_alt']
+                    + out.loc[testable, 'n_subjects_ref'] - 2).to_numpy(float)
+        d0, s2_0 = _fit_variance_prior(out.loc[testable, 's2'], df_resid)
+        s2_vals = out.loc[testable, 's2'].to_numpy(float)
+        if np.isinf(d0):
+            s2_post, df_total = s2_vals, df_resid
+        else:
+            s2_post = (d0 * s2_0 + df_resid * s2_vals) / (d0 + df_resid)
+            df_total = df_resid + d0
+        n1 = out.loc[testable, 'n_subjects_alt'].to_numpy(float)
+        n2 = out.loc[testable, 'n_subjects_ref'].to_numpy(float)
+        se = np.sqrt(s2_post * (1 / n1 + 1 / n2))
+        tstat = out.loc[testable, 'log_diff'].to_numpy(float) / np.maximum(se, 1e-12)
+        out.loc[testable, 'pvalue'] = 2 * t_dist.sf(np.abs(tstat), df_total)
+    out.loc[~testable, 'test_method'] = 'insufficient_subjects'
 
-    except Exception:
-        # Fallback: average within subject, then OLS
-        try:
-            avg = triple_data.groupby(['subject', 'condition']).agg(
-                score=('score', 'mean')
-            ).reset_index()
-            avg['pct_rank'] = rankdata(avg['score'].values) / (len(avg) + 1)
-
-            import statsmodels.api as sm
-            model = smf.ols(
-                f'pct_rank ~ C(condition, Treatment("{referenceCondition}"))',
-                data=avg,
-            )
-            fit = model.fit()
-            params = fit.params
-            pvalues = fit.pvalues
-
-            for alt_cond in alt_conditions:
-                coef_name = f'C(condition, Treatment("{referenceCondition}"))[T.{alt_cond}]'
-                if coef_name in params.index:
-                    results.append({
-                        'rank_diff': float(params[coef_name]),
-                        'pvalue': float(pvalues[coef_name]),
-                        'comparison': f'{alt_cond}_vs_{referenceCondition}',
-                        'sigma2_subject': np.nan,
-                        'sigma2_resid': float(fit.mse_resid),
-                        'test_method': 'ols_fallback',
-                    })
-        except Exception:
-            for alt_cond in alt_conditions:
-                results.append({
-                    'rank_diff': np.nan,
-                    'pvalue': np.nan,
-                    'comparison': f'{alt_cond}_vs_{referenceCondition}',
-                    'sigma2_subject': np.nan,
-                    'sigma2_resid': np.nan,
-                    'test_method': 'failed',
-                })
-
-    return results
-
-
-def _fit_mixed_model_per_triple(long_df, referenceCondition, minSubjectsObserved):
-    """
-    Fit per-triple mixed models for Level 2 output.
-    """
-    conditions = sorted(long_df['condition'].unique())
-    if referenceCondition not in conditions:
-        raise ValueError(
-            f"referenceCondition '{referenceCondition}' not found in data. "
-            f"Available conditions: {conditions}"
-        )
-
-    # Check if there are technical replicates
-    samples_per_subject = long_df.groupby('subject')['sample'].nunique()
-    has_tech_replicates = (samples_per_subject > 1).any()
-
-    # Create cell_type_pair
-    long_df = long_df.copy()
-    long_df['cell_type_pair'] = long_df['sender'] + '→' + long_df['receiver']
-
-    # Group by (interaction_name, cell_type_pair)
-    grouped = long_df.groupby(['interaction_name', 'ligand', 'receptor',
-                                'sender', 'receiver', 'cell_type_pair'])
-
-    all_results = []
-    for (int_name, lig, rec, snd, rcv, ctp), triple_data in grouped:
-        # Check estimability per comparison
-        subjects_per_cond = triple_data.groupby('condition')['subject'].nunique()
-
-        alt_conditions = [c for c in conditions if c != referenceCondition]
-        ref_n = subjects_per_cond.get(referenceCondition, 0)
-
-        # Percentile rank within this cell type pair
-        n = len(triple_data)
-        triple_data = triple_data.copy()
-        triple_data['pct_rank'] = rankdata(triple_data['score'].values) / (n + 1)
-
-        # Fit model
-        model_results = _fit_single_triple_mixed(
-            triple_data, referenceCondition, conditions, has_tech_replicates
-        )
-
-        for mr in model_results:
-            comp_parts = mr['comparison'].split('_vs_')
-            alt_cond = comp_parts[0]
-            alt_n = subjects_per_cond.get(alt_cond, 0)
-            estimable = (ref_n >= minSubjectsObserved and
-                         alt_n >= minSubjectsObserved)
-
-            all_results.append({
-                'sender': snd,
-                'receiver': rcv,
-                'interaction_name': int_name,
-                'ligand': lig,
-                'receptor': rec,
-                'comparison': mr['comparison'],
-                'rank_diff': mr['rank_diff'],
-                'pvalue': mr['pvalue'],
-                'estimable': estimable,
-                'test_method': mr['test_method'],
-                'sigma2_subject': mr.get('sigma2_subject', np.nan),
-                'sigma2_resid': mr.get('sigma2_resid', np.nan),
-                'n_subjects_ref': int(ref_n),
-                'n_subjects_alt': int(alt_n),
-            })
-
-    if not all_results:
-        return pd.DataFrame()
-
-    return pd.DataFrame(all_results)
-
-
-def _fit_mixed_model_per_lr(long_df, referenceCondition, minCellTypePairs):
-    """
-    Fit main-effects mixed model for Level 1 output.
-    """
-    conditions = sorted(long_df['condition'].unique())
-    if referenceCondition not in conditions:
-        raise ValueError(
-            f"referenceCondition '{referenceCondition}' not found in data. "
-            f"Available conditions: {conditions}"
-        )
-
-    samples_per_subject = long_df.groupby('subject')['sample'].nunique()
-    has_tech_replicates = (samples_per_subject > 1).any()
-
-    long_df = long_df.copy()
-    long_df['cell_type_pair'] = long_df['sender'] + '→' + long_df['receiver']
-
-    grouped = long_df.groupby(['interaction_name', 'ligand', 'receptor'])
-    alt_conditions = [c for c in conditions if c != referenceCondition]
-
-    all_results = []
-    for (int_name, lig, rec), lr_data in grouped:
-        n_pairs = lr_data['cell_type_pair'].nunique()
-        subjects_per_cond = lr_data.groupby('condition')['subject'].nunique()
-        ref_n = subjects_per_cond.get(referenceCondition, 0)
-
-        # Percentile rank within each cell type pair
-        lr_data = lr_data.copy()
-        lr_ranked = lr_data.copy()
-        lr_ranked['pct_rank'] = 0.0
-        for pair in lr_ranked['cell_type_pair'].unique():
-            mask = lr_ranked['cell_type_pair'] == pair
-            scores = lr_ranked.loc[mask, 'score'].values
-            n = mask.sum()
-            lr_ranked.loc[mask, 'pct_rank'] = rankdata(scores) / (n + 1)
-
-        if n_pairs < minCellTypePairs:
-            # Fallback: Wilcoxon on subject-averaged scores
-            for alt_cond in alt_conditions:
-                alt_n = subjects_per_cond.get(alt_cond, 0)
-                _append_wilcoxon_result(
-                    all_results, lr_ranked, int_name, lig, rec,
-                    referenceCondition, alt_cond, ref_n, alt_n, n_pairs
-                )
-            continue
-
-        try:
-            if has_tech_replicates:
-                model = smf.mixedlm(
-                    f'pct_rank ~ C(condition, Treatment("{referenceCondition}")) '
-                    f'+ C(cell_type_pair)',
-                    data=lr_ranked,
-                    groups='subject',
-                )
-                fit = model.fit(reml=True, method='lbfgs', maxiter=200)
-                test_method = 'mixed_model'
-            else:
-                model = smf.ols(
-                    f'pct_rank ~ C(condition, Treatment("{referenceCondition}")) '
-                    f'+ C(cell_type_pair)',
-                    data=lr_ranked,
-                )
-                fit = model.fit()
-                test_method = 'ols'
-
-            params = fit.params
-            pvalues = fit.pvalues
-
-            for alt_cond in alt_conditions:
-                coef_name = (f'C(condition, Treatment("{referenceCondition}"))'
-                             f'[T.{alt_cond}]')
-                alt_n = subjects_per_cond.get(alt_cond, 0)
-                if coef_name in params.index:
-                    all_results.append({
-                        'interaction_name': int_name,
-                        'ligand': lig,
-                        'receptor': rec,
-                        'comparison': f'{alt_cond}_vs_{referenceCondition}',
-                        'rank_diff': float(params[coef_name]),
-                        'pvalue': float(pvalues[coef_name]),
-                        'n_cell_type_pairs': n_pairs,
-                        'n_subjects_ref': int(ref_n),
-                        'n_subjects_alt': int(alt_n),
-                        'test_method': test_method,
-                    })
-
-        except Exception:
-            # Fallback to Wilcoxon
-            for alt_cond in alt_conditions:
-                alt_n = subjects_per_cond.get(alt_cond, 0)
-                _append_wilcoxon_result(
-                    all_results, lr_ranked, int_name, lig, rec,
-                    referenceCondition, alt_cond, ref_n, alt_n, n_pairs
-                )
-
-    if not all_results:
-        return pd.DataFrame()
-
-    return pd.DataFrame(all_results)
-
-
-def _append_wilcoxon_result(all_results, lr_data, int_name, lig, rec,
-                            ref_cond, alt_cond, ref_n, alt_n, n_pairs):
-    """Wilcoxon fallback for Level 1 when model fitting fails."""
-    # Average within subject first
-    avg = lr_data.groupby(['subject', 'condition']).agg(
-        score=('score', 'mean')
-    ).reset_index()
-
-    ref_scores = avg.loc[avg['condition'] == ref_cond, 'score'].values
-    alt_scores = avg.loc[avg['condition'] == alt_cond, 'score'].values
-
-    if len(ref_scores) >= 2 and len(alt_scores) >= 2:
-        try:
-            stat, pval = mannwhitneyu(alt_scores, ref_scores, alternative='two-sided')
-            rank_diff = float(np.mean(alt_scores) - np.mean(ref_scores))
-        except ValueError:
-            pval = np.nan
-            rank_diff = np.nan
-    else:
-        pval = np.nan
-        rank_diff = np.nan
-
-    all_results.append({
-        'interaction_name': int_name,
-        'ligand': lig,
-        'receptor': rec,
-        'comparison': f'{alt_cond}_vs_{ref_cond}',
-        'rank_diff': rank_diff,
-        'pvalue': pval,
-        'n_cell_type_pairs': n_pairs,
-        'n_subjects_ref': int(ref_n),
-        'n_subjects_alt': int(alt_n),
-        'test_method': 'wilcoxon',
-    })
+    return out.drop(columns=['s2'])
 
 
 def _compute_descriptive_stats(long_df, referenceCondition, pseudocount):
     """
-    Compute per-triple descriptive statistics: mean scores, log2FC,
-    observation counts per condition.
+    Per-triple descriptive statistics on the RAW scores: mean per
+    condition (slices averaged within subject first) and log2FC with
+    pseudocount.
     """
     conditions = sorted(long_df['condition'].unique())
     alt_conditions = [c for c in conditions if c != referenceCondition]
 
-    # Mean score per (subject, triple) — average slices within subject
     subj_avg = long_df.groupby(
         ['subject', 'condition', 'sender', 'receiver',
-         'interaction_name', 'ligand', 'receptor']
+         'interaction_name', 'ligand', 'receptor'], observed=True
     ).agg(score=('score', 'mean')).reset_index()
 
     all_stats = []
     grouped = subj_avg.groupby(
-        ['sender', 'receiver', 'interaction_name', 'ligand', 'receptor']
+        ['sender', 'receiver', 'interaction_name', 'ligand', 'receptor'],
+        observed=True
     )
 
     for (snd, rcv, int_name, lig, rec), grp in grouped:
         ref_data = grp[grp['condition'] == referenceCondition]
         ref_mean = ref_data['score'].mean() if len(ref_data) > 0 else 0.0
         ref_n = ref_data['subject'].nunique()
-
-        # Total subjects across all conditions for this triple
-        total_subjects_per_cond = grp.groupby('condition')['subject'].nunique()
 
         for alt_cond in alt_conditions:
             alt_data = grp[grp['condition'] == alt_cond]
@@ -390,10 +203,6 @@ def _compute_descriptive_stats(long_df, referenceCondition, pseudocount):
             log2fc = np.log2(
                 (alt_mean + pseudocount) / (ref_mean + pseudocount)
             )
-
-            # Fraction observed: n observed / total subjects in that condition
-            total_ref = total_subjects_per_cond.get(referenceCondition, 0)
-            total_alt = total_subjects_per_cond.get(alt_cond, 0)
 
             all_stats.append({
                 'sender': snd,
@@ -415,147 +224,131 @@ def _compute_descriptive_stats(long_df, referenceCondition, pseudocount):
     return pd.DataFrame(all_stats)
 
 
-def _combine_results(lr_results, triple_results, desc_stats, fdrMethod):
-    """
-    FDR-correct and merge results.
-    - Level 2: FDR per LR pair (on estimable triples only)
-    - Level 1: FDR globally
-    """
-    # --- Level 1: Global FDR ---
-    lr_comparison = lr_results.copy()
-    if len(lr_comparison) > 0 and 'pvalue' in lr_comparison.columns:
-        valid = lr_comparison['pvalue'].notna()
-        if valid.sum() > 0:
-            _, fdr_vals, _, _ = multipletests(
-                lr_comparison.loc[valid, 'pvalue'].values,
-                method=fdrMethod,
-            )
-            lr_comparison.loc[valid, 'pvalue_fdr'] = fdr_vals
-        else:
-            lr_comparison['pvalue_fdr'] = np.nan
+def _apply_fdr(df, group_col=None, fdrMethod='fdr_bh', estimable_only=False):
+    """BH-correct 'pvalue' into 'pvalue_fdr' — globally, or within groups."""
+    df = df.copy()
+    df['pvalue_fdr'] = np.nan
+    if len(df) == 0 or 'pvalue' not in df.columns:
+        return df
+    mask = df['pvalue'].notna()
+    if estimable_only and 'estimable' in df.columns:
+        mask &= df['estimable']
+    if group_col is None:
+        if mask.sum() > 0:
+            _, fdr, _, _ = multipletests(df.loc[mask, 'pvalue'], method=fdrMethod)
+            df.loc[mask, 'pvalue_fdr'] = fdr
     else:
-        lr_comparison['pvalue_fdr'] = np.nan
-
-    # --- Level 2: FDR per LR pair (estimable only) ---
-    triple_comparison = triple_results.copy()
-    if len(triple_comparison) > 0 and 'pvalue' in triple_comparison.columns:
-        triple_comparison['pvalue_fdr'] = np.nan
-
-        for int_name, grp in triple_comparison.groupby('interaction_name'):
-            mask = (triple_comparison['interaction_name'] == int_name)
-            estimable_mask = mask & triple_comparison['estimable']
-            valid = estimable_mask & triple_comparison['pvalue'].notna()
-
-            if valid.sum() > 0:
-                _, fdr_vals, _, _ = multipletests(
-                    triple_comparison.loc[valid, 'pvalue'].values,
-                    method=fdrMethod,
-                )
-                triple_comparison.loc[valid, 'pvalue_fdr'] = fdr_vals
-    else:
-        triple_comparison['pvalue_fdr'] = np.nan
-
-    # --- Merge descriptive stats into triple_comparison ---
-    if len(triple_comparison) > 0 and len(desc_stats) > 0:
-        merge_cols = ['sender', 'receiver', 'interaction_name',
-                      'ligand', 'receptor', 'comparison']
-        desc_cols = ['mean_score_reference', 'mean_score_alternative',
-                     'log2fc', 'n_subjects_observed_ref',
-                     'n_subjects_observed_alt']
-        triple_comparison = triple_comparison.merge(
-            desc_stats[merge_cols + desc_cols],
-            on=merge_cols,
-            how='left',
-        )
-
-    # --- Compute log2fc for Level 1 (mean across all subjects) ---
-    if len(lr_comparison) > 0 and len(desc_stats) > 0:
-        lr_desc = desc_stats.groupby(
-            ['interaction_name', 'ligand', 'receptor', 'comparison']
-        ).agg(
-            mean_score_reference=('mean_score_reference', 'mean'),
-            mean_score_alternative=('mean_score_alternative', 'mean'),
-            log2fc=('log2fc', 'mean'),
-        ).reset_index()
-
-        merge_cols_lr = ['interaction_name', 'ligand', 'receptor', 'comparison']
-        lr_comparison = lr_comparison.merge(
-            lr_desc[merge_cols_lr + ['mean_score_reference',
-                                      'mean_score_alternative', 'log2fc']],
-            on=merge_cols_lr,
-            how='left',
-        )
-
-    return lr_comparison, triple_comparison
+        for _, idx in df[mask].groupby(group_col, observed=True).groups.items():
+            _, fdr, _, _ = multipletests(df.loc[idx, 'pvalue'], method=fdrMethod)
+            df.loc[idx, 'pvalue_fdr'] = fdr
+    return df
 
 
 def compare_laris_internal(results, conditionMap, referenceCondition,
                            sampleToSubject, scoreCol, minSubjectsObserved,
-                           minCellTypePairs, pseudocount, fdrMethod):
+                           minCellTypePairs, pseudocount, fdrMethod,
+                           level='both'):
     """
     Main orchestrator for compareLARIS.
+
+    ``minCellTypePairs`` is retired (the aggregated design has no
+    per-pair model to gate) and is accepted for signature compatibility.
     """
-    # Step 1: Assemble data
+    if level not in ('both', 'lr', 'triple'):
+        raise ValueError(f"level must be 'both', 'lr' or 'triple', got {level!r}")
+
     long_df = _assemble_comparison_data(
         results, conditionMap, sampleToSubject, scoreCol
     )
 
+    conditions = sorted(long_df['condition'].unique())
+    if referenceCondition not in conditions:
+        raise ValueError(
+            f"referenceCondition '{referenceCondition}' not found in data. "
+            f"Available conditions: {conditions}"
+        )
+    alt_conditions = [c for c in conditions if c != referenceCondition]
+
     n_samples = long_df['sample'].nunique()
     n_subjects = long_df['subject'].nunique()
-    n_conditions = long_df['condition'].nunique()
     n_lr_pairs = long_df['interaction_name'].nunique()
-
     print(f"\ncompareLARIS: {n_samples} samples, {n_subjects} subjects, "
-          f"{n_conditions} conditions, {n_lr_pairs} LR pairs")
+          f"{len(conditions)} conditions, {n_lr_pairs} LR pairs")
     print(f"  Reference condition: {referenceCondition}")
+    print(f"  Method: per-sample centred log scores, subject aggregation, "
+          f"moderated t")
 
-    # Step 2: Level 2 — per-triple mixed models
-    print("  Fitting per-triple models (Level 2)...")
-    triple_results = _fit_mixed_model_per_triple(
-        long_df, referenceCondition, minSubjectsObserved
-    )
+    # --- Level 1: one value per (LR, subject) across all pairs + slices ---
+    lr_comparison = pd.DataFrame()
+    if level in ('both', 'lr'):
+        print("  Level 1 (per LR pair)...")
+        agg1 = long_df.groupby(
+            ['interaction_name', 'ligand', 'receptor', 'subject', 'condition'],
+            observed=True
+        ).agg(centred=('centred', 'mean')).reset_index()
+        parts = [
+            _moderated_test_table(
+                agg1, ['interaction_name', 'ligand', 'receptor'],
+                referenceCondition, alt, minSubjectsObserved)
+            for alt in alt_conditions
+        ]
+        lr_comparison = pd.concat(parts, ignore_index=True)
+        lr_comparison = _apply_fdr(lr_comparison, group_col=None,
+                                   fdrMethod=fdrMethod)
 
-    if len(triple_results) > 0:
-        n_estimable = triple_results['estimable'].sum()
-        print(f"    {len(triple_results)} triple-comparisons, "
-              f"{n_estimable} estimable")
+    # --- Level 2: one value per (triple, subject) across slices ---
+    triple_comparison = pd.DataFrame()
+    if level in ('both', 'triple'):
+        print("  Level 2 (per sender-receiver-LR triple)...")
+        agg2 = long_df.groupby(
+            ['sender', 'receiver', 'interaction_name', 'ligand', 'receptor',
+             'subject', 'condition'], observed=True
+        ).agg(centred=('centred', 'mean')).reset_index()
+        parts = [
+            _moderated_test_table(
+                agg2, ['sender', 'receiver', 'interaction_name', 'ligand',
+                       'receptor'],
+                referenceCondition, alt, minSubjectsObserved)
+            for alt in alt_conditions
+        ]
+        triple_comparison = pd.concat(parts, ignore_index=True)
+        triple_comparison = _apply_fdr(
+            triple_comparison, group_col='interaction_name',
+            fdrMethod=fdrMethod, estimable_only=True)
 
-    # Step 3: Level 1 — main-effects mixed model
-    print("  Fitting per-LR-pair models (Level 1)...")
-    lr_results = _fit_mixed_model_per_lr(
-        long_df, referenceCondition, minCellTypePairs
-    )
+        desc_stats = _compute_descriptive_stats(
+            long_df, referenceCondition, pseudocount)
+        if len(desc_stats) > 0:
+            merge_cols = ['sender', 'receiver', 'interaction_name',
+                          'ligand', 'receptor', 'comparison']
+            desc_cols = ['mean_score_reference', 'mean_score_alternative',
+                         'log2fc', 'n_subjects_observed_ref',
+                         'n_subjects_observed_alt']
+            triple_comparison = triple_comparison.merge(
+                desc_stats[merge_cols + desc_cols], on=merge_cols, how='left')
 
-    if len(lr_results) > 0:
-        print(f"    {len(lr_results)} LR-pair-comparisons")
+            if len(lr_comparison) > 0:
+                lr_desc = desc_stats.groupby(
+                    ['interaction_name', 'ligand', 'receptor', 'comparison'],
+                    observed=True
+                ).agg(
+                    mean_score_reference=('mean_score_reference', 'mean'),
+                    mean_score_alternative=('mean_score_alternative', 'mean'),
+                    log2fc=('log2fc', 'mean'),
+                ).reset_index()
+                lr_comparison = lr_comparison.merge(
+                    lr_desc, on=['interaction_name', 'ligand', 'receptor',
+                                 'comparison'], how='left')
 
-    # Step 4: Descriptive stats
-    desc_stats = _compute_descriptive_stats(
-        long_df, referenceCondition, pseudocount
-    )
+    for df in (lr_comparison, triple_comparison):
+        if len(df) > 0:
+            df.sort_values('pvalue', ascending=True, inplace=True)
+            df.reset_index(drop=True, inplace=True)
 
-    # Step 5: Combine and FDR-correct
-    print("  Applying FDR correction...")
-    lr_comparison, triple_comparison = _combine_results(
-        lr_results, triple_results, desc_stats, fdrMethod
-    )
-
-    # Sort outputs
-    if len(lr_comparison) > 0:
-        lr_comparison = lr_comparison.sort_values(
-            'pvalue', ascending=True
-        ).reset_index(drop=True)
-
-    if len(triple_comparison) > 0:
-        triple_comparison = triple_comparison.sort_values(
-            'pvalue', ascending=True
-        ).reset_index(drop=True)
-
-    n_sig_lr = (lr_comparison['pvalue_fdr'] < 0.05).sum() if len(lr_comparison) > 0 else 0
-    n_sig_triple = 0
-    if len(triple_comparison) > 0 and 'pvalue_fdr' in triple_comparison.columns:
-        n_sig_triple = (triple_comparison['pvalue_fdr'] < 0.05).sum()
-
+    n_sig_lr = int((lr_comparison['pvalue_fdr'] < 0.05).sum()) \
+        if len(lr_comparison) else 0
+    n_sig_triple = int((triple_comparison['pvalue_fdr'] < 0.05).sum()) \
+        if len(triple_comparison) else 0
     print(f"\n  Results:")
     print(f"    Level 1 (per-LR pair): {n_sig_lr} significant (FDR < 0.05)")
     print(f"    Level 2 (per-triple):  {n_sig_triple} significant (FDR < 0.05)")
