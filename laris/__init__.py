@@ -9,9 +9,10 @@ LARIS provides tools for:
 - Inferring cell-cell communications
 
 The package follows a modular structure:
-- laris.tl: Core analytical tools
-- laris.pp: Preprocessing functions
-- laris.pl: Plotting and visualization functions
+- laris.tl: Core analysis (prepareLRInteraction, runLARIS, compareLARIS)
+- laris.pp: Readers and preprocessing (readCytome, spatialOffsetMultisample)
+- laris.pl: Plotting and visualization
+- laris.datasets: Bundled ligand-receptor databases
 
 Example usage:
     >>> import laris as la
@@ -28,7 +29,6 @@ Example usage:
     >>> print(celltype_results.head(10))
 
 Authors: Min Dai, Tivadar Török, Dawei Sun, et al.
-Version: 1.0.0
 """
 
 __version__ = "0.10.0"

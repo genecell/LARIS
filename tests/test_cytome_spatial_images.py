@@ -20,7 +20,7 @@ import scipy.sparse as sp
 
 import laris as la
 from laris.plotting import _resolve_background_image
-from laris.tools._io import _spatial_uns_from, _strip_embedding_prefix
+from laris.preprocessing._io import _spatial_uns_from, _strip_embedding_prefix
 
 
 class _FakeSpatialImages:

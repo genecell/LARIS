@@ -28,6 +28,7 @@ import warnings
 import numpy as np
 
 # For backwards compatibility, expose utility functions from tools._utils
+from ._io import readCytome
 from ..tools._utils import (
     _rowwise_cosine_similarity,
     _select_top_n,
@@ -172,8 +173,6 @@ def spatialOffsetMultisample(
 
 
 __all__ = [
+    'readCytome',
     'spatialOffsetMultisample',
-    '_rowwise_cosine_similarity',
-    '_select_top_n',
-    '_pairwise_row_multiply',
 ]
