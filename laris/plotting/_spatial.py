@@ -37,11 +37,13 @@ from ._colors import _get_cmap, pos_cmap, _resolve_cell_type_colors
 from ._utils import _log_message, _save_figure
 from ._spatial_image import (_render_score_overlay, _resolve_background_image,
                              _draw_image_overlay, _image_axis_limits)
+from .._compat import _UNSET, resolve_data_arg
+from ..preprocessing._io import _ensure_lr_anndata
 
 def plotCCCSpatial(
-    lr_adata: ad.AnnData,
-    basis: str,
-    interaction: str,
+    lr_data=_UNSET,
+    basis: str = 'spatial',
+    interaction: Optional[str] = None,
     cell_type: Optional[str] = None,
     selected_cell_types: Optional[List[str]] = None,
     highlight_all_expressing: bool = False,
@@ -56,7 +58,7 @@ def plotCCCSpatial(
     return_fig: bool = False,
     # --- score mode + tissue-image overlay (v0.10.0, GitHub issue #1) ---
     color_by: str = 'cell_type',
-    adata: Optional[ad.AnnData] = None,
+    data=_UNSET,
     library_id: Optional[str] = None,
     img_key: str = 'hires',
     library_key: Optional[str] = None,
@@ -69,6 +71,8 @@ def plotCCCSpatial(
     crop: bool = True,
     margin: float = 0.05,
     colorbar: bool = True,
+    lr_adata=_UNSET,
+    adata=_UNSET,
 ) -> Optional[plt.Figure]:
     """
     Plot spatial distribution of ligand-receptor interactions.
@@ -141,6 +145,15 @@ def plotCCCSpatial(
     ...     save='spatial.pdf'
     ... )
     """
+    lr_adata = _ensure_lr_anndata(
+        resolve_data_arg(lr_data, 'plotCCCSpatial', canonical='lr_data',
+                         lr_adata=lr_adata))
+    adata = resolve_data_arg(data, 'plotCCCSpatial', canonical='data',
+                             required=False, adata=adata)
+    if interaction is None:
+        raise TypeError(
+            "plotCCCSpatial() missing required argument: 'interaction'")
+
     # Save original rcParams to restore later
     original_figsize = plt.rcParams['figure.figsize'].copy()
     

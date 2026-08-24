@@ -383,6 +383,11 @@ def _compute_avg_expression(
     
     # Filter data based on provided genes and groups
     adata_copy = adata.copy()
+    # The grouping below indexes .cat.categories, so a plain string column
+    # (what a cytome round-trip returns - SQLite has no categorical type)
+    # would raise AttributeError. Cast a copy rather than the caller's object.
+    if not isinstance(adata_copy.obs[groupby].dtype, pd.CategoricalDtype):
+        adata_copy.obs[groupby] = pd.Categorical(adata_copy.obs[groupby])
     if genes:
         adata_copy = adata_copy[:, adata_copy.var_names.isin(genes)]
     if groups:
@@ -574,15 +579,145 @@ def _generate_random_background(
     return random_gsp_list
 
 
+#: Below this many ligand/receptor genes, the q0.95-q0.75 spread that
+#: iqrLogNormalize divides by is estimated from too few genes to be stable -
+#: and can be exactly zero, which drops into its zero-IQR fallback. Targeted
+#: panels land here routinely (a Xenium breast panel matched 11 of 2,951
+#: database pairs).
+_MIN_LR_GENES_FOR_STABLE_IQR = 100
+
+
+def _check_specificity_reference(specificity_reference: str, n_lr_genes: int) -> None:
+    if specificity_reference not in ('lr', 'all'):
+        raise ValueError(
+            f"specificity_reference must be 'lr' or 'all', got "
+            f"{specificity_reference!r}"
+        )
+    if specificity_reference == 'lr' and n_lr_genes < _MIN_LR_GENES_FOR_STABLE_IQR:
+        warnings.warn(
+            f"specificity_reference='lr' normalises cell type specificity "
+            f"against the spread of the {n_lr_genes} ligand/receptor genes, "
+            f"which is too few for a stable estimate (and may be exactly "
+            f"zero). This is common on targeted panels. Consider "
+            f"specificity_reference='all' to normalise against every gene "
+            f"in the dataset instead.",
+            UserWarning,
+        )
+
+
+def _anndata_x_layer(ds, modality: str = 'RNA') -> str:
+    """The layer holding what was ``adata.X``, as a bare layer name.
+
+    ``cytome.from_anndata`` records it in metadata as e.g. ``RNA_counts``;
+    the modality prefix is stripped because ``run_cosg_cytome`` takes
+    ``modality`` and ``layer`` separately.
+    """
+    recorded = None
+    try:
+        recorded = ds.metadata.get('_anndata_X_layer')
+    except Exception:
+        recorded = None
+    if not recorded:
+        matrices = [m for m in ds.list_matrices() if m.startswith(f'{modality}_')]
+        if not matrices:
+            raise ValueError(
+                f"cytome dataset has no {modality} matrix to compute cell "
+                f"type specificity from (found {ds.list_matrices()})."
+            )
+        recorded = matrices[0]
+    prefix = f'{modality}_'
+    return recorded[len(prefix):] if recorded.startswith(prefix) else recorded
+
+
+def _cosg_scores_from_cytome(
+    source,
+    lr_set,
+    groupby: str,
+    mu: float,
+    expressed_pct: float,
+    remove_lowly_expressed: bool,
+    modality: str = 'RNA',
+    specificity_reference: str = 'lr',
+):
+    """COSG specificity for the LR genes, streamed from a cytome file.
+
+    Reads the expression in chunks via ``cosg.run_cosg_cytome`` instead of
+    materialising a cells x LR-genes AnnData. COSG's specificity is computed
+    per gene, so scoring every gene and then keeping the LR rows gives the
+    same numbers as scoring the LR subset directly - the normalisation that
+    *is* gene-set dependent (``iqrLogNormalize``) is applied afterwards, to
+    the same subset in the same order.
+
+    The layer is pinned to whatever held ``adata.X``: ``layer='auto'``
+    normalises counts on the fly, which silently diverges from the in-memory
+    path (measured: correlation 0.993 but errors up to 0.52 on normalised
+    scores). With the layer pinned the two agree to float32 precision
+    (~3e-8).
+    """
+    from ..preprocessing._io import _open_cytome
+
+    ds, opened_here = _open_cytome(source)
+    try:
+        n_genes = len(ds.genes.to_pandas())
+        layer = _anndata_x_layer(ds, modality=modality)
+        cosg_out = cosg.run_cosg_cytome(
+            ds,
+            groupby=groupby,
+            n_genes_user=n_genes,
+            mu=mu,
+            expressed_pct=expressed_pct,
+            remove_lowly_expressed=remove_lowly_expressed,
+            modality=modality,
+            layer=layer,
+            verbose=False,
+        )
+    finally:
+        if opened_here:
+            ds.close()
+
+    columns = {}
+    for j, group in enumerate(cosg_out['groups_order']):
+        columns[f'names::{group}'] = cosg_out['names'][:, j]
+        columns[f'scores::{group}'] = cosg_out['scores'][:, j]
+    cosg_scores = cosg.indexByGene(
+        pd.DataFrame(columns),
+        set_nan_to_zero=True,
+        convert_negative_one_to_zero=True,
+    )
+
+    present = [gene for gene in lr_set if gene in cosg_scores.index]
+    if not present:
+        raise ValueError(
+            "None of the ligand/receptor genes were found in the cytome "
+            "gene table while computing cell type specificity."
+        )
+    if len(present) < len(lr_set):
+        warnings.warn(
+            f"{len(lr_set) - len(present)} ligand/receptor gene(s) are absent "
+            f"from the cytome gene table and were skipped when computing cell "
+            f"type specificity."
+        )
+    _check_specificity_reference(specificity_reference, len(present))
+
+    # iqrLogNormalize divides each cell type column by that column's
+    # q0.95-q0.75 spread over the rows it is given, so the reference set is
+    # decided by whether we subset before or after normalising.
+    if specificity_reference == 'all':
+        return cosg.iqrLogNormalize(cosg_scores).reindex(index=present)
+    return cosg.iqrLogNormalize(cosg_scores.reindex(index=present))
+
+
 def _calculate_ligand_receptor_specificity(
-    adata: ad.AnnData,
+    adata: Optional[ad.AnnData],
     laris_lr: pd.DataFrame,
     groupby: str = 'CellTypes',
     mu: float = 100,
     expressed_pct: float = 0.1,
     remove_lowly_expressed: bool = True,
     mask_threshold: float = 1e-6
-) -> pd.DataFrame:
+,
+    specificity_reference: str = 'lr',
+    cytome_source=None) -> pd.DataFrame:
     """
     Calculate cell type specificity of individual ligands and receptors.
     
@@ -630,7 +765,24 @@ def _calculate_ligand_receptor_specificity(
     """
     # Extract unique ligands and receptors
     lr_set = np.unique(np.hstack([laris_lr['ligand'].values, laris_lr['receptor'].values]))
-    lr_gene_adata = adata[:, lr_set].copy()
+
+    # A cytome source is scored straight from disk - no cells x LR-genes
+    # AnnData is ever built.
+    if cytome_source is not None:
+        return _cosg_scores_from_cytome(
+            cytome_source, lr_set, groupby=groupby, mu=mu,
+            expressed_pct=expressed_pct,
+            remove_lowly_expressed=remove_lowly_expressed,
+            specificity_reference=specificity_reference,
+        )
+
+    _check_specificity_reference(specificity_reference, len(lr_set))
+
+    # COSG's specificity is computed per gene, so scoring the whole
+    # transcriptome and keeping the LR rows gives the same raw scores as
+    # scoring the LR subset. Only the normalisation below is gene-set
+    # dependent, which is exactly what specificity_reference selects.
+    lr_gene_adata = adata[:, lr_set].copy() if specificity_reference == 'lr' else adata.copy()
 
     # Perform COSG analysis
     cosg.cosg(
@@ -649,7 +801,10 @@ def _calculate_ligand_receptor_specificity(
         set_nan_to_zero=True,
         convert_negative_one_to_zero=True
     )
-    gene_by_group_cosg=cosg.iqrLogNormalize(cosg_scores)
+    if specificity_reference == 'all':
+        gene_by_group_cosg = cosg.iqrLogNormalize(cosg_scores).reindex(index=lr_set)
+    else:
+        gene_by_group_cosg = cosg.iqrLogNormalize(cosg_scores)
 
     # # Process COSG result and prepare to populate the DataFrame
     # names = pd.DataFrame(lr_gene_adata.uns['cosg']['names']).T
@@ -1183,7 +1338,7 @@ def _prepare_background_interactions(
 
 
 def _calculate_laris_score_by_celltype(
-    adata: ad.AnnData,
+    adata: Optional[ad.AnnData],
     lr_adata: ad.AnnData,
     laris_lr: pd.DataFrame,
     groupby: str = 'CellTypes',
@@ -1204,7 +1359,9 @@ def _calculate_laris_score_by_celltype(
     score_threshold: float = 1e-6,
     spatial_weight: float = 1.0,
     use_conditional_pvalue: bool = False,
-    rescale: bool = True
+    rescale: bool = True,
+    specificity_reference: str = 'lr',
+    cytome_source=None
 ) -> pd.DataFrame:
     """
     Calculate cell type-specific LARIS interaction scores with statistical testing.
@@ -1384,7 +1541,9 @@ def _calculate_laris_score_by_celltype(
         mu=mu,
         expressed_pct=expressed_pct,
         remove_lowly_expressed=remove_lowly_expressed,
-        mask_threshold=mask_threshold
+        mask_threshold=mask_threshold,
+        cytome_source=cytome_source,
+        specificity_reference=specificity_reference
     )
     
     print(f"  ✓ Computed specificity for {gene_by_group_cosg.shape[0]} genes "
@@ -1534,8 +1693,11 @@ def _calculate_laris_score_by_celltype(
     # =========================================================================
     print("\n--- Step 4: Incorporating spatial cell type co-localization ---")
     
+    # Only obs[groupby], obsm[use_rep_spatial] and n_obs are read here, and
+    # lr_adata carries all three - so this step works with the expression
+    # object left on disk (streaming COSG passes adata=None).
     cosg_lr_ctc = _calculate_specificity_in_spatial_neighborhood(
-        adata,
+        adata if adata is not None else lr_adata,
         lr_adata,
         groupby=groupby,
         use_rep_spatial=use_rep_spatial,

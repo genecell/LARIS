@@ -151,12 +151,13 @@ class TestCytomeSupport:
         assert np.allclose(sub.X.toarray(), expected)
 
     def test_prepare_equivalent_to_anndata(self, cytome_path, synthetic_adata, lr_df):
-        """cytome input must give bit-identical lr_adata to AnnData input."""
+        """cytome input must give bit-identical LR scores to AnnData input."""
         from_ad = la.tl.prepareLRInteraction(
             synthetic_adata, lr_df, use_rep_spatial="X_spatial"
         )
         from_ct = la.tl.prepareLRInteraction(
-            cytome_path, lr_df, use_rep_spatial="X_spatial"
+            cytome_path, lr_df, use_rep_spatial="X_spatial",
+            return_type="anndata",
         )
         assert list(from_ad.var_names) == list(from_ct.var_names)
         assert np.allclose(from_ad.X.toarray(), from_ct.X.toarray())
@@ -196,7 +197,7 @@ class TestCytomeSupport:
         ds = cytome.open(cytome_path)
         try:
             lr_adata = la.tl.prepareLRInteraction(
-                ds, lr_df, use_rep_spatial="X_spatial"
+                ds, lr_df, use_rep_spatial="X_spatial", return_type="anndata"
             )
             assert lr_adata.n_vars == len(lr_df)
             assert not ds.is_closed() if callable(getattr(ds, "is_closed", None)) else True

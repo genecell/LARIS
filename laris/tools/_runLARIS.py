@@ -13,11 +13,16 @@ from sklearn.neighbors import kneighbors_graph
 from sklearn.preprocessing import normalize
 
 from . import _utils
-from ..preprocessing._io import _ensure_expression_anndata
+from .._compat import _UNSET, resolve_data_arg
+from ..preprocessing._io import (
+    _ensure_expression_anndata,
+    _ensure_lr_anndata,
+    _is_cytome_source,
+)
 
 def runLARIS(
-    lr_adata: ad.AnnData,
-    adata: Optional[ad.AnnData] = None,
+    lr_data=_UNSET,
+    data=_UNSET,
     use_rep: str = 'X_spatial',
     n_nearest_neighbors: int = 20,
     random_seed: int = 27,
@@ -48,7 +53,11 @@ def runLARIS(
     score_threshold: float = 1e-6,
     spatial_weight: float = 3.0,
     use_conditional_pvalue: bool = False,
-    rescale: bool = True
+    rescale: bool = True,
+    cosg_backend: str = 'auto',
+    specificity_reference: str = 'lr',
+    lr_adata=_UNSET,
+    adata=_UNSET
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
     """
     Identify spatially-specific ligand-receptor interactions using LARIS algorithm.
@@ -250,6 +259,28 @@ def runLARIS(
         - Interactions with score=0 get p-value=1.0
         - Non-zero scores compared only to non-zero background
 
+    cosg_backend : {'auto', 'memory', 'stream'}, default='auto'
+        How to compute cell type specificity. 'stream' reads the expression
+        in chunks from a cytome via ``cosg.run_cosg_cytome``, so no
+        cells x LR-genes AnnData is built; 'memory' materialises the
+        ligand/receptor gene subset. 'auto' streams for cytome sources and
+        uses memory otherwise, so AnnData workflows are unaffected. The two
+        agree to float32 precision.
+    specificity_reference : {'lr', 'all'}, default='lr'
+        Which genes set the scale when cell type specificity is normalised.
+        ``cosg.iqrLogNormalize`` divides each cell type's scores by that
+        cell type's ``q0.95 - q0.75`` spread over the genes it is given, so
+        the reference set matters. 'lr' uses the ligand/receptor genes,
+        which makes results independent of whatever *other* genes are in
+        the object - subsetting to highly variable genes changes nothing.
+        'all' uses every gene, which instead makes results independent of
+        which LR database you look up. Gene rankings within a cell type are
+        identical either way (the transform is monotone); what changes is
+        the relative scale between cell types, and therefore the ranking of
+        sender-receiver pairs. 'lr' is the default and matches the
+        published results; prefer 'all' when very few database genes are
+        present, as on targeted panels, where the spread over a handful of
+        LR genes is unstable (a warning fires below 100).
     rescale : bool, default=True
         Rescale interaction scores so that the mean of the top-100 scores is
         0.1. The applied factor is dataset-dependent and is recorded in
@@ -379,10 +410,42 @@ def runLARIS(
     
     """
     # Validate inputs
-    if by_celltype and adata is None:
+    lr_data = resolve_data_arg(lr_data, 'runLARIS', canonical='lr_data',
+                               lr_adata=lr_adata)
+    data = resolve_data_arg(data, 'runLARIS', canonical='data',
+                            required=False, adata=adata)
+    if specificity_reference not in ('lr', 'all'):
         raise ValueError(
-            "Parameter 'adata' must be provided when by_celltype=True. "
-            "adata should contain gene expression and cell type annotations."
+            f"specificity_reference must be 'lr' or 'all', got "
+            f"{specificity_reference!r}"
+        )
+    if cosg_backend not in ('auto', 'memory', 'stream'):
+        raise ValueError(
+            f"cosg_backend must be 'auto', 'memory' or 'stream', got "
+            f"{cosg_backend!r}"
+        )
+
+    # The LR scores may arrive as an AnnData or as an LR cytome written by
+    # prepareLRInteraction(return_type='cytome').
+    lr_adata = _ensure_lr_anndata(lr_data)
+
+    # Cell type specificity is the only step that touches the expression
+    # object. When it is a cytome we can hand it to COSG's streaming reader
+    # and never build an expression AnnData at all; 'memory' forces the old
+    # behaviour of materialising the ligand/receptor gene subset.
+    expression_is_cytome = data is not None and not isinstance(data, ad.AnnData) \
+        and _is_cytome_source(data)
+    if cosg_backend == 'stream' and not expression_is_cytome:
+        raise ValueError(
+            "cosg_backend='stream' requires a cytome expression source; "
+            "pass data='sample.cytome' or use cosg_backend='memory'."
+        )
+    stream_cosg = expression_is_cytome and cosg_backend in ('auto', 'stream')
+
+    if by_celltype and data is None:
+        raise ValueError(
+            "Parameter 'data' must be provided when by_celltype=True. "
+            "It should contain gene expression and cell type annotations."
         )
     
     if use_rep not in lr_adata.obsm:
@@ -397,14 +460,19 @@ def runLARIS(
     print(f"\nInput data: {lr_adata.shape[0]} cells × {lr_adata.shape[1]} LR pairs")
     print(f"Mode: {'Cell type-specific analysis' if by_celltype else 'Spatial specificity only'}")
 
-    # Accept a cytome source for the expression adata: only the ligand and
-    # receptor genes are needed downstream (the cell-type specificity step
-    # subsets to them before COSG), so stream just that subset.
-    if adata is not None and not isinstance(adata, ad.AnnData):
+    # With streaming COSG the expression object stays on disk. Otherwise a
+    # cytome source is materialised, but only for the ligand and receptor
+    # genes - they are all the cell-type step ever reads.
+    cytome_source = data if stream_cosg else None
+    if stream_cosg:
+        adata = None
+    elif data is not None and not isinstance(data, ad.AnnData):
         lr_genes = list(pd.unique(pd.Series(
             [g for name in lr_adata.var_names for g in name.split('::')]
         )))
-        adata = _ensure_expression_anndata(adata, genes=lr_genes)
+        adata = _ensure_expression_anndata(data, genes=lr_genes)
+    else:
+        adata = data
     
     # Import helper functions
     try:
@@ -514,19 +582,25 @@ def runLARIS(
         print("CELL TYPE-SPECIFIC ANALYSIS")
         print("="*70)
         
-        if groupby not in adata.obs:
+        # lr_adata carries the same cells (and therefore the same obs) as
+        # the expression object, and is present under every backend - with
+        # streaming COSG the expression object is never opened here.
+        celltype_obs = lr_adata.obs
+        if groupby not in celltype_obs:
             raise ValueError(
-                f"Cell type column '{groupby}' not found in adata.obs. "
-                f"Available columns: {list(adata.obs.columns)}"
+                f"Cell type column '{groupby}' not found in the cell "
+                f"metadata. Available columns: {list(celltype_obs.columns)}"
             )
         
-        n_cell_types = adata.obs[groupby].nunique()
+        n_cell_types = celltype_obs[groupby].nunique()
         print(f"\nAnalyzing {n_cell_types} cell types from '{groupby}'")
-        print(f"Cell types: {sorted(adata.obs[groupby].unique())[:10]}"
+        print(f"Cell types: {sorted(celltype_obs[groupby].unique())[:10]}"
               f"{'...' if n_cell_types > 10 else ''}")
         
         celltype_results = _utils._calculate_laris_score_by_celltype(
             adata=adata,
+            cytome_source=cytome_source,
+            specificity_reference=specificity_reference,
             lr_adata=lr_adata,
             laris_lr=laris_lr,
             groupby=groupby,

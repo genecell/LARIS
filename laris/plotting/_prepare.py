@@ -34,11 +34,15 @@ except ImportError:
     SCIPY_AVAILABLE = False
 
 from ._utils import _log_message
+from ..preprocessing._io import _ensure_expression_anndata, _ensure_lr_anndata
+from .._compat import _UNSET, resolve_data_arg
 
 def prepareDotPlotAdata(
-    lr_adata: ad.AnnData,
-    adata: ad.AnnData,
-    verbosity: int = 2
+    lr_data=_UNSET,
+    data=_UNSET,
+    verbosity: int = 2,
+    lr_adata=_UNSET,
+    adata=_UNSET
 ) -> ad.AnnData:
     """
     Prepare combined AnnData for dot plot visualizations.
@@ -51,7 +55,9 @@ def prepareDotPlotAdata(
     lr_adata : anndata.AnnData
         AnnData object containing LR interaction scores
         
-    adata : anndata.AnnData
+    adata : anndata.AnnData, str or cytome.CytomeDataset
+        Expression object; a ``.cytome``/``.db`` path or an open cytome
+        dataset is read automatically.
         Original AnnData object containing gene expression data
         
     verbosity : int, default=2
@@ -67,7 +73,19 @@ def prepareDotPlotAdata(
     >>> adata_combined = la.pl.prepareDotPlotAdata(lr_adata, adata)
     >>> la.pl.plotLRDotPlot(adata_combined, interactions, groupby='cell_type')
     """
+    lr_adata = _ensure_lr_anndata(
+        resolve_data_arg(lr_data, 'prepareDotPlotAdata', canonical='lr_data',
+                         lr_adata=lr_adata))
+    adata = resolve_data_arg(data, 'prepareDotPlotAdata', canonical='data',
+                             adata=adata)
+
     # Ensure sparse format
+    # Accept a cytome source for the expression object: only the genes that
+    # end up in the dot plot are needed, but the combined object keeps every
+    # gene, so read the full matrix here.
+    if not isinstance(adata, ad.AnnData):
+        adata = _ensure_expression_anndata(adata)
+
     lr_X = lr_adata.X
     if not issparse(lr_X):
         lr_X = csr_matrix(lr_X)

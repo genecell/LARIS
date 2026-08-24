@@ -28,7 +28,7 @@ import warnings
 import numpy as np
 
 # For backwards compatibility, expose utility functions from tools._utils
-from ._io import readCytome
+from ._io import readCytome, readLRCytome
 from ..tools._utils import (
     _rowwise_cosine_similarity,
     _select_top_n,
@@ -174,5 +174,34 @@ def spatialOffsetMultisample(
 
 __all__ = [
     'readCytome',
+    'readLRCytome',
     'spatialOffsetMultisample',
 ]
+
+
+# ---------------------------------------------------------------------------
+# Naming convention
+# ---------------------------------------------------------------------------
+# Public API is camelCase (``prepareLRInteraction``, ``plotCCCSpatial``,
+# ``readCytome``), matching the rest of the PIASO ecosystem; internal
+# helpers are ``_snake_case`` with a leading underscore. The underscore is
+# the public/private signal, so snake_case aliases of public functions are
+# deliberately NOT provided - one name per function keeps the docs and the
+# API surface single-valued. Users arriving from scanpy habits get a
+# pointer rather than an AttributeError:
+
+def _camel_case(name: str) -> str:
+    head, *rest = name.split('_')
+    return head + ''.join(part[:1].upper() + part[1:] for part in rest)
+
+
+def __getattr__(name: str):
+    if not name.startswith('_') and '_' in name:
+        suggestion = _camel_case(name)
+        if suggestion in __all__:
+            raise AttributeError(
+                f"module {__name__!r} has no attribute {name!r}; LARIS uses "
+                f"camelCase for its public API - did you mean "
+                f"{__name__.split('.')[-1]}.{suggestion}?"
+            )
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

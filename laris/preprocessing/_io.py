@@ -118,6 +118,25 @@ def _strip_embedding_prefix(key: str, modality: str = 'RNA'):
     return None
 
 
+def _obsm_names_for(key: str, modality: str = 'RNA'):
+    """Every obsm name a cytome embedding key should be exposed under.
+
+    ``cytome.from_anndata`` drops the scanpy ``X_`` prefix when it stores an
+    embedding (``obsm['X_spatial']`` -> ``RNA_spatial``) and ``to_anndata``
+    puts it back. Stripping only the modality prefix therefore yields
+    ``spatial`` where the writer's own reader yields ``X_spatial``, so
+    LARIS's default ``use_rep_spatial='X_spatial'`` raised KeyError on any
+    single-key file. Expose both spellings - they share one array, so the
+    alias is free - and callers work whichever name they pass.
+    """
+    short = _strip_embedding_prefix(key, modality)
+    if short is None:
+        return ()
+    if short.startswith('X_'):
+        return (short, short[2:])
+    return (f'X_{short}', short)
+
+
 def _spatial_uns_from(source) -> dict:
     """A scanpy-style ``uns['spatial']`` dict from any source, or ``{}``.
 
@@ -210,7 +229,7 @@ def readCytome(
     ds, opened_here = _open_cytome(source)
     try:
         if genes is None:
-            adata = ds.to_anndata(modality=modality)
+            adata = ds.to_anndata(modality=modality, layer=layer)
             if not sp.issparse(adata.X):
                 adata.X = sp.csr_matrix(adata.X)
             return adata
@@ -274,9 +293,11 @@ def readCytome(
         # as "{modality}_{key}". Accept BOTH - a hard-coded prefix works on
         # one generation and KeyErrors on the other.
         for key in ds.embeddings.keys():
-            short = _strip_embedding_prefix(key, modality)
-            if short is not None:
-                adata.obsm[short] = np.asarray(ds.embeddings[key])
+            names = _obsm_names_for(key, modality)
+            if names:
+                array = np.asarray(ds.embeddings[key])
+                for name in names:
+                    adata.obsm[name] = array
 
         # Tissue images (cytome >= 0.2.6) travel with the data: expose them
         # in the scanpy convention so every downstream consumer - including
@@ -304,4 +325,234 @@ def _ensure_expression_anndata(
     raise TypeError(
         f"Expected an AnnData, a .cytome/.db path, or an open cytome "
         f"Dataset; got {type(source).__name__}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# LR-score cytome objects
+# ---------------------------------------------------------------------------
+# ``prepareLRInteraction`` produces a cells x LR-pairs matrix. Stored as a
+# cytome, that is a dataset whose *features are ligand-receptor pairs*
+# rather than genes: it reuses the registered ``RNA`` modality (so every
+# cytome reader works, with no new modality registration) but carries a
+# single ``RNA_lrscore`` layer and no counts, because there are no counts
+# to store. The gene entity table holds the pair names ("Tgfb1::Tgfbr1").
+
+LR_MODALITY = 'RNA'
+LR_LAYER = 'lrscore'
+LR_MATRIX = f'{LR_MODALITY}_{LR_LAYER}'
+
+
+def _is_lr_cytome(source) -> bool:
+    """True if ``source`` is a cytome holding an LR-score matrix."""
+    if not _is_cytome_source(source):
+        return False
+    ds, opened_here = _open_cytome(source)
+    try:
+        return LR_MATRIX in ds.list_matrices()
+    except Exception:
+        return False
+    finally:
+        if opened_here:
+            ds.close()
+
+
+def _obs_for_cytome(obs: pd.DataFrame, obs_names) -> pd.DataFrame:
+    """A cells table for cytome: index materialised, dtypes SQLite-safe."""
+    cells = pd.DataFrame(index=range(len(obs)))
+    cells['cell_idx'] = np.arange(len(obs))
+    cells['barcode'] = np.asarray(obs_names, dtype=str)
+    for column in obs.columns:
+        if column in ('cell_idx', 'barcode'):
+            continue
+        values = obs[column]
+        # Categoricals and object columns round-trip as plain strings;
+        # numeric columns keep their dtype.
+        if isinstance(values.dtype, pd.CategoricalDtype) or values.dtype == object:
+            cells[column] = values.astype(str).to_numpy()
+        elif values.dtype == bool:
+            cells[column] = values.astype(np.int64).to_numpy()
+        else:
+            cells[column] = values.to_numpy()
+    return cells
+
+
+class _LRCytomeWriter:
+    """Streaming writer for an LR-score cytome.
+
+    Blocks of rows (cells) are appended as they are computed, so the full
+    cells x LR-pairs matrix never has to exist in memory. The underlying
+    layer writer is created on the first block so that the on-disk dtype
+    matches the computed scores exactly rather than being upcast.
+    """
+
+    def __init__(self, output, lr_names, obs, obs_names, obsm,
+                 spatial_uns=None, overwrite=False):
+        cytome = _import_cytome()
+        output = str(output)
+        if Path(output).exists():
+            if not overwrite:
+                raise FileExistsError(
+                    f"{output} already exists. Pass overwrite=True to replace "
+                    f"it, or give a different output= path."
+                )
+            Path(output).unlink()
+        self.path = output
+        self.n_obs = len(obs_names)
+        self.lr_names = list(lr_names)
+        self._writer = None
+        self._rows_written = 0
+        self._obsm = obsm
+        self._spatial_uns = spatial_uns or {}
+
+        self.ds = cytome.create(output)
+        self.ds.set_entity('cells', _obs_for_cytome(obs, obs_names))
+        self.ds.set_entity('genes', pd.DataFrame({
+            'gene_idx': np.arange(len(self.lr_names)),
+            'gene_id': self.lr_names,
+            'symbol': self.lr_names,
+        }))
+
+    def write_block(self, block, row_offset: int) -> None:
+        block = sp.csr_matrix(block)
+        if self._writer is None:
+            self._writer = self.ds.create_layer_writer(
+                LR_MATRIX,
+                n_rows=self.n_obs,
+                n_cols=len(self.lr_names),
+                dtype=block.dtype,
+                col_entity='genes',
+            )
+        self._writer.write_chunk(block, row_offset)
+        self._rows_written += block.shape[0]
+
+    def close(self) -> str:
+        if self._writer is not None:
+            self._writer.finalize()
+        # add_matrix/create_layer_writer buffer their writes: without an
+        # explicit flush the matrix is silently absent from list_matrices()
+        # and every later read raises KeyError.
+        self.ds.flush()
+
+        for key, array in (self._obsm or {}).items():
+            array = np.asarray(array)
+            if array.ndim != 2:
+                continue
+            self.ds.add_embedding(f'{LR_MODALITY}_{key}', array)
+
+        if self._spatial_uns:
+            _copy_spatial_images(self._spatial_uns, self.ds)
+
+        self.ds.close()
+        return self.path
+
+
+def _copy_spatial_images(spatial_uns: dict, ds) -> None:
+    """Copy scanpy-style ``uns['spatial']`` images into a cytome dataset.
+
+    Best effort: a dataset that cannot store images, or an image whose
+    decoder is unavailable, warns and leaves the LR cytome imageless rather
+    than failing the whole computation. The images remain in the source
+    dataset, and can still be passed to plotting via ``img=``.
+    """
+    add = getattr(ds, 'add_spatial_image', None)
+    if add is None:
+        return
+    for library_id, entry in spatial_uns.items():
+        if not isinstance(entry, dict):
+            continue
+        scalefactors = entry.get('scalefactors')
+        for img_key, image in (entry.get('images') or {}).items():
+            try:
+                add(library_id, img_key, image, scalefactors=scalefactors,
+                    replace=True)
+            except Exception as exc:
+                warnings.warn(
+                    f"could not copy tissue image "
+                    f"{library_id!r}/{img_key!r} into the LR cytome: {exc}. "
+                    f"The image is still available in the source dataset."
+                )
+                return
+
+
+def readLRCytome(source, obs_name_column: str = 'barcode') -> ad.AnnData:
+    """
+    Read an LR-score cytome (written by :func:`prepareLRInteraction`).
+
+    The matrix is streamed back in chunks, so peak memory is one chunk plus
+    the assembled result.
+
+    Parameters
+    ----------
+    source : str, Path or cytome.CytomeDataset
+        Path to a ``.cytome`` file holding an ``RNA_lrscore`` matrix, or an
+        open dataset.
+    obs_name_column : str, default='barcode'
+        Column of the cells table to use as ``obs_names``.
+
+    Returns
+    -------
+    AnnData
+        ``.X`` cells x LR pairs (CSR), ``.var_names`` the pair names,
+        ``.obs`` from the cells table, ``.obsm`` from the embeddings and,
+        when present, ``.uns['spatial']``.
+
+    Notes
+    -----
+    String columns come back as ``object`` dtype: SQLite storage does not
+    preserve pandas categoricals. Cast with ``.astype('category')`` if a
+    downstream step needs it.
+    """
+    ds, opened_here = _open_cytome(source)
+    try:
+        if LR_MATRIX not in ds.list_matrices():
+            raise ValueError(
+                f"{source!r} does not contain an LR-score matrix "
+                f"({LR_MATRIX!r}; found {ds.list_matrices()}). It looks like "
+                f"an expression cytome - pass it as `data=`, not `lr_data=`."
+            )
+        blocks = [
+            sp.csr_matrix(chunk)
+            for chunk, _ in ds.iter_chunks(modality=LR_MODALITY, layer=LR_LAYER)
+        ]
+        X = sp.vstack(blocks).tocsr() if blocks else sp.csr_matrix((0, 0))
+
+        genes_df = ds.genes.to_pandas()
+        pair_names = genes_df.get('gene_id', genes_df.get('symbol')).astype(str)
+
+        obs = ds.cells.to_pandas().copy()
+        if obs_name_column in obs.columns:
+            obs.index = obs[obs_name_column].astype(str)
+            obs = obs.drop(columns=[obs_name_column])
+        obs = obs.drop(columns=[c for c in ('cell_idx',) if c in obs.columns])
+        obs.index.name = None
+
+        lr_adata = ad.AnnData(
+            X=X, obs=obs,
+            var=pd.DataFrame(index=pd.Index(list(pair_names), name=None)),
+        )
+        for key in ds.embeddings.keys():
+            names = _obsm_names_for(key, LR_MODALITY)
+            if names:
+                array = np.asarray(ds.embeddings[key])
+                for name in names:
+                    lr_adata.obsm[name] = array
+        spatial_uns = _spatial_uns_from(ds)
+        if spatial_uns:
+            lr_adata.uns['spatial'] = spatial_uns
+        return lr_adata
+    finally:
+        if opened_here:
+            ds.close()
+
+
+def _ensure_lr_anndata(source) -> ad.AnnData:
+    """Pass an AnnData through; read an LR cytome into one."""
+    if isinstance(source, ad.AnnData):
+        return source
+    if _is_cytome_source(source):
+        return readLRCytome(source)
+    raise TypeError(
+        f"Expected an AnnData of LR scores, a .cytome/.db path, or an open "
+        f"cytome Dataset; got {type(source).__name__}."
     )

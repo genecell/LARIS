@@ -35,12 +35,14 @@ except ImportError:
 
 from ._colors import _get_cmap, pos_cmap, _resolve_cell_type_colors
 from ._utils import _log_message, _save_figure, _compute_bubble_sizes_log10, _create_pvalue_legend_log10, _create_edge_thickness_legend
+from ..preprocessing._io import _ensure_expression_anndata, _is_cytome_source
+from .._compat import _UNSET, resolve_data_arg
 
 def plotCCCNetwork(
     laris_results: pd.DataFrame,
     cell_type_of_interest: str,
     interaction_direction: str = "sending",
-    adata: Optional[ad.AnnData] = None,
+    data=_UNSET,
     n_top: int = 3000,
     edge_width_scale: float = 30,
     interaction_cutoff: float = 0.0,
@@ -61,7 +63,8 @@ def plotCCCNetwork(
     label_border_width: float = 3.0,
     save: Optional[str] = None,
     verbosity: int = 2,
-    return_fig: bool = False
+    return_fig: bool = False,
+    adata=_UNSET
 ) -> Optional[Tuple[plt.Figure, plt.Axes]]:
     """
     Plot an interaction network for a specific cell type.
@@ -170,6 +173,9 @@ def plotCCCNetwork(
     ...     save='network.pdf'
     ... )
     """
+    adata = resolve_data_arg(data, 'plotCCCNetwork', canonical='data',
+                             required=False, adata=adata)
+
     # Apply filters
     laris_results_subset = laris_results.copy()
     did_filter = False
@@ -252,6 +258,9 @@ def plotCCCNetwork(
     )
 
     # Add all cell type nodes
+    if adata is not None and not isinstance(adata, ad.AnnData):
+        # cell-type labels and colours only: a cytome source is read here
+        adata = _ensure_expression_anndata(adata)
     if adata is not None:
         all_nodes = adata.obs[groupby].unique()
         for node in all_nodes:
@@ -370,7 +379,7 @@ def plotCCCNetwork(
 
 def plotCCCNetworkCumulative(
     laris_results: pd.DataFrame,
-    adata: ad.AnnData,
+    data=_UNSET,
     cutoff: float = 0,
     n_top: int = 3000,
     groupby: str = "cell_type",
@@ -393,7 +402,8 @@ def plotCCCNetworkCumulative(
     label_border_width: float = 3.0,
     save: Optional[str] = None,
     verbosity: int = 2,
-    return_fig: bool = False
+    return_fig: bool = False,
+    adata=_UNSET
 ) -> Optional[Tuple[plt.Figure, plt.Axes]]:
     """
     Plot a cumulative interaction network across all cell types.
@@ -499,6 +509,9 @@ def plotCCCNetworkCumulative(
     ...     save='cumulative_network.pdf'
     ... )
     """
+    adata = resolve_data_arg(data, 'plotCCCNetworkCumulative',
+                             canonical='data', adata=adata)
+
     # Apply filters
     laris_results_subset = laris_results.copy()
     did_filter = False
@@ -587,7 +600,9 @@ def plotCCCNetworkCumulative(
     # Remove self-loops
     G.remove_edges_from(list(nx.selfloop_edges(G)))
 
-    # Add all cell types as nodes
+    # Add all cell types as nodes (cytome sources are read here)
+    if adata is not None and not isinstance(adata, ad.AnnData):
+        adata = _ensure_expression_anndata(adata)
     unique_cell_types = adata.obs[groupby].unique()
     for ctype in unique_cell_types:
         if ctype not in G:
