@@ -1357,7 +1357,7 @@ def _calculate_laris_score_by_celltype(
     prefilter_fdr: bool = True,
     prefilter_threshold: float = 0.0,
     score_threshold: float = 1e-6,
-    spatial_weight: float = 1.0,
+    spatial_weight: float = 3.0,
     use_conditional_pvalue: bool = False,
     rescale: bool = True,
     specificity_reference: str = 'lr',
@@ -1454,13 +1454,19 @@ def _calculate_laris_score_by_celltype(
         Numerical precision threshold. Scores below this are set to exactly 0.0
         to avoid floating-point artifacts in p-value calculations.
         
-    spatial_weight : float, default=1.0
-        Exponent applied to spatial specificity scores. Controls how much spatial
-        specificity influences final scores:
-        - 0: Ignore spatial specificity (all weights = 1)
-        - 1: Linear influence (default)
-        - >1: Stronger emphasis on spatial specificity
-        - <1: Weaker emphasis on spatial specificity
+    spatial_weight : float, default=3.0
+        Exponent applied to the spatial specificity score before it
+        multiplies the cell-type interaction score:
+        ``interaction_score *= max(delta, 0) ** spatial_weight``. Despite
+        the name it is a power, not a multiplicative weight.
+        - 0: Ignore spatial specificity (all factors = 1)
+        - 1: Linear influence
+        - >1: Stronger emphasis on spatially specific LR pairs
+        - <1: Weaker emphasis
+        Negative delta is clamped to 0 first, so a pair whose spatial
+        pattern is no stronger than the random background contributes
+        nothing rather than a NaN (fractional exponent) or a sign flip
+        (even exponent).
         
     use_conditional_pvalue : bool, default=False
         Use conditional p-value calculation for zero-inflated data. Recommended

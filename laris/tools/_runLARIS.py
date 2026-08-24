@@ -237,6 +237,8 @@ def runLARIS(
         Exponent applied to the (non-negative-clamped) spatial specificity
         score before it multiplies the cell-type interaction score:
         ``interaction_score *= max(delta, 0) ** spatial_weight``.
+        **Despite the name this is a power, not a multiplicative weight** -
+        raising it changes the score non-linearly.
         - 0: Ignore spatial specificity entirely
         - 1: Linear influence
         - >1: Stronger emphasis on spatially specific LR pairs (the default 3
