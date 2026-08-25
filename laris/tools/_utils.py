@@ -1531,6 +1531,14 @@ def _calculate_laris_score_by_celltype(
     n_permutations : int, default=1000
         Number of permutations for statistical testing. More permutations give
         more precise p-values but take longer. Common values: 1000-10000.
+        P-values have a floor of 1/(n_permutations+1), and BH within a
+        sender-receiver group of m tests raises the smallest attainable FDR
+        to (m/k)/(n_permutations+1), where k is the number of interactions
+        reaching that floor. The default is ample when a group has several
+        significant interactions; raise it when an isolated interaction in a
+        large group must clear a strict threshold (n_permutations >= 20*m for
+        FDR < 0.05, 100*m for FDR < 0.01). A warning fires when the bound for
+        an isolated hit exceeds 0.05.
         
     chunk_size : int, default=50000
         Number of interactions to process simultaneously during permutation testing.
@@ -2019,20 +2027,27 @@ def _calculate_laris_score_by_celltype(
 
         print(f"  ✓ Corrected {n_pairs_corrected} sender-receiver pairs")
 
-        # Permutation p-values have a floor of 1/(n_permutations+1); within-
-        # group BH multiplies that floor by the number of tests in the group,
-        # so the smallest achievable FDR in a group testing m interactions is
-        # m/(n_permutations+1). Warn when that bound exceeds 0.05: results at
-        # FDR < 0.05 would then be impossible for purely numerical reasons.
+        # Permutation p-values have a floor of 1/(n_permutations+1). Within-
+        # group BH scales that floor by m/k, where m is the number of tests in
+        # the group and k the number of them reaching the floor, so the
+        # smallest achievable FDR in the group is (m/k)/(n_permutations+1).
+        # The binding case is an isolated hit (k=1), giving m/(n_permutations+1);
+        # warn when that exceeds 0.05, i.e. when a single strong interaction
+        # could not clear FDR < 0.05 for purely numerical reasons. Groups where
+        # many interactions are genuinely significant are far less demanding:
+        # 50 floor hits among 1,000 tests already reach FDR = 0.02 at the
+        # default n_permutations=1000.
         if n_groups_fdr_floor_above_005 > 0:
             warnings.warn(
                 f"{n_groups_fdr_floor_above_005} of {n_pairs_corrected} "
                 f"sender-receiver groups have a minimum achievable FDR above "
                 f"0.05 with n_permutations={n_permutations} (the smallest "
-                f"possible FDR in a group testing m interactions is "
-                f"m/(n_permutations+1)). Increase n_permutations to make "
-                f"smaller FDR values attainable, e.g. >= 5,000 for FDR < 0.01 "
-                f"and >= 20,000 for FDR < 0.001 in groups of ~1,000 tests.",
+                f"possible FDR in a group of m tests where k of them reach "
+                f"the permutation floor is (m/k)/(n_permutations+1), and this "
+                f"bound is for an isolated hit, k=1). Groups with several "
+                f"genuinely significant interactions are unaffected. To make "
+                f"an isolated hit attainable, use n_permutations >= 20*m for "
+                f"FDR < 0.05, 100*m for FDR < 0.01 and 1000*m for FDR < 0.001.",
                 UserWarning,
                 stacklevel=2,
             )
