@@ -406,11 +406,14 @@ class TestEdgeCases:
         conditions = ['A', 'B']
         n_mice = {'A': 3, 'B': 3}
         pairs = [('X', 'Y'), ('Y', 'X')]
-        lr_pairs = [('L1', 'R1')]
+        # background LR pairs stabilise the per-sample centring median: with
+        # a single pair, the median is computed over two entries and the
+        # spiked one drags it, smearing the effect symmetrically into Y->X
+        lr_pairs = [('L1', 'R1')] + [(f'L{i}', f'R{i}') for i in range(2, 10)]
 
         def effect_fn(snd, rcv, lig, rec, cond, mouse, rng):
             base = rng.uniform(1.0, 5.0)
-            if snd == 'X' and rcv == 'Y' and cond == 'B':
+            if snd == 'X' and rcv == 'Y' and cond == 'B' and lig == 'L1':
                 base += 10.0
             return base
 
@@ -422,6 +425,7 @@ class TestEdgeCases:
             sampleToSubject=s2s,
         )
 
+        triple_comp = triple_comp[triple_comp['interaction_name'] == 'L1::R1']
         xy = triple_comp[
             (triple_comp['sender'] == 'X') & (triple_comp['receiver'] == 'Y')
         ]
@@ -567,3 +571,163 @@ class TestRedesignContracts:
                 sampleToSubject=s2s, level='lr')
         assert lr_comp['pvalue'].isna().all()
         assert (lr_comp['test_method'] == 'insufficient_subjects').all()
+
+
+class TestSparsityGuard:
+    """Centring cancels a per-sample scale factor only when the median sits
+    on a real score. Once over half a sample's entries are exactly zero the
+    median is the pseudocount - identical for every sample - and the
+    subtraction becomes a shared constant that cancels nothing. Spatial LR
+    matrices are routinely that sparse, so this must be announced rather
+    than assumed away.
+    """
+
+    @staticmethod
+    def _results(rng, zero_fraction):
+        pairs = [('CellA', 'CellB'), ('CellB', 'CellA')]
+        lrs = [(f'L{i}', f'R{i}') for i in range(12)]
+
+        def scores_fn(snd, rcv, lig, rec, rng=rng):
+            if rng.random() < zero_fraction:
+                return 0.0
+            return float(rng.uniform(1.0, 5.0))
+
+        results, cond_map, s2s = {}, {}, {}
+        for i, sample in enumerate([f'S{i}' for i in range(6)]):
+            results[sample] = _make_celltype_results(pairs, lrs, scores_fn, rng)
+            cond_map[sample] = 'A' if i < 3 else 'B'
+            s2s[sample] = sample
+        return results, cond_map, s2s
+
+    def test_fixed_floor_warns_when_the_median_is_the_pseudocount(self, rng):
+        results, cond_map, s2s = self._results(rng, zero_fraction=0.9)
+        with pytest.warns(UserWarning, match="fixed\n?.*pseudocount|pseudocount rather than a real"):
+            la.tl.compareLARIS(results, cond_map, referenceCondition='A',
+                               sampleToSubject=s2s, level='lr',
+                               logPseudocount=1e-8)
+
+    def test_equivariant_floor_is_silent_at_any_sparsity(self, rng):
+        for zero_fraction in (0.0, 0.9):
+            results, cond_map, s2s = self._results(rng, zero_fraction)
+            with warnings.catch_warnings():
+                warnings.simplefilter('error', UserWarning)
+                la.tl.compareLARIS(results, cond_map, referenceCondition='A',
+                                   sampleToSubject=s2s, level='lr')
+
+    def _scale_effect(self, rng, zero_fraction, **kwargs):
+        results, cond_map, s2s = self._results(rng, zero_fraction)
+        scaled = {s: d.assign(interaction_score=d['interaction_score']
+                              * (3.0 if cond_map[s] == 'B' else 1.0))
+                  for s, d in results.items()}
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            a, _ = la.tl.compareLARIS(results, cond_map, referenceCondition='A',
+                                      sampleToSubject=s2s, level='lr', **kwargs)
+            b, _ = la.tl.compareLARIS(scaled, cond_map, referenceCondition='A',
+                                      sampleToSubject=s2s, level='lr', **kwargs)
+        m = a.merge(b, on='interaction_name', suffixes=('_a', '_b'))
+        return float(np.nanmax(np.abs(m['log_diff_a'] - m['log_diff_b'])))
+
+    def test_equivariant_floor_is_exactly_invariant_at_any_sparsity(self, rng):
+        """The point of logPseudocount='auto': the floor scales with the
+        sample, so log(c*s + c*eps) = log c + log(s + eps) and the median
+        removes the shift for every entry, zeros included."""
+        assert self._scale_effect(rng, 0.0) < 1e-10
+        assert self._scale_effect(rng, 0.9) < 1e-10
+
+    def test_fixed_floor_boundary_is_pinned(self, rng):
+        """The old behaviour, kept reachable: a fixed floor is invariant
+        only while the median sits on a real score."""
+        assert self._scale_effect(rng, 0.0, logPseudocount=1e-8) < 1e-8
+        assert self._scale_effect(rng, 0.9, logPseudocount=1e-8) > 1e-3
+
+
+class TestDetectionAndFisherRoute:
+    """Detection reporting and the presence/absence test route.
+
+    A moderated t on values where one condition never detects the
+    interaction compares real scores to a column of floor values - its
+    p-value is set by the pseudocount, not by data (the old estimator
+    reached p = 1e-112 this way). Those rows route to Fisher's exact on
+    the subject detection counts instead, and every row reports how many
+    subjects detected it at the tested level.
+    """
+
+    @staticmethod
+    def _results(rng, alt_detection):
+        """12 graded LR pairs plus one controlled presence/absence pair."""
+        pairs = [('CellA', 'CellB'), ('CellB', 'CellA')]
+        lrs = [(f'L{i}', f'R{i}') for i in range(12)]
+        results, cond_map, s2s = {}, {}, {}
+        for i, sample in enumerate([f'S{i}' for i in range(10)]):
+            cond = 'A' if i < 5 else 'B'
+            def scores_fn(snd, rcv, lig, rec, rng=rng, cond=cond, i=i):
+                if lig == 'L0':          # the presence/absence pair
+                    if cond == 'A':
+                        return 0.0
+                    detected = (i - 5) < alt_detection
+                    return float(rng.uniform(1.0, 3.0)) if detected else 0.0
+                return float(rng.uniform(1.0, 5.0))
+            results[sample] = _make_celltype_results(pairs, lrs, scores_fn, rng)
+            cond_map[sample], s2s[sample] = cond, sample
+        return results, cond_map, s2s
+
+    def test_detection_columns_present_and_correct(self, rng):
+        results, cond_map, s2s = self._results(rng, alt_detection=5)
+        lr_cmp, tr_cmp = la.tl.compareLARIS(results, cond_map,
+                                            referenceCondition='A',
+                                            sampleToSubject=s2s)
+        for frame in (lr_cmp, tr_cmp):
+            assert {'n_detected_ref', 'n_detected_alt',
+                    'pvalue_fisher', 'test_method'} <= set(frame.columns)
+        row = lr_cmp[lr_cmp['interaction_name'] == 'L0::R0'].iloc[0]
+        assert row['n_detected_ref'] == 0 and row['n_detected_alt'] == 5
+        graded = lr_cmp[lr_cmp['interaction_name'] == 'L3::R3'].iloc[0]
+        assert graded['n_detected_ref'] == 5 and graded['n_detected_alt'] == 5
+
+    def test_absent_in_one_condition_routes_to_fisher(self, rng):
+        results, cond_map, s2s = self._results(rng, alt_detection=5)
+        lr_cmp, _ = la.tl.compareLARIS(results, cond_map,
+                                       referenceCondition='A',
+                                       sampleToSubject=s2s)
+        row = lr_cmp[lr_cmp['interaction_name'] == 'L0::R0'].iloc[0]
+        assert row['test_method'] == 'fisher_detection'
+        # 5/5 vs 0/5, two-sided Fisher: 2 / C(10,5) = 2/252
+        assert row['pvalue'] == pytest.approx(2 / 252, rel=1e-9)
+        assert row['pvalue'] == pytest.approx(row['pvalue_fisher'], rel=1e-12)
+
+    def test_partial_detection_stays_on_the_t(self, rng):
+        """3-of-5 vs 5-of-5 has real values in both groups; no routing."""
+        results, cond_map, s2s = self._results(rng, alt_detection=3)
+        def flip(fn_results):
+            return fn_results
+        # make the reference side detected too, so neither side is empty
+        for i, (s, d) in enumerate(results.items()):
+            if cond_map[s] == 'A':
+                mask = d['interaction_name'] == 'L0::R0'
+                d.loc[mask, 'interaction_score'] = float(rng.uniform(1.0, 3.0))
+        lr_cmp, _ = la.tl.compareLARIS(results, cond_map,
+                                       referenceCondition='A',
+                                       sampleToSubject=s2s)
+        row = lr_cmp[lr_cmp['interaction_name'] == 'L0::R0'].iloc[0]
+        assert row['test_method'] == 'moderated_t'
+        assert np.isfinite(row['pvalue_fisher'])   # still reported
+
+    def test_absent_everywhere_is_marked_not_detected(self, rng):
+        results, cond_map, s2s = self._results(rng, alt_detection=0)
+        lr_cmp, _ = la.tl.compareLARIS(results, cond_map,
+                                       referenceCondition='A',
+                                       sampleToSubject=s2s)
+        row = lr_cmp[lr_cmp['interaction_name'] == 'L0::R0'].iloc[0]
+        assert row['test_method'] == 'not_detected'
+        # NaN, not 1.0: an untestable row must not enter the BH burden
+        assert np.isnan(row['pvalue'])
+
+    def test_fisher_p_enters_the_fdr(self, rng):
+        results, cond_map, s2s = self._results(rng, alt_detection=5)
+        lr_cmp, _ = la.tl.compareLARIS(results, cond_map,
+                                       referenceCondition='A',
+                                       sampleToSubject=s2s)
+        row = lr_cmp[lr_cmp['interaction_name'] == 'L0::R0'].iloc[0]
+        assert np.isfinite(row['pvalue_fdr'])
+        assert row['pvalue_fdr'] >= row['pvalue']

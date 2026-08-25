@@ -15,6 +15,7 @@ from ._dotplot import plotCCCDotPlot, plotCCCDotPlotFacet, plotLRDotPlot
 from ._spatial_image import (_resolve_background_image, _draw_image_overlay,
                              _image_axis_limits, _render_score_overlay)
 from ._spatial import plotCCCSpatial
+from ._compare import plotCompareLARIS
 from ._prepare import prepareDotPlotAdata
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     'plotCCCDotPlotFacet',
     'plotLRDotPlot',
     'plotCCCSpatial',
+    'plotCompareLARIS',
 
     # Utility functions
     'prepareDotPlotAdata',

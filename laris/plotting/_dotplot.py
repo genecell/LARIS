@@ -35,6 +35,7 @@ except ImportError:
 
 from ._colors import _get_cmap, pos_cmap, _resolve_cell_type_colors
 from ._utils import _log_message, _save_figure, _compute_bubble_sizes_log10, _create_pvalue_legend_log10, _create_edge_thickness_legend
+from ._prepare import _compute_max_fraction
 
 def plotCCCDotPlot(
     laris_results: pd.DataFrame,

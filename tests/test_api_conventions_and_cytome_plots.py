@@ -111,3 +111,38 @@ class TestCytomeInPlots:
                    la.pl.plotCCCDotPlotFacet):
             params = inspect.signature(fn).parameters
             assert "adata" not in params, f"{fn.__name__} unexpectedly takes adata"
+
+
+class TestPlotLRDotPlotImports:
+    def test_plot_lr_dotplot_runs(self):
+        """Regression: the module split dropped the _compute_max_fraction
+        import from _dotplot.py, so plotLRDotPlot raised NameError on any
+        call. Caught by executing the tutorial code."""
+        import numpy as np
+        import pandas as pd
+        import scipy.sparse as sp
+        import anndata as ad
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        import laris as la
+
+        rng = np.random.default_rng(0)
+        n = 120
+        adata = ad.AnnData(
+            X=sp.csr_matrix(rng.poisson(1.0, (n, 6)).astype(np.float32)),
+            obs=pd.DataFrame({"ct": pd.Categorical(rng.choice(list("AB"), n))},
+                             index=[f"c{i}" for i in range(n)]),
+            var=pd.DataFrame(index=["L1", "R1", "L2", "R2", "L3", "R3"]),
+        )
+        adata.obsm["X_spatial"] = rng.random((n, 2))
+        lr_df = pd.DataFrame({"ligand": ["L1", "L2", "L3"],
+                              "receptor": ["R1", "R2", "R3"]})
+        lr_data = la.tl.prepareLRInteraction(adata, lr_df,
+                                             use_rep_spatial="X_spatial")
+        adata_dot = la.pl.prepareDotPlotAdata(lr_data, adata, verbosity=0)
+        out = la.pl.plotLRDotPlot(adata_dot,
+                                  interactions_to_plot=["L1::R1", "L2::R2"],
+                                  groupby="ct", return_fig=True)
+        assert out is not None
+        plt.close("all")

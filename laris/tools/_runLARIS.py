@@ -56,6 +56,7 @@ def runLARIS(
     rescale: bool = True,
     cosg_backend: str = 'auto',
     specificity_reference: str = 'lr',
+    section_key: Optional[str] = None,
     lr_adata=_UNSET,
     adata=_UNSET
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
@@ -261,6 +262,15 @@ def runLARIS(
         - Interactions with score=0 get p-value=1.0
         - Non-zero scores compared only to non-zero background
 
+    section_key : str, optional
+        Column in ``.obs`` identifying which tissue section each cell
+        belongs to. Several sections tiled into one coordinate system
+        otherwise share a spatial k-NN, so cells near a tile edge acquire
+        neighbours from the adjacent section. With ``section_key`` every
+        neighbour graph in the pipeline - the spatial specificity step, its
+        randomised background, and the cell-type co-localization step - is
+        built independently within each section (GitHub issue #8). Pass the
+        same column to :func:`prepareLRInteraction`.
     cosg_backend : {'auto', 'memory', 'stream'}, default='auto'
         How to compute cell type specificity. 'stream' reads the expression
         in chunks from a cytome via ``cosg.run_cosg_cytome``, so no
@@ -494,11 +504,16 @@ def runLARIS(
     print(f"  - Random repeats: {n_repeats}")
     
     # Build spatial adjacency matrix
+    sections = _utils._resolve_sections(lr_adata, section_key, lr_adata.n_obs)
+    if sections is not None:
+        print(f"  - Neighbour graphs built within {len(pd.unique(sections))} "
+              f"section(s) from '{section_key}'")
     cellxcell = _utils._build_adjacency_matrix(
         lr_adata,
         use_rep=use_rep,
         n_nearest_neighbors=n_nearest_neighbors,
-        sigma=sigma
+        sigma=sigma,
+        sections=sections
     )
     
     # Calculate observed spatial correlation
@@ -512,7 +527,8 @@ def runLARIS(
         lr_adata, cellxcell, genexcell,
         n_nearest_neighbors=n_nearest_neighbors,
         n_repeats=n_repeats,
-        random_seed=random_seed
+        random_seed=random_seed,
+        sections=sections
     )
     
     random_gsp = np.mean(random_gsp_list, axis=0)
@@ -603,6 +619,7 @@ def runLARIS(
             adata=adata,
             cytome_source=cytome_source,
             specificity_reference=specificity_reference,
+            section_key=section_key,
             lr_adata=lr_adata,
             laris_lr=laris_lr,
             groupby=groupby,

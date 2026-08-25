@@ -54,6 +54,7 @@ def prepareLRInteraction(
     output: Optional[str] = None,
     overwrite: bool = False,
     block_size: Optional[int] = None,
+    section_key: Optional[str] = None,
     adata=_UNSET,
 ):
     """
@@ -106,6 +107,14 @@ def prepareLRInteraction(
         when writing a cytome from an in-memory AnnData.
     overwrite : bool, default=False
         Allow replacing an existing ``output`` file.
+    section_key : str, optional
+        Column in ``.obs`` identifying which tissue section each cell
+        belongs to. When several sections are tiled into one coordinate
+        system, the spatial k-NN otherwise joins cells that are close on
+        the slide but came from different sections. With ``section_key``
+        the neighbour graph is built independently within each section, so
+        no edge crosses a boundary (GitHub issue #8). Leave as None for a
+        single section.
     block_size : int, optional
         Number of cells to diffuse and score at a time. Bounds peak memory
         to roughly ``block_size x n_lr_pairs`` instead of
@@ -277,11 +286,12 @@ def prepareLRInteraction(
         (position_of[g] for g in lr_df['receptor']), dtype=int, count=len(lr_df))
 
     # Spatial diffusion graph
-    cellxcell = kneighbors_graph(
+    cellxcell = _utils._sectioned_kneighbors_graph(
         X_spatial,
         n_neighbors=number_nearest_neighbors,
+        sections=_utils._resolve_sections(adata, section_key, adata.n_obs),
         mode='distance',
-        include_self=True
+        include_self=True,
     )
     cellxcell = _utils._apply_knn_kernel(cellxcell, sigma=sigma)
     cellxcell = sp.csr_matrix(cellxcell)

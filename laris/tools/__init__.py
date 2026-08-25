@@ -12,7 +12,9 @@ Readers and data preparation live in ``laris.pp``.
 
 from ._prepare import prepareLRInteraction
 from ._runLARIS import runLARIS
-from ._compareLARIS import compareLARIS
+from ._compareLARIS import compareLARIS, combineComparisons
+from ._compareMatched import compareLARISMatched
+from ._embedding import buildJointEmbedding
 
 # Backwards compatibility: readCytome moved to laris.pp (it is a reader,
 # not an analysis step). The alias keeps existing scripts working.
@@ -22,6 +24,9 @@ __all__ = [
     'prepareLRInteraction',
     'runLARIS',
     'compareLARIS',
+    'compareLARISMatched',   # alias entry; compareLARIS(AnnData) is canonical
+    'combineComparisons',
+    'buildJointEmbedding',
     'readCytome',      # deprecated alias of laris.pp.readCytome
 ]
 

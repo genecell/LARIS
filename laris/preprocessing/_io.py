@@ -137,6 +137,40 @@ def _obsm_names_for(key: str, modality: str = 'RNA'):
     return (f'X_{short}', short)
 
 
+def _resolve_x_layer(ds, modality: str = 'RNA') -> str:
+    """Bare name of the layer holding what was ``adata.X``.
+
+    cytome < 0.3.0 stored ``adata.X`` as ``{modality}_counts`` whatever it
+    contained. cytome 0.3.0 keeps that name only for genuine raw integer
+    counts and writes ``{modality}_data`` otherwise, so a hard-coded
+    'counts' raises ``KeyError`` on any file converted from normalised
+    expression - which is what LARIS is normally given.
+
+    The dataset records which matrix was ``X`` in ``_anndata_X_layer``, and
+    that is authoritative on both generations. The name-based fallbacks
+    only run for files that predate the metadata or were built by hand.
+    """
+    prefix = f'{modality}_'
+    recorded = None
+    try:
+        recorded = ds.metadata.get('_anndata_X_layer')
+    except Exception:
+        recorded = None
+    if recorded:
+        return recorded[len(prefix):] if recorded.startswith(prefix) else recorded
+
+    matrices = [m for m in ds.list_matrices() if m.startswith(prefix)]
+    for candidate in (f'{prefix}data', f'{prefix}counts'):
+        if candidate in matrices:
+            return candidate[len(prefix):]
+    if len(matrices) == 1:
+        return matrices[0][len(prefix):]
+    raise ValueError(
+        f"Cannot tell which {modality} matrix holds the expression to use "
+        f"(found {matrices or 'none'}). Pass layer= explicitly."
+    )
+
+
 def _spatial_uns_from(source) -> dict:
     """A scanpy-style ``uns['spatial']`` dict from any source, or ``{}``.
 
@@ -182,7 +216,7 @@ def readCytome(
     source,
     genes: Optional[List[str]] = None,
     modality: str = 'RNA',
-    layer: str = 'counts',
+    layer: str = 'auto',
     gene_name_column: str = 'auto',
     obs_name_column: str = 'barcode',
 ) -> ad.AnnData:
@@ -203,9 +237,12 @@ def readCytome(
         ``cytome.to_anndata``.
     modality : str, default='RNA'
         Cytome modality to read.
-    layer : str, default='counts'
-        Matrix layer within the modality (``{modality}_{layer}``).
-        'counts' is where ``cytome.from_anndata`` stores ``adata.X``.
+    layer : str, default='auto'
+        Matrix layer within the modality (``{modality}_{layer}``). 'auto'
+        reads whichever matrix the file records as having been
+        ``adata.X`` - ``counts`` on cytome < 0.3.0 and on genuine raw
+        counts, ``data`` on 0.3.0+ files converted from normalised
+        expression. Pass a name to override.
     gene_name_column : str, default='auto'
         Column of the cytome genes table holding the gene names that match
         the LR database. 'auto' uses ``symbol`` where present and falls back
@@ -228,6 +265,8 @@ def readCytome(
     cytome = _import_cytome()
     ds, opened_here = _open_cytome(source)
     try:
+        if layer == 'auto':
+            layer = _resolve_x_layer(ds, modality)
         if genes is None:
             adata = ds.to_anndata(modality=modality, layer=layer)
             if not sp.issparse(adata.X):
@@ -315,7 +354,7 @@ def _ensure_expression_anndata(
     source,
     genes: Optional[List[str]] = None,
     modality: str = 'RNA',
-    layer: str = 'counts',
+    layer: str = 'auto',
 ) -> ad.AnnData:
     """Pass AnnData through; convert cytome sources via :func:`readCytome`."""
     if isinstance(source, ad.AnnData):

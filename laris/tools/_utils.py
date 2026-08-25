@@ -403,11 +403,97 @@ def _compute_avg_expression(
     return res
 
 
+def _resolve_sections(obj, section_key, n_obs):
+    """Section labels as a numpy array, or None when not sectioning."""
+    if section_key is None:
+        return None
+    obs = getattr(obj, 'obs', None)
+    if obs is None or section_key not in obs:
+        available = list(obs.columns) if obs is not None else []
+        raise ValueError(
+            f"section_key='{section_key}' not found in .obs. "
+            f"Available columns: {available}"
+        )
+    labels = np.asarray(obs[section_key].astype(str))
+    if len(labels) != n_obs:
+        raise ValueError(
+            f"section_key='{section_key}' has {len(labels)} labels for "
+            f"{n_obs} cells."
+        )
+    return labels
+
+
+def _sectioned_kneighbors_graph(
+    coords,
+    n_neighbors: int,
+    sections=None,
+    mode: str = 'distance',
+    include_self: bool = False,
+) -> sp.csr_matrix:
+    """k-NN graph, optionally built independently within each section.
+
+    When several tissue sections are tiled into one coordinate system, a
+    global k-NN joins cells that are neighbours on the slide but came from
+    different sections - the edge artifact reported in GitHub issue #8.
+    Passing section labels builds the graph per section and assembles the
+    blocks, so no edge ever crosses a section boundary. The result is
+    block-diagonal under a section-sorted permutation; row and column
+    indices stay in the original cell order.
+
+    A section with fewer cells than ``n_neighbors + 1`` uses as many
+    neighbours as it has, with a warning: silently returning a denser
+    graph for small sections would make them incomparable to large ones.
+    """
+    coords = np.asarray(coords)
+    if sections is None:
+        return kneighbors_graph(coords, n_neighbors=n_neighbors, mode=mode,
+                                include_self=include_self)
+
+    n_obs = coords.shape[0]
+    rows, cols, vals = [], [], []
+    reduced = []
+    for label in pd.unique(sections):
+        idx = np.flatnonzero(sections == label)
+        # kneighbors_graph counts self among the neighbours only when
+        # include_self=True, so the reachable maximum differs by one.
+        max_k = len(idx) - (0 if include_self else 1)
+        k = min(n_neighbors, max_k)
+        if k < 1:
+            raise ValueError(
+                f"section '{label}' has {len(idx)} cell(s); at least "
+                f"{2 - int(include_self)} are needed to build a neighbour graph."
+            )
+        if k < n_neighbors:
+            reduced.append((label, len(idx), k))
+        block = kneighbors_graph(coords[idx], n_neighbors=k, mode=mode,
+                                 include_self=include_self).tocoo()
+        rows.append(idx[block.row])
+        cols.append(idx[block.col])
+        vals.append(block.data)
+
+    if reduced:
+        detail = ', '.join(f"{lab} ({n} cells, k={k})" for lab, n, k in reduced[:5])
+        more = ', ...' if len(reduced) > 5 else ''
+        warnings.warn(
+            f"{len(reduced)} section(s) have fewer than n_neighbors+1 cells "
+            f"and used a reduced neighbourhood: {detail}{more}. Their "
+            f"diffusion is over a smaller neighbourhood than the rest.",
+            UserWarning,
+        )
+
+    graph = sp.coo_matrix(
+        (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
+        shape=(n_obs, n_obs),
+    ).tocsr()
+    return graph
+
+
 def _build_adjacency_matrix(
     adata: ad.AnnData,
     use_rep: str = 'X_pca',
     n_nearest_neighbors: int = 10,
-    sigma: Union[float, str] = 'adaptive'
+    sigma: Union[float, str] = 'adaptive',
+    sections=None
 ) -> sp.csr_matrix:
     """
     Build an adjacency matrix from low-dimensional representations.
@@ -445,11 +531,12 @@ def _build_adjacency_matrix(
     """
     X_rep = adata.obsm[use_rep].copy()
 
-    cellxcell = kneighbors_graph(
+    cellxcell = _sectioned_kneighbors_graph(
         X_rep,
         n_neighbors=n_nearest_neighbors,
+        sections=sections,
         mode='distance',
-        include_self=False
+        include_self=False,
     )
 
     return _apply_knn_kernel(cellxcell, sigma=sigma)
@@ -459,7 +546,8 @@ def _build_random_adjacency_matrix(
     adata: ad.AnnData,
     cellxcell: sp.csr_matrix,
     n_nearest_neighbors: int = 10,
-    random_seed: int = 0
+    random_seed: int = 0,
+    sections=None
 ) -> sp.csr_matrix:
     """
     Efficiently create a random adjacency matrix for null model generation.
@@ -496,7 +584,21 @@ def _build_random_adjacency_matrix(
     """
     row_ind = np.repeat(np.arange(adata.n_obs), n_nearest_neighbors)
     np.random.seed(random_seed)
-    col_ind = np.random.choice(np.arange(adata.n_obs), adata.n_obs * n_nearest_neighbors, replace=True)
+    if sections is None:
+        col_ind = np.random.choice(np.arange(adata.n_obs),
+                                   adata.n_obs * n_nearest_neighbors, replace=True)
+    else:
+        # With sectioning the observed graph never crosses a boundary, so a
+        # null that does would fold between-section batch effects into the
+        # background and bias the specificity score it is subtracted from.
+        col_ind = np.empty(adata.n_obs * n_nearest_neighbors, dtype=int)
+        for label in pd.unique(sections):
+            idx = np.flatnonzero(sections == label)
+            slots = np.concatenate([
+                np.arange(c * n_nearest_neighbors, (c + 1) * n_nearest_neighbors)
+                for c in idx
+            ])
+            col_ind[slots] = np.random.choice(idx, slots.size, replace=True)
     
     # Shuffle the weights
     connectivity = cellxcell.data.copy()
@@ -513,7 +615,8 @@ def _generate_random_background(
     genexcell: Union[np.ndarray, sp.csr_matrix],
     n_nearest_neighbors: int = 10,
     n_repeats: int = 30,
-    random_seed: int = 0
+    random_seed: int = 0,
+    sections=None
 ) -> List[np.ndarray]:
     """
     Generate random background distributions for statistical significance testing.
@@ -566,7 +669,8 @@ def _generate_random_background(
             adata,
             cellxcell,
             n_nearest_neighbors=n_nearest_neighbors,
-            random_seed=random_seed
+            random_seed=random_seed,
+            sections=sections
         )
         
         # Normalize the weights (L1 normalization for each row)
@@ -608,25 +712,12 @@ def _check_specificity_reference(specificity_reference: str, n_lr_genes: int) ->
 def _anndata_x_layer(ds, modality: str = 'RNA') -> str:
     """The layer holding what was ``adata.X``, as a bare layer name.
 
-    ``cytome.from_anndata`` records it in metadata as e.g. ``RNA_counts``;
-    the modality prefix is stripped because ``run_cosg_cytome`` takes
-    ``modality`` and ``layer`` separately.
+    Thin alias over the reader's resolver so the streaming COSG path and
+    :func:`laris.pp.readCytome` can never disagree about which matrix is
+    the expression.
     """
-    recorded = None
-    try:
-        recorded = ds.metadata.get('_anndata_X_layer')
-    except Exception:
-        recorded = None
-    if not recorded:
-        matrices = [m for m in ds.list_matrices() if m.startswith(f'{modality}_')]
-        if not matrices:
-            raise ValueError(
-                f"cytome dataset has no {modality} matrix to compute cell "
-                f"type specificity from (found {ds.list_matrices()})."
-            )
-        recorded = matrices[0]
-    prefix = f'{modality}_'
-    return recorded[len(prefix):] if recorded.startswith(prefix) else recorded
+    from ..preprocessing._io import _resolve_x_layer
+    return _resolve_x_layer(ds, modality=modality)
 
 
 def _cosg_scores_from_cytome(
@@ -944,7 +1035,8 @@ def _calculate_specificity_in_spatial_neighborhood(
     sigma: Union[float, str] = 'adaptive',
     return_by_group: bool = True,
     key_added: str = 'cosg',
-    column_delimiter: str = '@@'
+    column_delimiter: str = '@@',
+    section_key=None
 ) -> pd.DataFrame:
     """
     Calculate cell type pair specificity scores in spatial neighborhoods.
@@ -1056,11 +1148,12 @@ def _calculate_specificity_in_spatial_neighborhood(
     
     # Create spatial neighborhood graph
     X_spatial = adata.obsm[use_rep_spatial].copy()
-    cellxcell = kneighbors_graph(
+    cellxcell = _sectioned_kneighbors_graph(
         X_spatial,
         n_neighbors=number_nearest_neighbors,
+        sections=_resolve_sections(adata, section_key, adata.n_obs),
         mode='distance',
-        include_self=False
+        include_self=False,
     )
     cellxcell = _apply_knn_kernel(cellxcell, sigma=sigma)
     
@@ -1360,6 +1453,7 @@ def _calculate_laris_score_by_celltype(
     spatial_weight: float = 3.0,
     use_conditional_pvalue: bool = False,
     rescale: bool = True,
+    section_key=None,
     specificity_reference: str = 'lr',
     cytome_source=None
 ) -> pd.DataFrame:
@@ -1705,6 +1799,7 @@ def _calculate_laris_score_by_celltype(
     cosg_lr_ctc = _calculate_specificity_in_spatial_neighborhood(
         adata if adata is not None else lr_adata,
         lr_adata,
+        section_key=section_key,
         groupby=groupby,
         use_rep_spatial=use_rep_spatial,
         number_nearest_neighbors=number_nearest_neighbors,

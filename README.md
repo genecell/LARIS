@@ -16,12 +16,15 @@ LARIS is a Python package for analyzing ligand-receptor interactions in spatial 
 - **Spatial specificity**: Identify LR pairs with significant spatial variable patterns
 - **Inference at cell type level**: Compute sender-receiver cell type interaction scores
 - **Spatial neighborhoods**: Analyze interactions in the context of spatial cell type neighborhoods
+- **Cross-condition analysis**: Compare interactions across conditions with subject-level statistics and two validated estimators
 
 ### Documentation
 
 [LARIS documentation](https://genecell.github.io/LARIS/)
 
-[Datasets for LARIS tutorial](https://drive.google.com/drive/folders/1cfj4IZxl5svnG4RO--Fcr2x-bmNokmQN)
+[LARIS tutorials](tutorials/README.md)
+
+[Datasets for LARIS tutorial](https://zenodo.org/records/19981287)
 
 
 ### Installation
