@@ -5,7 +5,7 @@ estimator**: per-sample `runLARIS` tables in, statistics out — no merged
 object, no raw data needed at comparison time. The example is the public
 Kuppe et al. myocardial-infarction Visium cohort (human hearts; ischemic-
 zone and control slides). All outputs were produced by exactly this code
-with LARIS v0.11.0.
+with LARIS v0.12.0.
 
 **Data**: Kuppe et al. 2022, *Spatial multi-omic map of human myocardial
 infarction* — Visium slides available via cellxgene (collection

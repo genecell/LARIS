@@ -729,6 +729,7 @@ def _cosg_scores_from_cytome(
     remove_lowly_expressed: bool,
     modality: str = 'RNA',
     specificity_reference: str = 'lr',
+    extra_genes=None,
 ):
     """COSG specificity for the LR genes, streamed from a cytome file.
 
@@ -792,7 +793,20 @@ def _cosg_scores_from_cytome(
 
     # iqrLogNormalize divides each cell type column by that column's
     # q0.95-q0.75 spread over the rows it is given, so the reference set is
-    # decided by whether we subset before or after normalising.
+    # decided by whether we subset before or after normalising. extra_genes
+    # (the factorized-null background pool) never enter an 'lr'-reference
+    # fit: the transform is fitted on the reference rows and applied.
+    if extra_genes is not None:
+        from ._background import _iqr_fit, _iqr_apply
+        out_index = pd.Index(present).union(
+            pd.Index(extra_genes).intersection(cosg_scores.index))
+        if specificity_reference == 'all':
+            return cosg.iqrLogNormalize(cosg_scores).reindex(index=out_index)
+        iqr = _iqr_fit(cosg_scores, fit_rows=present)
+        full = pd.DataFrame(_iqr_apply(cosg_scores.values, iqr.values),
+                            index=cosg_scores.index,
+                            columns=cosg_scores.columns)
+        return full.reindex(index=out_index)
     if specificity_reference == 'all':
         return cosg.iqrLogNormalize(cosg_scores).reindex(index=present)
     return cosg.iqrLogNormalize(cosg_scores.reindex(index=present))
@@ -808,7 +822,9 @@ def _calculate_ligand_receptor_specificity(
     mask_threshold: float = 1e-6
 ,
     specificity_reference: str = 'lr',
-    cytome_source=None) -> pd.DataFrame:
+    cytome_source=None,
+    extra_genes=None,
+) -> pd.DataFrame:
     """
     Calculate cell type specificity of individual ligands and receptors.
     
@@ -865,6 +881,7 @@ def _calculate_ligand_receptor_specificity(
             expressed_pct=expressed_pct,
             remove_lowly_expressed=remove_lowly_expressed,
             specificity_reference=specificity_reference,
+            extra_genes=extra_genes,
         )
 
     _check_specificity_reference(specificity_reference, len(lr_set))
@@ -873,7 +890,16 @@ def _calculate_ligand_receptor_specificity(
     # transcriptome and keeping the LR rows gives the same raw scores as
     # scoring the LR subset. Only the normalisation below is gene-set
     # dependent, which is exactly what specificity_reference selects.
-    lr_gene_adata = adata[:, lr_set].copy() if specificity_reference == 'lr' else adata.copy()
+    # extra_genes (the factorized-null background pool) ride along in the
+    # scored set but never enter an 'lr'-reference IQR fit: the transform is
+    # fitted on the reference population and applied to them.
+    if extra_genes is not None:
+        score_set = pd.Index(lr_set).union(pd.Index(extra_genes))
+        score_set = score_set[score_set.isin(adata.var_names)]
+    else:
+        score_set = lr_set
+    lr_gene_adata = (adata[:, score_set].copy()
+                     if specificity_reference == 'lr' else adata.copy())
 
     # Perform COSG analysis
     cosg.cosg(
@@ -893,7 +919,18 @@ def _calculate_ligand_receptor_specificity(
         convert_negative_one_to_zero=True
     )
     if specificity_reference == 'all':
-        gene_by_group_cosg = cosg.iqrLogNormalize(cosg_scores).reindex(index=lr_set)
+        out_index = score_set if extra_genes is not None else lr_set
+        gene_by_group_cosg = cosg.iqrLogNormalize(cosg_scores).reindex(index=out_index)
+    elif extra_genes is not None:
+        # Fit the IQR on the LR reference rows only (matching the
+        # extra_genes=None behaviour bit for bit), then apply the fitted
+        # transform to the whole scored set including the background pool.
+        from ._background import _iqr_fit, _iqr_apply
+        fit_rows = pd.Index(lr_set).intersection(cosg_scores.index)
+        iqr = _iqr_fit(cosg_scores, fit_rows=fit_rows)
+        gene_by_group_cosg = pd.DataFrame(
+            _iqr_apply(cosg_scores.values, iqr.values),
+            index=cosg_scores.index, columns=cosg_scores.columns)
     else:
         gene_by_group_cosg = cosg.iqrLogNormalize(cosg_scores)
 
@@ -1036,7 +1073,8 @@ def _calculate_specificity_in_spatial_neighborhood(
     return_by_group: bool = True,
     key_added: str = 'cosg',
     column_delimiter: str = '@@',
-    section_key=None
+    section_key=None,
+    return_internals: bool = False,
 ) -> pd.DataFrame:
     """
     Calculate cell type pair specificity scores in spatial neighborhoods.
@@ -1163,6 +1201,11 @@ def _calculate_specificity_in_spatial_neighborhood(
     # Get cell type pair interactions
     ctXct_cell, ctXct = _pairwise_row_multiply(order1, cell_types=groups_order)
     
+    # Row norms of the cell-type-pair composition vectors, needed to score
+    # pseudo-pairs against the same columns (factorized null).
+    _y_norms = np.sqrt(np.asarray(ctXct_cell.multiply(ctXct_cell)
+                                  .sum(axis=1)).ravel())
+
     # Calculate cosine similarity between genes and cell type pairs
     cosine_sim = cosine_similarity(
         X=lr_adata.X.T,
@@ -1273,12 +1316,28 @@ def _calculate_specificity_in_spatial_neighborhood(
         )
     
     # Process and return normalized results
-    cosg_lr_ctc = cosg.indexByGene(
+    cosg_lr_ctc_raw = cosg.indexByGene(
         lr_adata.uns[key_added]['COSG'],
         column_delimiter=column_delimiter,
     )
-    cosg_lr_ctc = cosg.iqrLogNormalize(cosg_lr_ctc)
-    
+    # Equivalent to cosg.iqrLogNormalize(cosg_lr_ctc_raw), but with the
+    # fitted per-column IQR kept, so the identical transform (fitted on the
+    # real pairs only) can be applied to factorized-null pseudo-pairs.
+    from ._background import _iqr_fit, _iqr_apply
+    _iqr = _iqr_fit(cosg_lr_ctc_raw)
+    cosg_lr_ctc = pd.DataFrame(
+        _iqr_apply(cosg_lr_ctc_raw.values, _iqr.values),
+        index=cosg_lr_ctc_raw.index, columns=cosg_lr_ctc_raw.columns)
+
+    if return_internals:
+        internals = dict(
+            raw=cosg_lr_ctc_raw,
+            iqr=_iqr,
+            ctXct_cell=ctXct_cell,
+            ctc_names=list(ctXct),
+            y_norms=_y_norms,
+        )
+        return cosg_lr_ctc, internals
     return cosg_lr_ctc
 
 def _prepare_background_genes(
@@ -1455,7 +1514,9 @@ def _calculate_laris_score_by_celltype(
     rescale: bool = True,
     section_key=None,
     specificity_reference: str = 'lr',
-    cytome_source=None
+    cytome_source=None,
+    background=None,
+    mu_gsp: float = 0.25,
 ) -> pd.DataFrame:
     """
     Calculate cell type-specific LARIS interaction scores with statistical testing.
@@ -1642,6 +1703,9 @@ def _calculate_laris_score_by_celltype(
     print("="*70)
     print("\n--- Step 1: Calculating ligand and receptor cell type specificity ---")
     
+    _extra_genes = None
+    if background is not None:
+        _extra_genes = background.gene_index
     gene_by_group_cosg = _calculate_ligand_receptor_specificity(
         adata,
         laris_lr,
@@ -1651,7 +1715,8 @@ def _calculate_laris_score_by_celltype(
         remove_lowly_expressed=remove_lowly_expressed,
         mask_threshold=mask_threshold,
         cytome_source=cytome_source,
-        specificity_reference=specificity_reference
+        specificity_reference=specificity_reference,
+        extra_genes=_extra_genes,
     )
     
     print(f"  ✓ Computed specificity for {gene_by_group_cosg.shape[0]} genes "
@@ -1804,9 +1869,11 @@ def _calculate_laris_score_by_celltype(
     # Only obs[groupby], obsm[use_rep_spatial] and n_obs are read here, and
     # lr_adata carries all three - so this step works with the expression
     # object left on disk (streaming COSG passes adata=None).
+    _ctc_internals = None
     cosg_lr_ctc = _calculate_specificity_in_spatial_neighborhood(
         adata if adata is not None else lr_adata,
         lr_adata,
+        return_internals=(background is not None),
         section_key=section_key,
         groupby=groupby,
         use_rep_spatial=use_rep_spatial,
@@ -1818,6 +1885,8 @@ def _calculate_laris_score_by_celltype(
         column_delimiter='@@'
     )
     
+    if background is not None:
+        cosg_lr_ctc, _ctc_internals = cosg_lr_ctc
     print(f"  ✓ Calculated co-localization for {cosg_lr_ctc.shape[0]} interactions "
           f"and {cosg_lr_ctc.shape[1]} sender-receiver pairs")
 
@@ -1855,7 +1924,35 @@ def _calculate_laris_score_by_celltype(
     # =========================================================================
     # STEP 5: Statistical Significance Testing (Optional)
     # =========================================================================
-    if calculate_pvalues:
+    if calculate_pvalues and background is not None:
+        from . import _background as _bg_mod
+        print("\n" + "="*70)
+        print("STATISTICAL SIGNIFICANCE TESTING (factorized matched-gene null)")
+        print("="*70)
+        k_side = background.params.get('n_matched_genes', 0)
+        print(f"  - Support per pair: {k_side}x{k_side} = {k_side**2:,} "
+              f"pseudo-pairs (exact floor {1.0/(k_side**2+1):.2e})")
+        res_laris['p_value'] = _bg_mod.compute_factorized_pvalues(
+            res_laris,
+            background,
+            laris_lr,
+            spec_ext=gene_by_group_cosg,
+            group_labels=np.asarray(lr_adata.obs[groupby]),
+            groups_order=list(gene_by_group_cosg.columns),
+            ctc_internals=_ctc_internals,
+            scale_factor=scale_factor,
+            spatial_weight=spatial_weight,
+            mu_gsp=mu_gsp,
+            mu_celltype=mu,
+        )
+        n_permutations = k_side ** 2   # drives the FDR floor accounting below
+        _run_sampled_permutations = False
+    elif calculate_pvalues:
+        _run_sampled_permutations = True
+    else:
+        _run_sampled_permutations = False
+
+    if _run_sampled_permutations:
         print("\n" + "="*70)
         print("STATISTICAL SIGNIFICANCE TESTING")
         print("="*70)
@@ -1893,6 +1990,19 @@ def _calculate_laris_score_by_celltype(
                 row.interaction_name: row.interaction_score
                 for row in group_df.itertuples()
             }
+
+            # Same lookup, aligned to `all_interaction_names` so the null draw
+            # can index it directly. The background is drawn as integer indices
+            # into that array, so resolving each draw through the dict by name
+            # meant one Python-level lookup per (row x permutation) - hundreds
+            # of millions of them on a real dataset, and the dominant cost of
+            # the whole permutation step. Building the vector once per group is
+            # O(n_pairs) and lets NumPy do the rest.
+            group_score_vector = np.fromiter(
+                (score_lookup.get(name, 0.0) for name in all_interaction_names),
+                dtype=np.float64,
+                count=len(all_interaction_names),
+            )
             
             # Process in chunks to manage memory
             for i in range(0, len(group_df), chunk_size):
@@ -1914,21 +2024,11 @@ def _calculate_laris_score_by_celltype(
                 row_idx = np.arange(n_in_chunk)[:, np.newaxis]
                 control_indices = control_interaction_indices[row_idx, rand_indices]
                 
-                control_interaction_names = all_interaction_names[control_indices]
-                
-                # Look up scores for background interactions using the full
-                # interaction_name string (e.g. "Tgfb1::Tgfbr1") as the key,
-                # consistent with how score_lookup is built above.
-                control_interaction_names_flat = control_interaction_names.flatten()
-                null_scores_flat = [
-                    score_lookup.get(name, 0.0)
-                    for name in control_interaction_names_flat
-                ]
-                
-                null_distribution = np.array(
-                    null_scores_flat, 
-                    dtype=np.float64
-                ).reshape(n_in_chunk, n_permutations)
+                # Scores for the drawn background interactions. Indexing the
+                # per-group score vector is equivalent to resolving
+                # all_interaction_names[control_indices] through score_lookup,
+                # and gives bit-identical values.
+                null_distribution = group_score_vector[control_indices]
                 
                 # Calculate p-values
                 if use_conditional_pvalue:
@@ -1962,7 +2062,11 @@ def _calculate_laris_score_by_celltype(
             res_laris['p_value'] = np.nan
         
         print(f"  ✓ Calculated p-values for {len(res_laris):,} interaction combinations")
-        
+
+    # FDR correction applies to whichever p-value path ran above (sampled
+    # permutations or the factorized matched-gene null); n_permutations is
+    # the effective support size for the floor accounting either way.
+    if calculate_pvalues:
         # Step 5.3: FDR Correction
         print("\n--- Step 5.3: Applying FDR correction (Benjamini-Hochberg) ---")
         print(f"  - Strategy: {'Pre-filtered' if prefilter_fdr else 'All interactions'}")

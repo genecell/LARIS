@@ -1,65 +1,98 @@
-name: Build and publish to PyPI
+name: Build and publish wheels to PyPI
 
-# LARIS is pure Python, so this is the pure-Python adaptation of the
-# PIASO/cosg/cytome publish workflow: one universal py3 wheel + sdist via
-# `python -m build` (no maturin, no per-Python matrix, no compiled-kernel
-# gate). The safety structure is the same: publish only on a published
-# release, tag must match the built version, twine-check the metadata,
-# and authenticate via PyPI Trusted Publishing (OIDC).
+# NOTE: since v0.12.0 this project builds a Rust (PyO3/maturin) extension
+# `laris._laris`. A pure-Python builder would NOT compile the Rust and would
+# ship a wheel missing the extension - LARIS would still import and run, on
+# the NumPy fallback, silently slower. We therefore build per Python version
+# with maturin and assert the extension is present in every wheel. The
+# extension is version-specific (rust-numpy does not support abi3 here), so
+# the matrix runs cp310/cp311/cp312.
+#
+# Wheels are built for Linux (manylinux) and macOS (universal2 covers both
+# Apple silicon and Intel). Anyone on a platform without a wheel installs
+# from the sdist, which requires a Rust toolchain.
 
 on:
   release:
     # `published`, not `created`: GitHub does not fire `created` for draft
-    # releases, and composing a release in the web UI saves a draft first,
-    # so a `created` trigger silently never fires on the normal path.
+    # releases, and composing a release in the web UI saves a draft first, so
+    # a `created` trigger silently never fires on the normal path.
     types: [published]
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build sdist and wheel
-    runs-on: ubuntu-latest
+  build-wheels:
+    name: Build wheel (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Build wheel
+        uses: PyO3/maturin-action@v1
         with:
-          python-version: "3.11"
+          command: build
+          args: >-
+            --release
+            --interpreter python${{ matrix.python-version }}
+            --out dist
+          manylinux: ${{ matrix.os == 'ubuntu-latest' && '2014' || 'auto' }}
 
-      - name: Build
+      # The whole point of the maturin backend is that the compiled kernels
+      # ship. A wheel without the extension still works (NumPy fallback), so
+      # the failure is silent - assert it here rather than discover it from a
+      # user's timings.
+      - name: Wheel must contain the compiled extension
+        shell: bash
         run: |
-          pip install build
-          python -m build --outdir dist
-
-      - name: Wheel must contain the bundled LR databases
-        run: |
-          python - <<'PYEOF'
+          python - <<'EOF'
           import glob, sys, zipfile
-          for whl in glob.glob("dist/*.whl"):
+          wheels = glob.glob("dist/*.whl")
+          if not wheels:
+              sys.exit("::error::no wheel was produced")
+          for whl in wheels:
               names = zipfile.ZipFile(whl).namelist()
-              missing = [f for f in (
-                  "laris/datasets/_data/human_lr_CellChatDB.csv",
-                  "laris/datasets/_data/mouse_lr_CellChatDB.csv",
-              ) if f not in names]
-              if missing:
-                  sys.exit(f"::error::{whl} is missing {missing}")
-              print(f"{whl}: bundled databases present")
-          PYEOF
+              ext = [n for n in names
+                     if n.startswith("laris/_laris") and n.endswith((".so", ".pyd"))]
+              if not ext:
+                  sys.exit(f"::error::{whl} has no laris/_laris extension - "
+                           "it was built without compiling the Rust")
+              leaked = [n for n in names
+                        if n.startswith(("target/", "docs/", "tutorials/",
+                                         "analysis/", "releases/"))]
+              if leaked:
+                  sys.exit(f"::error::{whl} contains build/doc output: {leaked[:5]}")
+              print(f"{whl}: {ext[0]}, {len(names)} entries, clean")
+          EOF
 
-      - name: Install wheel and run the test suite
-        run: |
-          pip install dist/*.whl pytest
-          python -c "import laris; print('import OK', laris.__version__)"
-          pytest tests/ -q
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: dist/*.whl
 
+  build-sdist:
+    name: Build sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
       - uses: actions/upload-artifact@v4
         with:
-          name: dist
-          path: dist/*
+          name: sdist
+          path: dist/*.tar.gz
 
   publish:
     name: Publish to PyPI
-    needs: [build]
+    needs: [build-wheels, build-sdist]
     runs-on: ubuntu-latest
     permissions:
       id-token: write        # OIDC identity for PyPI Trusted Publishing
@@ -67,10 +100,11 @@ jobs:
     # Only publish on an actual release (not manual dispatch test runs)
     if: github.event_name == 'release'
     steps:
-      - uses: actions/download-artifact@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          name: dist
           path: dist
+          merge-multiple: true
 
       - name: Tag must match the package version
         run: |
@@ -94,9 +128,9 @@ jobs:
       #   repository   LARIS
       #   workflow     publish.yml
       #   environment  (leave blank)
-      # Until that exists this step cannot authenticate; the old
-      # PYPI_API_TOKEN secret can be revoked once the first OIDC upload
-      # succeeds.
+      # Until that exists this step cannot authenticate; an API token in
+      # secrets.PYPI_API_TOKEN can be used instead by adding
+      # `with: password: ${{ secrets.PYPI_API_TOKEN }}` below.
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:

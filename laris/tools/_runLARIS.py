@@ -13,6 +13,7 @@ from sklearn.neighbors import kneighbors_graph
 from sklearn.preprocessing import normalize
 
 from . import _utils
+from . import _background as _background
 from .._compat import _UNSET, resolve_data_arg
 from ..preprocessing._io import (
     _ensure_expression_anndata,
@@ -26,7 +27,7 @@ def runLARIS(
     use_rep: str = 'X_spatial',
     n_nearest_neighbors: int = 20,
     random_seed: int = 27,
-    n_repeats: int = 3,
+    n_repeats: Optional[int] = None,   # deprecated: delta is now analytic
     mu: float = 0.25,
     sigma: Union[float, str] = 'adaptive',
     remove_lowly_expressed: bool = True,
@@ -57,6 +58,7 @@ def runLARIS(
     cosg_backend: str = 'auto',
     specificity_reference: str = 'lr',
     section_key: Optional[str] = None,
+    background=None,
     lr_adata=_UNSET,
     adata=_UNSET
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
@@ -504,6 +506,14 @@ def runLARIS(
     print(f"  - Random repeats: {n_repeats}")
     
     # Build spatial adjacency matrix
+    if n_repeats is not None:
+        warnings.warn(
+            "n_repeats is deprecated and ignored: the shuffled-graph "
+            "baseline is now computed analytically (closed form of the "
+            "random-graph expectation), so no realized random graphs are "
+            "built and the spatial specificity is deterministic.",
+            FutureWarning, stacklevel=2,
+        )
     sections = _utils._resolve_sections(lr_adata, section_key, lr_adata.n_obs)
     if sections is not None:
         print(f"  - Neighbour graphs built within {len(pd.unique(sections))} "
@@ -521,17 +531,31 @@ def runLARIS(
     order1 = genexcell @ cellxcell.T
     gsp = _utils._rowwise_cosine_similarity(genexcell, order1)
     
-    # Generate random background
-    print("  - Generating random permutations...")
-    random_gsp_list = _utils._generate_random_background(
-        lr_adata, cellxcell, genexcell,
-        n_nearest_neighbors=n_nearest_neighbors,
-        n_repeats=n_repeats,
-        random_seed=random_seed,
-        sections=sections
-    )
-    
-    random_gsp = np.mean(random_gsp_list, axis=0)
+    # Shuffled-graph baseline, analytic. The pipeline previously averaged
+    # cos(v, W_rand v) over n_repeats realized random graphs; under the
+    # L1-normalized random graph that mean estimates a closed-form
+    # expectation in the profile's first two moments and one graph scalar
+    # (docs/discussion/2026-08-25_analytic_null_proof.md). Computing the
+    # expectation directly removes the Monte Carlo noise and the seed
+    # dependence; on tonsil the resulting delta agrees with the realized
+    # computation at Spearman 0.99995 (max abs diff 0.028).
+    print("  - Computing analytic shuffled-graph baseline...")
+    _X_pairs = lr_adata.X.tocsc() if sp.issparse(lr_adata.X) else np.asarray(lr_adata.X)
+    if sp.issparse(_X_pairs):
+        _m1 = np.asarray(_X_pairs.mean(axis=0)).ravel()
+        _m2 = np.asarray(_X_pairs.power(2).mean(axis=0)).ravel()
+    else:
+        _m1 = _X_pairs.mean(axis=0)
+        _m2 = (_X_pairs ** 2).mean(axis=0)
+    _R = lr_adata.n_obs * _background._expected_row_sq_sum(
+        cellxcell.data, n_nearest_neighbors)
+    random_gsp = _background._analytic_random_gsp(
+        _m1, _m2, lr_adata.n_obs, _R)
+
+    # The removed random-graph builder used to seed the global RNG as a side
+    # effect, and the legacy permutation p-value sampler downstream consumes
+    # the global RNG. Seed it explicitly so that path stays deterministic.
+    np.random.seed(random_seed)
     
     # Calculate spatial specificity score
     gsp_score = gsp - mu * random_gsp
@@ -610,9 +634,20 @@ def runLARIS(
                 f"metadata. Available columns: {list(celltype_obs.columns)}"
             )
         
+        n_missing = celltype_obs[groupby].isna().sum()
+        if n_missing:
+            # Real datasets carry unannotated cells (NaN); they cannot be a
+            # sender or receiver, and mixing them into the label list also
+            # used to crash the summary below on str-vs-float comparison.
+            raise ValueError(
+                f"Cell type column '{groupby}' has {n_missing:,} missing "
+                f"value(s). Drop or label those cells before running, e.g. "
+                f"data = data[data.obs['{groupby}'].notna()].copy()."
+            )
         n_cell_types = celltype_obs[groupby].nunique()
+        labels = sorted(map(str, pd.unique(celltype_obs[groupby].dropna())))
         print(f"\nAnalyzing {n_cell_types} cell types from '{groupby}'")
-        print(f"Cell types: {sorted(celltype_obs[groupby].unique())[:10]}"
+        print(f"Cell types: {labels[:10]}"
               f"{'...' if n_cell_types > 10 else ''}")
         
         celltype_results = _utils._calculate_laris_score_by_celltype(
@@ -640,7 +675,9 @@ def runLARIS(
             score_threshold=score_threshold,
             spatial_weight=spatial_weight,
             use_conditional_pvalue=use_conditional_pvalue,
-            rescale=rescale
+            rescale=rescale,
+            background=background,
+            mu_gsp=mu,
         )
         
         print("\n" + "="*70)

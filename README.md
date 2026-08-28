@@ -16,6 +16,8 @@ LARIS is a Python package for analyzing ligand-receptor interactions in spatial 
 - **Spatial specificity**: Identify LR pairs with significant spatial variable patterns
 - **Inference at cell type level**: Compute sender-receiver cell type interaction scores
 - **Spatial neighborhoods**: Analyze interactions in the context of spatial cell type neighborhoods
+- **Calibrated significance**: exact p-values against an
+  expression-matched null, with no permutation sampling
 - **Cross-condition analysis**: Compare interactions across conditions with subject-level statistics and two validated estimators
 
 ### Documentation
@@ -38,6 +40,11 @@ For the development version in GitHub, you could install via:
 ```bash
 pip install git+https://github.com/genecell/LARIS.git
 ```
+
+Since v0.12.0 LARIS ships compiled Rust kernels inside the wheel, so
+`pip install laris` needs nothing extra. Building from source (a GitHub
+install, or a platform without a wheel) additionally requires a Rust
+toolchain: `curl https://sh.rustup.rs -sSf | sh`.
 
 ### Citation
 

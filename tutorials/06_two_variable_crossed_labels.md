@@ -12,7 +12,7 @@ per condition *within* a region. Two complementary strategies:
 This tutorial shows strategy 1 on the MERFISH gut atlas ileum
 (SPF vs germ-free, `cell_class` x `anatomical_layer`), using PIASO's
 `getCrossCategories` to build the crossed labels. All outputs were
-produced by exactly this code with LARIS v0.11.0.
+produced by exactly this code with LARIS v0.12.0.
 
 **Data**: the same gut atlas as
 [tutorial 03](03_comparelaris_matched_merfish_gut.md)

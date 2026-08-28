@@ -1,11 +1,10 @@
 [build-system]
-build-backend = "hatchling.build"
-requires = [ "hatchling"]
-
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
 [project]
 name = "laris"
-version = "0.11.1"
+version = "0.12.0"
 description = "LARIS enables accurate and efficient ligand and receptor interaction analysis in spatial transcriptomics"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -79,3 +78,8 @@ exclude = [
 [tool.hatch.build.targets.wheel]
 packages = [ "laris" ]
 
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+module-name = "laris._laris"
+python-source = "."

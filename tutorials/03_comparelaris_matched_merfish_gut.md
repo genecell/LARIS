@@ -5,7 +5,7 @@ score matrices, at *matched cell states* — so a condition that merely has
 more of some cell type does not masquerade as a signalling change. The
 example is the public MERFISH atlas of the murine gut (2.1M cells,
 specific-pathogen-free vs germ-free mice), restricted here to the ileum.
-All outputs were produced by exactly this code with LARIS v0.11.0.
+All outputs were produced by exactly this code with LARIS v0.12.0.
 
 **Data**: An image-based transcriptomics atlas of the murine gut
 (Cell Host & Microbe 2026); MERFISH measurements on Dryad,

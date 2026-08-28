@@ -23,6 +23,8 @@ from matplotlib import colors, colorbar
 from matplotlib import colors as colors_mod
 from matplotlib.lines import Line2D
 from matplotlib.patches import FancyArrowPatch
+from matplotlib.path import Path
+from matplotlib.transforms import Affine2D
 import seaborn as sns
 import networkx as nx
 
@@ -37,6 +39,60 @@ from ._colors import _get_cmap, pos_cmap, _resolve_cell_type_colors
 from ._utils import _log_message, _save_figure, _compute_bubble_sizes_log10, _create_pvalue_legend_log10, _create_edge_thickness_legend
 from ..preprocessing._io import _ensure_expression_anndata, _is_cytome_source
 from .._compat import _UNSET, resolve_data_arg
+
+def _draw_edge_arrow(ax, pos, u, v, *, color, linewidth, mutation_scale,
+                     node_size=1100, zorder=2, rad=0.1, shrink=10,
+                     loop_radius=0.75):
+    """Draw one network edge, including the self-interaction case.
+
+    ``FancyArrowPatch`` cannot build a path between two identical points,
+    so an edge with ``u == v`` collapses to zero length and disappears
+    (issue #9). Self-interactions are meaningful in LARIS - autocrine and
+    within-cell-type signalling is common - so they are drawn as a ring
+    just outside the node, ending in an arrowhead that points back into
+    it.
+
+    The ring is an explicit circular arc rather than a heavily bowed
+    ``arc3`` connection: a short chord with a large ``rad`` renders as a
+    thin tendril, while an arc path gives a clean circle. It is sized in
+    *data* units from the layout's own extent, because the axes limits
+    are still being set while these patches are added, so a
+    transform-based radius would evaluate against the wrong view.
+    """
+    if u != v:
+        ax.add_patch(FancyArrowPatch(
+            posA=pos[u], posB=pos[v], arrowstyle="-|>",
+            connectionstyle=f"arc3,rad={rad}", mutation_scale=mutation_scale,
+            color=color, linewidth=linewidth, shrinkA=shrink, shrinkB=shrink,
+            zorder=zorder))
+        return
+
+    xy = np.asarray(pos[u], dtype=float)
+    coords = np.asarray([pos[n] for n in pos], dtype=float)
+    span = float(np.ptp(coords, axis=0).max()) if len(coords) > 1 else 1.0
+    span = span or 1.0
+    # Node markers are an area in points squared and the loop is in data
+    # units, so the marker radius is approximated as a fraction of the
+    # layout span, scaled by sqrt(node_size) so the loop tracks the marker
+    # when the caller changes it. Calibrated on the default spring layout.
+    r_node = 0.085 * span * float(np.sqrt(max(node_size, 1.0) / 1100.0))
+    r_loop = loop_radius * r_node
+
+    # place the ring away from the layout centre, clear of the interior
+    away = xy - coords.mean(axis=0) if len(coords) > 1 else np.zeros(2)
+    norm = float(np.hypot(*away))
+    away = away / norm if norm > 1e-12 else np.array([0.0, 1.0])
+    centre = xy + away * (r_node + r_loop * 0.85)
+
+    # sweep almost the full circle, finishing next to the node so the
+    # arrowhead points back at it
+    to_node = np.degrees(np.arctan2(-away[1], -away[0]))
+    arc = Path.arc(to_node + 30.0, to_node + 330.0)
+    loop = Affine2D().scale(r_loop).translate(*centre).transform_path(arc)
+    ax.add_patch(FancyArrowPatch(
+        path=loop, arrowstyle="-|>", mutation_scale=mutation_scale,
+        color=color, linewidth=linewidth, fill=False, zorder=zorder))
+
 
 def plotCCCNetwork(
     laris_results: pd.DataFrame,
@@ -64,7 +120,8 @@ def plotCCCNetwork(
     save: Optional[str] = None,
     verbosity: int = 2,
     return_fig: bool = False,
-    adata=_UNSET
+    adata=_UNSET,
+    include_self_interactions: bool = True
 ) -> Optional[Tuple[plt.Figure, plt.Axes]]:
     """
     Plot an interaction network for a specific cell type.
@@ -137,6 +194,11 @@ def plotCCCNetwork(
     filter_significant : bool, default=True
         If True, apply significance filtering
         
+    include_self_interactions : bool, default=True
+        Draw interactions where the sender and the receiver are the same
+        cell type, as a loop on that node. Autocrine and within-cell-type
+        signalling is common, so these are shown by default; set False to
+        restrict the plot to interactions between different cell types.
     label_border : bool, default=True
         If True, add border/outline to cell type labels for better visibility
         
@@ -256,6 +318,8 @@ def plotCCCNetwork(
         edge_attr='interaction_score',
         create_using=nx.DiGraph()
     )
+    if not include_self_interactions:
+        G.remove_edges_from(list(nx.selfloop_edges(G)))
 
     # Add all cell type nodes
     if adata is not None and not isinstance(adata, ad.AnnData):
@@ -321,22 +385,9 @@ def plotCCCNetwork(
         linewidth = score * edge_width_scale
         edge_scores.append(score)
 
-        posA = pos[u]
-        posB = pos[v]
-
-        arrow = FancyArrowPatch(
-            posA=posA,
-            posB=posB,
-            arrowstyle="-|>",
-            connectionstyle="arc3,rad=0.1",
-            mutation_scale=40,
-            color=sender_color,
-            linewidth=linewidth,
-            shrinkA=10,
-            shrinkB=10,
-            zorder=2
-        )
-        ax.add_patch(arrow)
+        _draw_edge_arrow(ax, pos, u, v, color=sender_color,
+                         linewidth=linewidth, mutation_scale=40,
+                         node_size=node_size)
 
     ax.set_title(
         f"Interaction Network for {cell_type_of_interest} "
@@ -403,7 +454,8 @@ def plotCCCNetworkCumulative(
     save: Optional[str] = None,
     verbosity: int = 2,
     return_fig: bool = False,
-    adata=_UNSET
+    adata=_UNSET,
+    include_self_interactions: bool = True
 ) -> Optional[Tuple[plt.Figure, plt.Axes]]:
     """
     Plot a cumulative interaction network across all cell types.
@@ -597,8 +649,13 @@ def plotCCCNetworkCumulative(
         create_using=nx.DiGraph()
     )
 
-    # Remove self-loops
-    G.remove_edges_from(list(nx.selfloop_edges(G)))
+    # Self-interactions are kept: autocrine and within-cell-type signalling
+    # is real, and _draw_edge_arrow renders those edges as loops. They used
+    # to be deleted here, which (together with FancyArrowPatch collapsing on
+    # posA == posB) is why they never appeared - issue #9. Pass
+    # ``include_self_interactions=False`` to drop them.
+    if not include_self_interactions:
+        G.remove_edges_from(list(nx.selfloop_edges(G)))
 
     # Add all cell types as nodes (cytome sources are read here)
     if adata is not None and not isinstance(adata, ad.AnnData):
@@ -655,8 +712,6 @@ def plotCCCNetworkCumulative(
     
     for u, v, data in G.edges(data=True):
         sender_color = cell_type_to_color.get(u, 'gray')
-        posA = pos[u]
-        posB = pos[v]
 
         if edge_thickness_by_numbers:
             if total_interaction_count > 0:
@@ -673,19 +728,9 @@ def plotCCCNetworkCumulative(
         
         edge_widths.append(linewidth)
 
-        arrow = FancyArrowPatch(
-            posA=posA,
-            posB=posB,
-            arrowstyle="-|>",
-            connectionstyle="arc3,rad=0.1",
-            mutation_scale=10,
-            color=sender_color,
-            linewidth=linewidth,
-            shrinkA=10,
-            shrinkB=10,
-            zorder=2
-        )
-        ax.add_patch(arrow)
+        _draw_edge_arrow(ax, pos, u, v, color=sender_color,
+                         linewidth=linewidth, mutation_scale=10,
+                         node_size=node_size)
 
     title_text = (
         "Interaction Network by " +

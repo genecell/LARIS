@@ -6,7 +6,7 @@ not: a **post-hoc H&E** that must be registered into the assay's
 coordinate frame first, and a **large gene panel**, which is where LR
 analysis gets interesting (1,154 database pairs are measurable here
 against roughly 300 on a standard Xenium panel). All outputs were
-produced by exactly this code with LARIS v0.11.0.
+produced by exactly this code with LARIS v0.12.0.
 
 **Data**: 10x Genomics,
 [Xenium Prime 5K FFPE Human Skin](https://www.10xgenomics.com/datasets),

@@ -5,6 +5,10 @@ website build needed, readable on GitHub, in an editor, or by a coding
 agent. Every output shown was produced by the code above it, on the named
 public dataset, with the LARIS version stated in each file.
 
+Written for **LARIS v0.12.0**. If you are reporting p-values, read
+[tutorial 07](07_significance_and_background.md) — significance testing
+changed in this release.
+
 | Tutorial | Dataset | Covers |
 |---|---|---|
 | [01 — Core pipeline](01_laris_slidetags_tonsil.md) | Slide-tags human tonsil (Zenodo [10.5281/zenodo.19981287](https://doi.org/10.5281/zenodo.19981287)) | `prepareLRInteraction`, `runLARIS`, spatial / dot / network plots, defaults & reference values |
@@ -13,6 +17,7 @@ public dataset, with the LARIS version stated in each file.
 | [04 — Cytome guide](04_cytome_guide.md) | tonsil | the on-disk workflow end to end: LR cytome, streaming COSG, bit-identical guarantee |
 | [05 — Tissue image overlay](05_tissue_image_overlay.md) | Xenium Prime 5K human skin (10x) | H&E overlay at single-cell resolution, registering a post-hoc image, 5K-panel LR analysis |
 | [06 — Two-variable analysis](06_two_variable_crossed_labels.md) | MERFISH gut atlas | crossed cell-type x region labels (PIASO `getCrossCategories`), region-resolved comparison |
+| [07 — Statistical significance](07_significance_and_background.md) | Slide-tags human tonsil | `prepareLRBackground`, what the p-value tests, choosing `n_matched_genes`, reusing one background across analyses |
 
 For the steps upstream of LARIS on spatial data, QC, clustering,
 annotation, RNA regulon analysis and visualization, see PIASO's

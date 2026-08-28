@@ -11,6 +11,7 @@ Readers and data preparation live in ``laris.pp``.
 """
 
 from ._prepare import prepareLRInteraction
+from ._background import prepareLRBackground, LRBackground
 from ._runLARIS import runLARIS
 from ._compareLARIS import compareLARIS, combineComparisons
 from ._compareMatched import compareLARISMatched
@@ -22,6 +23,8 @@ from ..preprocessing._io import readCytome
 
 __all__ = [
     'prepareLRInteraction',
+    'prepareLRBackground',
+    'LRBackground',
     'runLARIS',
     'compareLARIS',
     'compareLARISMatched',   # alias entry; compareLARIS(AnnData) is canonical

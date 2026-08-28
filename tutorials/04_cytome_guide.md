@@ -6,7 +6,7 @@ expression AnnData is expected, and for large data the whole pipeline can
 stay on disk: scores are computed in blocks and written to an **LR
 cytome** rather than materialised in memory. Install with
 `pip install laris[cytome]`. All outputs below were produced by exactly
-this code (tonsil data, LARIS v0.11.0).
+this code (tonsil data, LARIS v0.12.0).
 
 ## 1. Convert once
 
@@ -106,6 +106,39 @@ np.array_equal(lr_back.X.toarray(), lr_mem.X.toarray())
 ```text
 bit-identical to the AnnData path: True
 ```
+
+## 6. What it costs, measured
+
+Both paths were run in separate processes so the peak memory is the
+process's own, not whatever was already resident:
+
+```python
+# in memory
+adata = sc.read_h5ad("adata_tonsil.h5ad")
+lr_data = la.tl.prepareLRInteraction(adata, lr_df, use_rep_spatial="X_spatial")
+
+# streaming, never holding the full matrix
+la.tl.prepareLRInteraction("tonsil.cytome", lr_df, use_rep_spatial="X_spatial",
+                           return_type="cytome", output="tonsil_lr.cytome",
+                           block_size=512)
+```
+
+![paths](images/tut04_paths.png)
+
+```text
+h5ad 240.6 MB -> cytome 87.7 MB (conversion 2.5 s)
+in memory : 0.78 GB peak, 0.5 s
+streaming : 0.54 GB peak, 0.9 s
+```
+
+On a 5,695-cell tonsil the difference is small and the streaming path is
+slightly slower - the honest summary is that at this size the two are
+equivalent and you should use whichever is convenient. What the figure
+shows is the *shape* of the trade: peak memory is bounded by the block
+size rather than by the matrix, so it stays flat as the dataset grows,
+while the in-memory bar grows with the data. That is why the on-disk
+path matters at Visium HD, Stereo-seq and atlas scale, and why the file
+is also 2.7x smaller on disk.
 
 ## Notes
 
