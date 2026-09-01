@@ -59,6 +59,7 @@ def runLARIS(
     specificity_reference: str = 'lr',
     section_key: Optional[str] = None,
     background=None,
+    min_null_support: int = 0,
     lr_adata=_UNSET,
     adata=_UNSET
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
@@ -305,7 +306,23 @@ def runLARIS(
         varies between runs (and with subsampling), never compare or subtract
         rescaled ``interaction_score`` values across runs directly.
         - Prevents spurious significance from sparse null distributions
-        
+    min_null_support : int, default=0
+        Drop interactions whose matched-gene null has fewer than this many
+        *non-zero* pseudo-pairs, by setting their p-value to 1.0.
+
+        The null for a row has ``n_matched_genes ** 2`` entries, but many
+        of them score exactly zero because the matched genes are not
+        co-detected in the sender and receiver groups. Zeros never exceed
+        a positive observed score, so they inflate the denominator without
+        adding resolution: a row backed by 100 non-zero pseudo-pairs can
+        still report ``p = 1e-4`` when its null only resolves ``1e-2``.
+        The count is reported per row in the ``null_support`` column, and a
+        warning fires when more than 5% of tested rows fall below 100.
+
+        The default of 0 disables the filter and reproduces v0.12.0
+        p-values exactly. Sparse panels with many small groups are where
+        this matters most.
+
     Returns
     -------
     pd.DataFrame or Tuple[pd.DataFrame, pd.DataFrame]
@@ -338,7 +355,30 @@ def runLARIS(
               - 'p_value': Raw permutation p-value (if calculate_pvalues=True)
               - 'p_value_fdr': FDR-corrected p-value (if calculate_pvalues=True)
               - 'nlog10_p_value_fdr': -log10(FDR) for visualization
-              
+
+              With ``background=``, three diagnostic columns are added:
+
+              - 'null_support': how many of the k**2 pseudo-pairs scored
+                above zero. This is the null's *effective* resolution: a
+                row backed by 100 non-zero pseudo-pairs cannot really
+                resolve the 1e-4 its p-value may report. See
+                ``min_null_support``.
+              - 'null_matchability': the larger of the two genes'
+                saturation values - the fraction of a gene's matched set
+                whose mean lies below the gene itself. 0.5 is ideal; 1.0
+                means every matched gene is weaker, so every pseudo-pair
+                is weaker than the real pair and the p-value overstates.
+                The pool augmentation in ``prepareLRBackground`` normally
+                prevents this; values near 1 among called rows mean it was
+                disabled or could not reach that gene.
+              - 'pair_breadth': the fraction of tested sender-receiver
+                combinations in which this pair is called at FDR < 0.05.
+                Genuine cell-type-specific results are narrow (medians of
+                1-2% measured across four datasets); a pair called across
+                more than ~25% of the grid carries no cell-type
+                information, however real its expression - typically a
+                tissue-ubiquitous pair.
+
               Sorted by interaction_score (descending)
     
     Raises
@@ -678,6 +718,7 @@ def runLARIS(
             rescale=rescale,
             background=background,
             mu_gsp=mu,
+            min_null_support=min_null_support,
         )
         
         print("\n" + "="*70)

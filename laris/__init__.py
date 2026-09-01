@@ -31,7 +31,7 @@ Example usage:
 Authors: Min Dai, Tivadar Török, Dawei Sun, et al.
 """
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 __author__ = "Min Dai, Tivadar Török, Dawei Sun, et al."
 
 # Import submodules

@@ -1,6 +1,6 @@
 [package]
 name = "laris-rust"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2021"
 license = "BSD-3-Clause"
 description = "Rust acceleration kernels for LARIS: threaded sparse co-localization numerator and fused null assembly"

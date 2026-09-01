@@ -185,6 +185,8 @@ class TestPoolAndMatching:
         m, v = rng.random(5000), rng.random(5000)
         p1 = _quantile_grid_pool(m, v, 400)
         p2 = _quantile_grid_pool(m, v, 400)
+        # since R58 the default pads the grid with the top-500 by mean, so
+        # the size is n_pool plus the not-already-selected extremes
         assert len(p1) == 400 and np.array_equal(p1, p2)
 
     def test_pool_covers_expression_space(self):
@@ -408,3 +410,542 @@ class TestGroupbyValidation:
             _quiet(la.tl.runLARIS, lr2, A, use_rep="X_spatial",
                    use_rep_spatial="X_spatial", groupby="ct",
                    n_cells_expressed_threshold=5)
+
+
+class TestEffectiveNullSupport:
+    """The null's denominator counts pseudo-pairs; only the non-zero ones
+    carry resolution. That count is reported and can gate the p-value."""
+
+    def test_null_support_column_present_and_bounded(self, fixture):
+        A, lr_df, lr, bg = fixture
+        _, res = _quiet(la.tl.runLARIS, lr.copy(), A, use_rep="X_spatial",
+                        use_rep_spatial="X_spatial", groupby="ct",
+                        background=bg, n_cells_expressed_threshold=5,
+                        specificity_reference="all")
+        assert "null_support" in res.columns
+        k = bg.params["n_matched_genes"]
+        assert res.null_support.min() >= 0
+        assert res.null_support.max() <= k * k
+
+    def test_zero_support_rows_have_p_one(self, fixture):
+        A, lr_df, lr, bg = fixture
+        _, res = _quiet(la.tl.runLARIS, lr.copy(), A, use_rep="X_spatial",
+                        use_rep_spatial="X_spatial", groupby="ct",
+                        background=bg, n_cells_expressed_threshold=5,
+                        specificity_reference="all")
+        dead = res[res.null_support == 0]
+        if len(dead):
+            assert (dead.p_value == 1.0).all()
+
+    def test_p_value_never_below_effective_resolution(self, fixture):
+        """A row cannot claim more resolution than its support allows.
+
+        The reported p is (exceed+1)/(support+1) over ALL pseudo-pairs,
+        so this is the property that motivates the column: it can be far
+        below 1/(null_support+1). The test pins the direction of the
+        discrepancy so a future change that silently redefines either
+        quantity is caught.
+        """
+        A, lr_df, lr, bg = fixture
+        _, res = _quiet(la.tl.runLARIS, lr.copy(), A, use_rep="X_spatial",
+                        use_rep_spatial="X_spatial", groupby="ct",
+                        background=bg, n_cells_expressed_threshold=5,
+                        specificity_reference="all")
+        live = res[res.null_support > 0]
+        k = bg.params["n_matched_genes"]
+        assert (live.p_value >= 1.0 / (k * k + 1) - 1e-12).all()
+
+    def test_min_null_support_only_removes_calls(self, fixture):
+        A, lr_df, lr, bg = fixture
+
+        def run(min_support):
+            _, r = _quiet(la.tl.runLARIS, lr.copy(), A, use_rep="X_spatial",
+                          use_rep_spatial="X_spatial", groupby="ct",
+                          background=bg, n_cells_expressed_threshold=5,
+                          specificity_reference="all",
+                          min_null_support=min_support)
+            return r.set_index(["sender", "receiver", "interaction_name"])
+
+        base = run(0)
+        gated = run(10)
+        j = base.join(gated, lsuffix="_b", rsuffix="_g")
+        # gating can only push p-values up, never down
+        assert (j.p_value_g >= j.p_value_b - 1e-12).all()
+        thin = j.null_support_b < 10
+        assert (j.loc[thin, "p_value_g"] == 1.0).all()
+        assert (j.loc[~thin, "p_value_g"]
+                == j.loc[~thin, "p_value_b"]).all()
+
+    def test_default_reproduces_v0120_pvalues(self, fixture):
+        """min_null_support=0 must leave the released numbers untouched."""
+        A, lr_df, lr, bg = fixture
+        _, a = _quiet(la.tl.runLARIS, lr.copy(), A, use_rep="X_spatial",
+                      use_rep_spatial="X_spatial", groupby="ct",
+                      background=bg, n_cells_expressed_threshold=5,
+                      specificity_reference="all")
+        _, b = _quiet(la.tl.runLARIS, lr.copy(), A, use_rep="X_spatial",
+                      use_rep_spatial="X_spatial", groupby="ct",
+                      background=bg, n_cells_expressed_threshold=5,
+                      specificity_reference="all", min_null_support=0)
+        assert np.allclose(a.p_value.to_numpy(), b.p_value.to_numpy(),
+                           equal_nan=True)
+
+    def test_rust_and_numpy_agree_on_support(self, fixture, monkeypatch):
+        A, lr_df, lr, bg = fixture
+
+        def _run():
+            _, r = _quiet(la.tl.runLARIS, lr.copy(), A, use_rep="X_spatial",
+                          use_rep_spatial="X_spatial", groupby="ct",
+                          background=bg, n_cells_expressed_threshold=5,
+                          specificity_reference="all")
+            return r
+
+        monkeypatch.setenv("LARIS_NO_RUST", "1")
+        np_res = _run()
+        monkeypatch.delenv("LARIS_NO_RUST")
+        rs_res = _run()
+        m = rs_res.merge(np_res, on=["sender", "receiver", "interaction_name"],
+                         suffixes=("_r", "_n"))
+        assert (m.null_support_r == m.null_support_n).all()
+
+
+class TestPermuteLRPairs:
+    """The calibration control that matches a competitive null."""
+
+    def test_decoys_avoid_real_pairs_and_self_pairs(self, fixture):
+        # uniform draw rejects real pairs outright; the degree-preserving
+        # rewiring cannot always avoid them and flags them instead
+        A, lr_df, lr, bg = fixture
+        d = la.tl.permuteLRPairs(lr_df, A, random_seed=3, method="uniform")
+        real = set(zip(lr_df.ligand, lr_df.receptor))
+        assert not set(zip(d.ligand, d.receptor)) & real
+        assert (d.ligand != d.receptor).all()
+        assert d.interaction_name.is_unique
+
+    def test_decoy_genes_exist_in_data(self, fixture):
+        A, lr_df, lr, bg = fixture
+        d = la.tl.permuteLRPairs(lr_df, A, random_seed=3, method="uniform")
+        present = set(A.var_names)
+        assert set(d.ligand) <= present and set(d.receptor) <= present
+
+    def test_preserve_genes_keeps_the_marginal_pools(self, fixture):
+        A, lr_df, lr, bg = fixture
+        d = la.tl.permuteLRPairs(lr_df, A, random_seed=3, preserve_genes=True,
+                                 method="uniform")
+        assert set(d.ligand) <= set(lr_df.ligand)
+        assert set(d.receptor) <= set(lr_df.receptor)
+
+    def test_unconstrained_draw_uses_all_genes(self, fixture):
+        A, lr_df, lr, bg = fixture
+        d = la.tl.permuteLRPairs(lr_df, A, random_seed=3,
+                                 preserve_genes=False, method="uniform")
+        assert not set(d.ligand) <= set(lr_df.ligand)
+
+    def test_deterministic_for_a_seed(self, fixture):
+        A, lr_df, lr, bg = fixture
+        a = la.tl.permuteLRPairs(lr_df, A, random_seed=7)
+        b = la.tl.permuteLRPairs(lr_df, A, random_seed=7)
+        pd.testing.assert_frame_equal(a, b)
+
+    def test_decoy_database_runs_end_to_end(self, fixture):
+        """The control must actually be runnable, not just constructible."""
+        A, lr_df, lr, bg = fixture
+        d = la.tl.permuteLRPairs(lr_df, A, random_seed=11, method="uniform")
+        lr_d = _quiet(la.tl.prepareLRInteraction, A, d,
+                      use_rep_spatial="X_spatial")
+        bg_d = _quiet(la.tl.prepareLRBackground, A, d, n_pool=40,
+                      n_matched_genes=6, use_rep_spatial="X_spatial",
+                      verbosity=0)
+        _, res = _quiet(la.tl.runLARIS, lr_d, A, use_rep="X_spatial",
+                        use_rep_spatial="X_spatial", groupby="ct",
+                        background=bg_d, n_cells_expressed_threshold=5,
+                        specificity_reference="all")
+        assert len(res) > 0
+        assert res.p_value.between(0, 1).all()
+
+
+class TestDegreePreservingDecoys:
+    """A fair decoy database must not change the database's structure.
+
+    Curated LR resources are hub-heavy, and hub genes are broadly
+    expressed and individually unremarkable. Drawing decoys uniformly
+    under-samples them, which makes the decoy database *easier* than the
+    real one and overstates the false-positive rate it appears to show.
+    """
+
+    def _hub_db(self):
+        # one hub receptor in many pairs, plus a long tail - the shape of
+        # a real resource in miniature
+        lig = [f"G{i:03d}" for i in range(0, 30, 2)]
+        rows = [(l, "G001") for l in lig]                 # hub
+        rows += [(l, f"G{2 * i + 3:03d}") for i, l in enumerate(lig[:6])]
+        return pd.DataFrame(rows, columns=["ligand", "receptor"])
+
+    def test_degree_sequences_are_preserved_exactly(self):
+        db = self._hub_db()
+        d = la.tl.permuteLRPairs(db, random_seed=0, method="degree")
+        for col in ("ligand", "receptor"):
+            a = db[col].value_counts().sort_index()
+            b = d[col].value_counts().sort_index()
+            a, b = a.align(b, fill_value=0)
+            assert (a == b).all(), col
+
+    def test_uniform_flattens_the_hub_but_degree_does_not(self):
+        db = self._hub_db()
+        hub_real = int((db.receptor == "G001").sum())
+        deg = la.tl.permuteLRPairs(db, random_seed=0, method="degree")
+        uni = la.tl.permuteLRPairs(db, random_seed=0, method="uniform")
+        assert int((deg.receptor == "G001").sum()) == hub_real
+        assert int((uni.receptor == "G001").sum()) < hub_real
+
+    def test_pair_count_is_unchanged_and_unique(self):
+        db = self._hub_db()
+        d = la.tl.permuteLRPairs(db, random_seed=0, method="degree")
+        assert len(d) == len(db)
+        assert d.interaction_name.is_unique
+
+    def test_retained_real_pairs_are_flagged(self):
+        db = self._hub_db()
+        d = la.tl.permuteLRPairs(db, random_seed=0, method="degree")
+        real = set(zip(db.ligand, db.receptor))
+        flagged = set(zip(d.loc[d.is_real, "ligand"],
+                          d.loc[d.is_real, "receptor"]))
+        actual = {e for e in zip(d.ligand, d.receptor) if e in real}
+        assert flagged == actual
+        assert d.attrs["n_real_retained"] == len(actual)
+
+    def test_degree_is_the_default(self):
+        db = self._hub_db()
+        a = la.tl.permuteLRPairs(db, random_seed=4)
+        b = la.tl.permuteLRPairs(db, random_seed=4, method="degree")
+        pd.testing.assert_frame_equal(a, b)
+
+    def test_bad_method_raises(self):
+        with pytest.raises(ValueError, match="method must be"):
+            la.tl.permuteLRPairs(self._hub_db(), method="nonsense")
+
+    def test_degree_decoys_run_end_to_end(self, fixture):
+        A, lr_df, lr, bg = fixture
+        d = la.tl.permuteLRPairs(lr_df, A, random_seed=2, method="degree")
+        lr_d = _quiet(la.tl.prepareLRInteraction, A, d[["ligand", "receptor"]],
+                      use_rep_spatial="X_spatial")
+        bg_d = _quiet(la.tl.prepareLRBackground, A, d[["ligand", "receptor"]],
+                      n_pool=40, n_matched_genes=6,
+                      use_rep_spatial="X_spatial", verbosity=0)
+        _, res = _quiet(la.tl.runLARIS, lr_d, A, use_rep="X_spatial",
+                        use_rep_spatial="X_spatial", groupby="ct",
+                        background=bg_d, n_cells_expressed_threshold=5,
+                        specificity_reference="all")
+        assert len(res) > 0 and res.p_value.between(0, 1).all()
+
+
+class TestDecoyFDR:
+    """Target-decoy empirical FDR: the honesty layer over the p-value.
+
+    The p-value certifies arrangement, not pairing (a degree-preserving
+    decoy database scores ~as well as the real one). decoyFDR measures
+    the pairing error rate the way proteomics does: same pipeline, decoy
+    database, ratio of call rates, monotonized into a q-value.
+    """
+
+    def _uniform(self, n, seed):
+        rng = np.random.default_rng(seed)
+        return pd.DataFrame({"p_value": rng.uniform(size=n)})
+
+    def test_q_is_monotone_in_p(self):
+        t = self._uniform(4000, 0)
+        d = self._uniform(4000, 1)
+        q = la.tl.decoyFDR(t, d)
+        srt = t.p_value.sort_values()
+        assert (q[srt.index].diff().dropna() >= -1e-12).all()
+
+    def test_uniform_vs_uniform_is_uninformative(self):
+        # same distribution in both -> q near 1 everywhere: the decoy
+        # does exactly as well as the target, so nothing is trustworthy
+        t = self._uniform(5000, 2)
+        d = self._uniform(5000, 3)
+        q = la.tl.decoyFDR(t, d)
+        assert q.median() > 0.8
+
+    def test_planted_signal_gets_small_q(self):
+        rng = np.random.default_rng(4)
+        t = pd.DataFrame({"p_value": np.concatenate(
+            [np.full(60, 1e-6), rng.uniform(size=5000)])})
+        d = self._uniform(5000, 5)
+        q = la.tl.decoyFDR(t, d)
+        # 60 planted rows, ~0 decoys below them, pseudocount 1:
+        # FDR ~ (0+1)/5000 / (60/5060) ~ 0.017
+        assert q.iloc[:60].max() < 0.05
+        assert q.iloc[100:].median() > 0.5
+
+    def test_rate_normalization_row_count_invariance(self):
+        # halving the decoy set must not change the estimate (rates, not
+        # counts): same distribution, different n
+        rng = np.random.default_rng(6)
+        t = pd.DataFrame({"p_value": np.concatenate(
+            [np.full(50, 1e-6), rng.uniform(size=4000)])})
+        d_full = self._uniform(8000, 7)
+        d_half = d_full.iloc[:4000]
+        q1 = la.tl.decoyFDR(t, d_full)
+        q2 = la.tl.decoyFDR(t, d_half)
+        # pseudocount scales differently, so allow slack at the extreme
+        assert np.median(np.abs(q1 - q2)) < 0.05
+
+    def test_nan_propagates_and_index_alignment(self):
+        t = self._uniform(100, 8)
+        t.loc[7, "p_value"] = np.nan
+        t.index = [f"row{i}" for i in range(100)]
+        shuffled = t.sample(frac=1, random_state=9)
+        q = la.tl.decoyFDR(shuffled, self._uniform(500, 10))
+        assert q.index.equals(shuffled.index)
+        assert np.isnan(q.loc["row7"])
+        assert q.drop("row7").notna().all()
+
+    def test_clipped_to_one(self):
+        # decoy strictly better than target -> raw ratio > 1 -> clipped
+        t = pd.DataFrame({"p_value": np.linspace(.5, 1, 200)})
+        d = pd.DataFrame({"p_value": np.linspace(0, .5, 200)})
+        q = la.tl.decoyFDR(t, d)
+        assert (q <= 1).all() and q.min() > 0.9
+
+    def test_empty_decoy_raises(self):
+        with pytest.raises(ValueError, match="no finite p-values"):
+            la.tl.decoyFDR(self._uniform(10, 0),
+                           pd.DataFrame({"p_value": [np.nan]}))
+
+    def test_end_to_end_on_fixture(self, fixture):
+        A, lr_df, lr, bg = fixture
+        _, res = _quiet(la.tl.runLARIS, lr.copy(), A, use_rep="X_spatial",
+                        use_rep_spatial="X_spatial", groupby="ct",
+                        background=bg, n_cells_expressed_threshold=5,
+                        specificity_reference="all")
+        q, dec = _quiet(
+            la.tl.computeDecoyFDR, A, lr_df, res, background=bg,
+            random_seed=1,
+            prepare_kwargs={"use_rep_spatial": "X_spatial"},
+            run_kwargs={"use_rep": "X_spatial",
+                        "use_rep_spatial": "X_spatial", "groupby": "ct",
+                        "n_cells_expressed_threshold": 5,
+                        "specificity_reference": "all"},
+            verbosity=0)
+        assert q.index.equals(res.index)
+        ok = q.dropna()
+        assert ((ok >= 0) & (ok <= 1)).all()
+        assert len(dec) > 0
+        # decoy rows that coincide with real pairs must be gone
+        real = set(lr_df.ligand + "::" + lr_df.receptor)
+        assert not set(dec.interaction_name) & real
+
+    def test_seed_determinism(self, fixture):
+        A, lr_df, lr, bg = fixture
+        _, res = _quiet(la.tl.runLARIS, lr.copy(), A, use_rep="X_spatial",
+                        use_rep_spatial="X_spatial", groupby="ct",
+                        background=bg, n_cells_expressed_threshold=5,
+                        specificity_reference="all")
+        kw = dict(background=bg, random_seed=3,
+                  prepare_kwargs={"use_rep_spatial": "X_spatial"},
+                  run_kwargs={"use_rep": "X_spatial",
+                              "use_rep_spatial": "X_spatial",
+                              "groupby": "ct",
+                              "n_cells_expressed_threshold": 5,
+                              "specificity_reference": "all"},
+                  verbosity=0)
+        q1, _ = _quiet(la.tl.computeDecoyFDR, A, lr_df, res, **kw)
+        q2, _ = _quiet(la.tl.computeDecoyFDR, A, lr_df, res, **kw)
+        pd.testing.assert_series_equal(q1, q2)
+
+
+class TestPoolCoverageAndFlags:
+    """The pool must reach the top of the abundance range, and the results
+    must report when it cannot (matchability) and when a call carries no
+    cell-type information (breadth).
+
+    Mechanism (Round 58): the rank-uniform quantile grid gives the top
+    ~0.1% of genes almost no slots, so a very abundant gene's matched set
+    sits entirely below it and every pseudo-pair is weaker than the real
+    one - the gene becomes unbeatable in its own null.
+    """
+
+    def test_augmentation_desaturates_extreme_genes(self):
+        """The property the pool must satisfy, stated directly."""
+        from laris.tools._background import (_quantile_grid_pool,
+                                             _augment_pool_for_saturation,
+                                             _matched_sets)
+        rng = np.random.default_rng(0)
+        means = rng.lognormal(0, 1, 5000)
+        means[:20] *= 400                       # extreme-abundance outliers
+        var = means * (1 + rng.random(5000))
+        feats = np.column_stack([means, var])
+        pool = _quantile_grid_pool(means, var, n_pool=400)
+        query = np.arange(20)                   # the outliers are the LR genes
+        before = (feats[pool][_matched_sets(feats[query], feats[pool], 10), 0]
+                  < means[query][:, None]).mean(1)
+        assert (before >= 0.99).any(), "fixture must start saturated"
+        grown = _augment_pool_for_saturation(feats, pool, query, k=10)
+        after = (feats[grown][_matched_sets(feats[query], feats[grown], 10), 0]
+                 < means[query][:, None]).mean(1)
+        assert (after < 0.99).all()
+        assert set(pool) <= set(grown)
+
+    def test_augmentation_is_bounded_and_targeted(self):
+        """Only the failing genes trigger growth, and it stays small."""
+        from laris.tools._background import (_quantile_grid_pool,
+                                             _augment_pool_for_saturation)
+        rng = np.random.default_rng(3)
+        means = rng.lognormal(0, 1, 5000)
+        means[:10] *= 500
+        var = means * (1 + rng.random(5000))
+        feats = np.column_stack([means, var])
+        pool = _quantile_grid_pool(means, var, n_pool=400)
+        grown = _augment_pool_for_saturation(feats, pool, np.arange(10), k=20)
+        assert len(grown) < len(pool) + 10 * 20 + 1
+        assert len(grown) < 5000 * 0.5, "must not approach the transcriptome"
+
+    def test_augmentation_noop_when_pool_already_covers(self):
+        from laris.tools._background import (_quantile_grid_pool,
+                                             _augment_pool_for_saturation)
+        rng = np.random.default_rng(4)
+        means = rng.random(2000) + 1.0          # no extreme tail
+        var = means * (1 + rng.random(2000))
+        feats = np.column_stack([means, var])
+        pool = _quantile_grid_pool(means, var, n_pool=300)
+        mid = np.argsort(means)[800:830]        # mid-range query genes
+        grown = _augment_pool_for_saturation(feats, pool, mid, k=10)
+        assert len(grown) == len(pool)
+
+    def test_augment_pool_false_reproduces_the_bare_grid(self, fixture):
+        A, lr_df, lr, bg = fixture
+        bare = _quiet(la.tl.prepareLRBackground, A, lr_df, n_pool=40,
+                      n_matched_genes=6, augment_pool=False,
+                      use_rep_spatial="X_spatial", verbosity=0)
+        assert len(bare.gene_index) <= len(bg.gene_index)
+
+    def test_match_frac_below_stored_and_bounded(self, fixture):
+        A, lr_df, lr, bg = fixture
+        assert bg.match_frac_below
+        vals = np.array(list(bg.match_frac_below.values()))
+        assert ((vals >= 0) & (vals <= 1)).all()
+        covered = set(lr_df.ligand) | set(lr_df.receptor)
+        assert covered <= set(bg.match_frac_below)
+
+    def test_extreme_gene_is_matchable_with_pool_fix(self):
+        """A gene far above the grid's reach must still get peers."""
+        rng = np.random.default_rng(2)
+        n, g = 600, 400
+        genes = [f"G{i:03d}" for i in range(g)]
+        lam = np.full(g, 2.0)
+        lam[:30] = 60.0                          # an abundant block
+        X = sp.csr_matrix(rng.poisson(lam, size=(n, g)).astype(float))
+        A = ad.AnnData(X=X, var=pd.DataFrame(index=genes))
+        A.obsm["X_spatial"] = rng.random((n, 2)) * 100
+        A.obs["ct"] = pd.Categorical(rng.choice(["A", "B"], n))
+        lr_df = pd.DataFrame({"ligand": ["G000"], "receptor": ["G001"]})
+        bg_fix = _quiet(la.tl.prepareLRBackground, A, lr_df, n_pool=60,
+                        n_matched_genes=6,
+                        use_rep_spatial="X_spatial", verbosity=0)
+        bg_bare = _quiet(la.tl.prepareLRBackground, A, lr_df, n_pool=60,
+                         augment_pool=False, n_matched_genes=6,
+                         use_rep_spatial="X_spatial", verbosity=0)
+        # with the fix, the abundant gene has peers at its own level
+        assert bg_fix.match_frac_below["G000"] < 1.0
+        # and the fix strictly improves on (or matches) the bare grid
+        assert (bg_fix.match_frac_below["G000"]
+                <= bg_bare.match_frac_below["G000"])
+
+    def test_null_matchability_and_breadth_columns(self, fixture):
+        A, lr_df, lr, bg = fixture
+        _, res = _quiet(la.tl.runLARIS, lr.copy(), A, use_rep="X_spatial",
+                        use_rep_spatial="X_spatial", groupby="ct",
+                        background=bg, n_cells_expressed_threshold=5,
+                        specificity_reference="all")
+        assert "null_matchability" in res.columns
+        assert res.null_matchability.between(0, 1).all()
+        assert "pair_breadth" in res.columns
+        assert res.pair_breadth.between(0, 1).all()
+        # breadth is constant within a pair and equals calls/combos
+        n_combos = res[["sender", "receiver"]].drop_duplicates().shape[0]
+        for nm, sub in res.groupby("interaction_name"):
+            expect = (sub.p_value_fdr < .05).sum() / n_combos
+            assert np.allclose(sub.pair_breadth, expect)
+
+    def test_saturation_warning_fires_when_pool_cannot_reach(self):
+        """With the repair disabled and an unreachable gene, warn."""
+        rng = np.random.default_rng(3)
+        n, g = 500, 300
+        genes = [f"G{i:03d}" for i in range(g)]
+        lam = np.full(g, 1.0)
+        lam[0] = 80.0; lam[1] = 70.0             # only two extreme genes
+        X = sp.csr_matrix(rng.poisson(lam, size=(n, g)).astype(float))
+        A = ad.AnnData(X=X, var=pd.DataFrame(index=genes))
+        # smooth spatial structure so the pair actually scores
+        t = np.linspace(0, 1, n)
+        A.obsm["X_spatial"] = np.column_stack([t * 100, rng.random(n)])
+        A.obs["ct"] = pd.Categorical(np.where(t < .5, "A", "B"))
+        lr_df = pd.DataFrame({"ligand": ["G000"], "receptor": ["G001"]})
+        with contextlib.redirect_stdout(io.StringIO()):
+            bg = la.tl.prepareLRBackground(A, lr_df, n_pool=50,
+                                           augment_pool=False,
+                                           n_matched_genes=6,
+                                           use_rep_spatial="X_spatial",
+                                           verbosity=0)
+            assert bg.match_frac_below["G000"] == 1.0
+            lrd = la.tl.prepareLRInteraction(A, lr_df,
+                                             use_rep_spatial="X_spatial")
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                _, res = la.tl.runLARIS(lrd, A, use_rep="X_spatial",
+                                        use_rep_spatial="X_spatial",
+                                        groupby="ct", background=bg,
+                                        n_cells_expressed_threshold=5,
+                                        specificity_reference="all")
+        sat = res[res.null_matchability >= .99]
+        if (sat.p_value < .05).any():
+            assert any("matched set lies entirely below" in str(x.message)
+                       for x in w)
+
+
+class TestDecoyReport:
+    """Dataset-level framing of the pairing question."""
+
+    def _pair(self, n=2000, planted=0, seed=0):
+        rng = np.random.default_rng(seed)
+        p = rng.uniform(size=n)
+        if planted:
+            p[:planted] = 1e-6
+        return pd.DataFrame({"p_value": p,
+                             "p_value_fdr": np.clip(p * 2, 0, 1)})
+
+    def test_report_structure_and_bounds(self, capsys):
+        rep = la.tl.decoyReport(self._pair(planted=80, seed=1),
+                                self._pair(seed=2))
+        assert set(rep) == {"n_rows", "per_threshold", "q_min"}
+        for t, d in rep["per_threshold"].items():
+            assert 0 <= d["pairing_fdr"] <= 1
+            assert d["target_calls"] >= 0 and d["decoy_calls"] >= 0
+        out = capsys.readouterr().out
+        assert "TARGET-DECOY REPORT" in out and "pairing-FDR" in out
+
+    def test_silent_when_verbosity_zero(self, capsys):
+        la.tl.decoyReport(self._pair(planted=50), self._pair(seed=3),
+                          verbosity=0)
+        assert capsys.readouterr().out == ""
+
+    def test_planted_signal_gives_low_pairing_fdr(self):
+        rep = la.tl.decoyReport(self._pair(planted=400, seed=4),
+                                self._pair(seed=5), verbosity=0)
+        assert rep["per_threshold"][0.05]["pairing_fdr"] < 0.5
+
+    def test_indistinguishable_arms_give_high_pairing_fdr(self):
+        rep = la.tl.decoyReport(self._pair(seed=6), self._pair(seed=7),
+                                verbosity=0)
+        assert rep["per_threshold"][0.05]["pairing_fdr"] > 0.7
+
+    def test_empty_input_raises(self):
+        empty = pd.DataFrame({"p_value": [np.nan], "p_value_fdr": [np.nan]})
+        with pytest.raises(ValueError, match="finite p-values"):
+            la.tl.decoyReport(self._pair(), empty, verbosity=0)
+
+    def test_custom_thresholds(self):
+        rep = la.tl.decoyReport(self._pair(planted=100), self._pair(seed=8),
+                                thresholds=(0.1,), verbosity=0)
+        assert list(rep["per_threshold"]) == [0.1]

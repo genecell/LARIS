@@ -127,8 +127,16 @@ sender=..., receiver=...)` draws one cell-type pair of it.
   and consider running both and combining
   (`la.tl.combineComparisons`).
 - **Effect sizes** (`log_diff`) are differences of per-sample-centred
-  log scores: invariant to any per-sample multiplicative factor, at any
-  sparsity, via the scale-equivariant floor (`logPseudocount='auto'`).
+  log scores, so they are invariant to any per-sample multiplicative
+  factor — including the per-run rescaling of `interaction_score` — via
+  the scale-equivariant floor (`logPseudocount='auto'`). That invariance
+  is what "works at any sparsity" means: the *same* interaction stays
+  comparable across samples however sparse they are. It does **not**
+  make `log_diff` comparable *between different interactions*. A pair
+  detected in a handful of cells can post a large `log_diff` from very
+  little evidence, so read it next to `n_detected_ref` and
+  `n_detected_alt`, and rank by `pvalue_fdr` rather than by effect size
+  alone.
 - **Fixing the tested set**: `universe=[...]` restricts testing and the
   FDR burden to a named interaction list — useful for pre-registered
   hypotheses or for making two runs answer over identical hypotheses.

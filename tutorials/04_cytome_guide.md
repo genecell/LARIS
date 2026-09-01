@@ -6,7 +6,7 @@ expression AnnData is expected, and for large data the whole pipeline can
 stay on disk: scores are computed in blocks and written to an **LR
 cytome** rather than materialised in memory. Install with
 `pip install laris[cytome]`. All outputs below were produced by exactly
-this code (tonsil data, LARIS v0.12.0).
+this code (tonsil data, LARIS v0.13.0).
 
 ## 1. Convert once
 
@@ -72,7 +72,7 @@ laris_lr, res = la.tl.runLARIS(
 ```
 
 ```text
-389,060 sender-receiver-LR rows; 2,062 at FDR<0.05
+389,060 sender-receiver-LR rows; 1,345 at FDR<0.05
 ```
 
 `cosg_backend='memory'` forces the in-memory path; `'auto'` streams only

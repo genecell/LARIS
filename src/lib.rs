@@ -113,9 +113,12 @@ fn assembly_counts<'py>(
     let obs = obs.as_slice()?;
     let nrows = obs.len();
     let mut exceed = vec![0i64; nrows];
-    let mut anypos = vec![0i64; nrows];
+    // count of pseudo-pairs with a POSITIVE score: the null's effective
+    // support. Zero-valued entries can never exceed the observed score,
+    // so they add to the denominator without adding resolution.
+    let mut npos = vec![0i64; nrows];
     py.allow_threads(|| {
-        exceed.par_iter_mut().zip(anypos.par_iter_mut()).enumerate()
+        exceed.par_iter_mut().zip(npos.par_iter_mut()).enumerate()
             .for_each(|(r, (ex, ap))| {
                 let pid = pair_of[r] as usize;
                 let s = off[pid] as usize;
@@ -126,7 +129,7 @@ fn assembly_counts<'py>(
                 for t in s..e {
                     let v = ss[rg[t] as usize] * sr[cg[t] as usize]
                         * dw[t] * m[flat[t] as usize];
-                    if v > 0.0 { pos = 1; }
+                    if v > 0.0 { pos += 1; }
                     if v >= o { cnt += 1; }
                 }
                 *ex = cnt;
@@ -134,7 +137,7 @@ fn assembly_counts<'py>(
             });
     });
     Ok((Array1::from(exceed).into_pyarray_bound(py),
-        Array1::from(anypos).into_pyarray_bound(py)))
+        Array1::from(npos).into_pyarray_bound(py)))
 }
 
 #[pymodule]

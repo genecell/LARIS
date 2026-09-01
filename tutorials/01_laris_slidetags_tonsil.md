@@ -3,7 +3,7 @@
 The core LARIS pipeline on the Slide-tags human tonsil dataset: compute
 spatially diffused ligand–receptor scores, identify spatially specific
 interactions per sender–receiver cell-type pair, and visualize them.
-All outputs shown were produced by exactly this code with LARIS v0.12.0
+All outputs shown were produced by exactly this code with LARIS v0.13.0
 defaults.
 
 **Data**: the annotated tonsil object (`adata_tonsil.h5ad`, 5,695 cells ×
@@ -91,7 +91,7 @@ where a missing name is more likely a typo.
 
 ## 3. Run LARIS
 
-With v0.12.0 defaults (`mu=0.25`, adaptive `sigma`, all three
+With v0.13.0 defaults (`mu=0.25`, adaptive `sigma`, all three
 neighbourhood sizes at 20, `spatial_weight=3.0`), a plain call reproduces
 the published tonsil reference values. The spatial specificity is
 computed in closed form, so this is deterministic - no seed affects it:
@@ -108,7 +108,7 @@ Input data: 5695 cells × 1985 LR pairs
   ✓ Identified 1985 top spatially-specific LR pairs
   - Scaling factor: 0.249302 (based on top 100 scores)
 Final results: 389,060 sender-receiver-LR combinations
-  - Significant interactions (FDR < 0.05): 2,062
+  - Significant interactions (FDR < 0.05): 1,345
 ```
 
 ```python
@@ -300,7 +300,7 @@ la.pl.plotCCCNetworkCumulative(res, data=adata, groupby="cell_type")
 ![cumulative network](images/tut01_network_cumulative.png)
 
 The loops are **self-interactions** - a cell type signalling to itself,
-which on this dataset is 216 of the calls at FDR < 0.05 and includes the
+which on this dataset is a subset of the calls at FDR < 0.05 and includes the
 single strongest interaction overall (`B_naive -> B_naive`,
 FCER2::CR2). Autocrine and within-cell-type signalling is common, so
 these are drawn like any other edge, with the same colour-by-sender and

@@ -1517,6 +1517,7 @@ def _calculate_laris_score_by_celltype(
     cytome_source=None,
     background=None,
     mu_gsp: float = 0.25,
+    min_null_support: int = 0,
 ) -> pd.DataFrame:
     """
     Calculate cell type-specific LARIS interaction scores with statistical testing.
@@ -1932,7 +1933,7 @@ def _calculate_laris_score_by_celltype(
         k_side = background.params.get('n_matched_genes', 0)
         print(f"  - Support per pair: {k_side}x{k_side} = {k_side**2:,} "
               f"pseudo-pairs (exact floor {1.0/(k_side**2+1):.2e})")
-        res_laris['p_value'] = _bg_mod.compute_factorized_pvalues(
+        _pv = _bg_mod.compute_factorized_pvalues(
             res_laris,
             background,
             laris_lr,
@@ -1944,7 +1945,40 @@ def _calculate_laris_score_by_celltype(
             spatial_weight=spatial_weight,
             mu_gsp=mu_gsp,
             mu_celltype=mu,
+            min_null_support=min_null_support,
         )
+        res_laris['p_value'] = _pv['p_value']
+        _mfb = background.match_frac_below
+        if _mfb:
+            # worst of the two genes: 1.0 means every matched gene is
+            # weaker than the real one, so the pair's null is
+            # systematically easy and its p-value overstates
+            res_laris['null_matchability'] = np.maximum(
+                res_laris['ligand'].map(_mfb).astype(float),
+                res_laris['receptor'].map(_mfb).astype(float))
+            _sat = ((res_laris['null_matchability'] >= 0.99)
+                    & (res_laris['p_value'] < 0.05))
+            if _sat.any():
+                _genes = sorted(set(res_laris.loc[_sat, 'ligand']) |
+                                set(res_laris.loc[_sat, 'receptor']))
+                warnings.warn(
+                    f"{int(_sat.sum()):,} interactions with p < 0.05 involve "
+                    "a gene whose matched set lies entirely below it "
+                    "(null_matchability >= 0.99) - their nulls are "
+                    "systematically weak and the p-values overstate. "
+                    f"Genes involved include {_genes[:6]}. Consider raising "
+                    "the pool augmentation was disabled; re-run with "
+                    "augment_pool=True in prepareLRBackground.",
+                    UserWarning, stacklevel=2)
+        # the null's effective support: how many of the k*k pseudo-pairs
+        # actually scored above zero. A row whose support is mostly zeros
+        # cannot resolve the p-value it reports - see the column's use in
+        # tutorial 07.
+        res_laris['null_support'] = _pv['null_support']
+        _ns = res_laris['null_support']
+        print(f"  - Effective null support: median {int(_ns.median()):,} "
+              f"of {k_side ** 2:,}; "
+              f"{int((_ns < 100).sum()):,} rows below 100")
         n_permutations = k_side ** 2   # drives the FDR floor accounting below
         _run_sampled_permutations = False
     elif calculate_pvalues:
@@ -2128,6 +2162,19 @@ def _calculate_laris_score_by_celltype(
         # Calculate -log10(FDR) for visualization
         res_laris['nlog10_p_value_fdr'] = -np.log10(res_laris['p_value_fdr'] + 1e-10)
         res_laris['nlog10_p_value_fdr'] = res_laris['nlog10_p_value_fdr'].clip(lower=0)
+
+        # Breadth: the fraction of tested sender-receiver combinations in
+        # which this pair is called at FDR < 0.05. Genuine cell-type-
+        # specific results are narrow (measured medians 1-2% across four
+        # datasets); a pair called across much of the grid (> ~0.25)
+        # carries no cell-type information - typically a tissue-ubiquitous
+        # pair - however real its expression is.
+        _n_combos = res_laris[['sender', 'receiver']].drop_duplicates().shape[0]
+        if _n_combos:
+            _called = (res_laris['p_value_fdr'] < 0.05)
+            res_laris['pair_breadth'] = (
+                _called.groupby(res_laris['interaction_name'])
+                .transform('sum') / _n_combos)
 
         print(f"  ✓ Corrected {n_pairs_corrected} sender-receiver pairs")
 

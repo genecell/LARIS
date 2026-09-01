@@ -5,9 +5,10 @@ website build needed, readable on GitHub, in an editor, or by a coding
 agent. Every output shown was produced by the code above it, on the named
 public dataset, with the LARIS version stated in each file.
 
-Written for **LARIS v0.12.0**. If you are reporting p-values, read
-[tutorial 07](07_significance_and_background.md) — significance testing
-changed in this release.
+Written for **LARIS v0.13.0**. If you are reporting p-values, read
+[tutorial 07](07_significance_and_background.md) — the matched-gene
+background was fixed in this release and p-values change for
+interactions involving highly expressed genes.
 
 | Tutorial | Dataset | Covers |
 |---|---|---|
@@ -18,6 +19,7 @@ changed in this release.
 | [05 — Tissue image overlay](05_tissue_image_overlay.md) | Xenium Prime 5K human skin (10x) | H&E overlay at single-cell resolution, registering a post-hoc image, 5K-panel LR analysis |
 | [06 — Two-variable analysis](06_two_variable_crossed_labels.md) | MERFISH gut atlas | crossed cell-type x region labels (PIASO `getCrossCategories`), region-resolved comparison |
 | [07 — Statistical significance](07_significance_and_background.md) | Slide-tags human tonsil | `prepareLRBackground`, what the p-value tests, choosing `n_matched_genes`, reusing one background across analyses |
+| [08 — Across modalities](08_modalities.md) | Visium HD 16 µm mouse brain (10x), Stereo-seq mouse embryo (MOSTA), tonsil | one pipeline on three technologies, reading results from binned data, `pair_breadth` and `null_matchability`, cost at scale |
 
 For the steps upstream of LARIS on spatial data, QC, clustering,
 annotation, RNA regulon analysis and visualization, see PIASO's

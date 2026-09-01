@@ -24,6 +24,8 @@ Rounds 34-38 of the discussion record (factorized null). In brief:
 from dataclasses import dataclass, field
 from typing import Optional, Dict
 
+import warnings
+
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
@@ -110,6 +112,7 @@ def _quantile_grid_pool(means: np.ndarray, variances: np.ndarray,
     size - the Gram tables downstream are quadratic in the pool size, and
     the union of unconstrained per-gene kNN sets spans most of the
     transcriptome (measured: 92% on tonsil at k=100).
+
     """
     n_genes = means.shape[0]
     if n_pool >= n_genes:
@@ -132,6 +135,53 @@ def _quantile_grid_pool(means: np.ndarray, variances: np.ndarray,
     # take all rank-0 genes, then rank-1, ... until the pool is full
     pick_order = np.lexsort((cell_sorted, idx_in_cell))
     return np.sort(order[pick_order][:n_pool])
+
+
+def _augment_pool_for_saturation(
+    feats: np.ndarray, pool_pos: np.ndarray, query_pos: np.ndarray,
+    k: int, max_rounds: int = 4, tol: float = 0.99,
+) -> np.ndarray:
+    """Grow the pool until no query gene's matched set is saturated.
+
+    A gene whose matched set lies entirely *below* it in expression has no
+    peers in the pool: every pseudo-pair built from it is weaker than the
+    real pair, so it beats its own null arithmetically rather than
+    biologically. The quantile grid is rank-uniform and so starves the
+    extreme top of the abundance distribution, where the most-detected
+    genes of every tissue live (measured on tonsil: 485 genes detected in
+    over half the cells, 15 of them in the grid pool).
+
+    Rather than padding the pool by a fixed count - which needs a constant
+    nobody can choose correctly for an unseen tissue, and which only
+    covers the mean axis - this states the property directly and lets the
+    pool satisfy it: any gene whose matched set is saturated contributes
+    its own `k` nearest neighbours **from the whole transcriptome**, and
+    matching is recomputed. Only the genes that actually failed trigger
+    growth, and their neighbourhoods overlap heavily, so the pool grows by
+    far less than the unconstrained per-gene kNN union (which spans 92% of
+    the transcriptome and was rejected for that reason).
+
+    Returns the augmented pool positions, sorted.
+    """
+    mu = feats.mean(axis=0)
+    sd = feats.std(axis=0)
+    sd[sd == 0] = 1.0
+    zfeat = (feats - mu) / sd
+    kdt_all = KDTree(zfeat)
+    pool = np.asarray(pool_pos)
+    for _ in range(max_rounds):
+        idx = _matched_sets(feats[query_pos], feats[pool], k)
+        frac_below = (feats[pool][idx, 0] < feats[query_pos, 0][:, None]).mean(1)
+        sat = np.flatnonzero(frac_below >= tol)
+        if sat.size == 0:
+            break
+        _, add = kdt_all.query(zfeat[query_pos[sat]],
+                               k=min(k, zfeat.shape[0]))
+        grown = np.unique(np.concatenate([pool, np.asarray(add).ravel()]))
+        if grown.size == pool.size:
+            break                      # nothing new to add; genuinely at the top
+        pool = grown
+    return np.sort(pool)
 
 
 def _matched_sets(query_feats: np.ndarray, pool_feats: np.ndarray,
@@ -171,9 +221,29 @@ def _edge_gram(P: np.ndarray, Q: np.ndarray, graph: sp.spmatrix,
 
     each term separable per gene, hence a (U x nnz) @ (nnz x U) product.
     Chunked over edges so the U x chunk intermediates stay bounded.
+
+    A sparser identity exists and was implemented, measured and rejected.
+    Splitting P = Q + R (R nonzero only on raw-detected cells) and lifting
+    A=Q(u)Q(c), B=Q(u)R(c), C=R(u)Q(c), D=R(u)R(c) makes every pure-A,
+    pure-B and pure-C term cancel, leaving
+
+        G = <A,D>+<D,A> + <B,C>+<C,B> + <B,D>+<D,B> + <C,D>+<D,C> + <D,D>
+
+    in which every term carries an R factor. R is ~7x sparser than P
+    (0.048 vs 0.344 on tonsil), giving roughly 400x fewer multiply-adds.
+    A threaded Rust kernel over R's nonzeros nevertheless benchmarked
+    **2x SLOWER** than the four dense products (172 s vs 85 s on tonsil's
+    W graph): the dominant <A,D> term is a scatter over all U rows per
+    nonzero, which is memory-bound and cache-hostile, while the dense
+    path runs at near-peak BLAS throughput. Same lesson as the
+    co-localization pass. Float32 sgemm was also tried: 1.44x faster at
+    1.8e-7 relative error, rejected because the tail counts are exact
+    comparisons. The dense form below is the fastest correct version we
+    have.
     """
     g = sp.coo_matrix(graph)
     U = P.shape[0]
+
     G = np.zeros((U, U), dtype=np.float64)
     for start in range(0, g.nnz, edge_chunk):
         stop = min(start + edge_chunk, g.nnz)
@@ -217,6 +287,9 @@ class LRBackground:
     matched_ligand: Dict[str, np.ndarray] = field(default_factory=dict)
     matched_receptor: Dict[str, np.ndarray] = field(default_factory=dict)
     db_pairs: frozenset = frozenset()        # gene-name pairs in the database
+    # per LR gene: fraction of its matched set with a lower mean (1.0 =
+    # saturated; every pseudo-pair is weaker than the real one)
+    match_frac_below: Dict[str, float] = field(default_factory=dict)
     params: dict = field(default_factory=dict)
 
     def positions(self, genes) -> np.ndarray:
@@ -236,6 +309,7 @@ def prepareLRBackground(
     data=_UNSET,
     lr_df: Optional[pd.DataFrame] = None,
     n_pool: int = 4000,
+    augment_pool: bool = True,
     n_matched_genes: int = 100,
     number_nearest_neighbors: int = 20,
     use_rep_spatial: str = 'X_spatial',
@@ -268,6 +342,16 @@ def prepareLRBackground(
     n_pool : int
         Candidate pool size U. The Gram tables are U x U; the default keeps
         them ~130 MB each in float64.
+    augment_pool : bool, default=True
+        Grow the candidate pool until no ligand or receptor has a matched
+        set lying entirely below it in expression. The quantile grid is
+        rank-uniform and so starves the extreme top of the abundance
+        range; a gene left there has no peers, every pseudo-pair built
+        from it is weaker than the real pair, and it beats its own null
+        arithmetically. Genes that fail contribute their own nearest
+        neighbours from the whole transcriptome, and matching is
+        recomputed (see ``match_frac_below``). Set False to reproduce the
+        v0.12.0 pool exactly.
     n_matched_genes : int
         Matched genes per side (k). The factorized support per pair is
         k**2 and the exact p-value floor is 1/(k**2+1) before exclusions.
@@ -295,7 +379,8 @@ def prepareLRBackground(
         # pool + LR genes are then loaded, so the memory profile matches
         # the streaming pipeline.
         return _prepare_background_from_cytome(
-            adata, lr_df, n_pool=n_pool, n_matched_genes=n_matched_genes,
+            adata, lr_df, n_pool=n_pool, augment_pool=augment_pool,
+            n_matched_genes=n_matched_genes,
             number_nearest_neighbors=number_nearest_neighbors,
             use_rep_spatial=use_rep_spatial, use_rep_gsp=use_rep_gsp,
             n_nearest_neighbors_gsp=n_nearest_neighbors_gsp,
@@ -329,6 +414,16 @@ def prepareLRBackground(
         pool_pos = np.sort(pool_pos[pool_pos >= 0])
     else:
         pool_pos = _quantile_grid_pool(m, v, n_pool)
+        if augment_pool:
+            _feats_all = np.column_stack([m, v])
+            _q = var_names.get_indexer(lr_genes)
+            _q = _q[_q >= 0]
+            _before = len(pool_pos)
+            pool_pos = _augment_pool_for_saturation(
+                _feats_all, pool_pos, _q, n_matched_genes)
+            if len(pool_pos) > _before:
+                say(f"  - pool grown {_before:,} -> {len(pool_pos):,} genes "
+                    "so every LR gene has matched peers above it")
     say(f"  - candidate pool: {len(pool_pos):,} genes "
         f"(quantile grid over mean/variance)")
 
@@ -351,6 +446,17 @@ def prepareLRBackground(
                       for i, g in enumerate(lig_genes)}
     matched_receptor = {g: pool_tab_pos[rec_idx[i]]
                         for i, g in enumerate(rec_genes)}
+    # Matchability: fraction of a gene's matched set with a LOWER mean
+    # than the gene itself. 1.0 means every match is weaker - the null
+    # for any pair containing this gene is systematically easy, and its
+    # p-values overstate. With the n_extreme pool repair this should be
+    # rare; the value is reported so the residual cases are visible.
+    pool_means = m[pool_pos]
+    match_frac_below = {}
+    for genes_, idx_ in ((lig_genes, lig_idx), (rec_genes, rec_idx)):
+        gm = m[var_names.get_indexer(genes_)]
+        for i, g in enumerate(genes_):
+            match_frac_below[g] = float((pool_means[idx_[i]] < gm[i]).mean())
 
     # ---- diffusion of the table genes (same kernel as prepare) ----------
     say(f"  - diffusing {U:,} genes through the "
@@ -409,7 +515,7 @@ def prepareLRBackground(
         G_W=G_W, G_W2=G_W2, G_dot=G_dot, G_sq=G_sq,
         R=R, n_cells=n_cells,
         matched_ligand=matched_ligand, matched_receptor=matched_receptor,
-        db_pairs=db_pairs,
+        db_pairs=db_pairs, match_frac_below=match_frac_below,
         params=dict(n_pool=n_pool, n_matched_genes=n_matched_genes,
                     number_nearest_neighbors=number_nearest_neighbors,
                     use_rep_spatial=use_rep_spatial, use_rep_gsp=use_rep_gsp,
@@ -471,8 +577,9 @@ def compute_factorized_pvalues(
     spatial_weight: float,
     mu_gsp: float,
     mu_celltype: float,
+    min_null_support: int = 0,
     verbosity: int = 1,
-) -> pd.Series:
+) -> pd.DataFrame:
     """Exact p-values against the factorized matched-gene null.
 
     For each tested row (sender s, receiver r, pair lig::rec) the null
@@ -493,6 +600,23 @@ def compute_factorized_pvalues(
     the real pairs* and applied to pseudo-pairs. Pseudo-pairs that are
     themselves database pairs are excluded. The p-value is the exact tail
     (exceed + 1) / (n_valid + 1); a degenerate all-zero support gives 1.0.
+
+    Many pseudo-pairs score exactly zero, because their matched genes are
+    not co-detected in the two groups. A zero can never exceed a positive
+    observed score, so it enlarges the denominator without contributing
+    resolution: a row whose support is 9,900 zeros and 100 positive
+    entries can still report p = 1e-4 while the null can only really
+    resolve 1e-2. The count of positive entries is therefore the null's
+    *effective support*, and it is returned alongside the p-value so the
+    caller can see it. ``min_null_support`` sets p = 1.0 for rows whose
+    effective support falls below it; the default of 0 leaves every
+    p-value exactly as v0.12.0 computed it.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Indexed like ``res_laris``, with columns ``p_value`` and
+        ``null_support`` (the number of pseudo-pairs scoring above zero).
     """
     say = print if verbosity else (lambda *a, **k: None)
     n_groups = len(groups_order)
@@ -662,6 +786,7 @@ def compute_factorized_pvalues(
 
     # --- pass B: one ctc at a time, all its rows scored -------------------
     p_vals = np.full(len(res_laris), np.nan)
+    n_pos = np.zeros(len(res_laris), dtype=np.int64)
     pos_of = {ix: i for i, ix in enumerate(res_laris.index)}
     grouped = res_laris.groupby(['sender', 'receiver'], observed=True)
     lam_mu = mu_celltype
@@ -691,7 +816,7 @@ def compute_factorized_pvalues(
                 (_pair_id(lig, rec) for lig, rec in
                  zip(gdf['ligand'], gdf['receptor'])),
                 dtype=np.int64, count=len(gdf))
-            exceed, anypos = _rust.assembly_counts(
+            exceed, npos_grp = _rust.assembly_counts(
                 M, np.ascontiguousarray(spec_s),
                 np.ascontiguousarray(spec_r),
                 _cat['flat'], _cat['row_gene'], _cat['col_gene'],
@@ -699,10 +824,12 @@ def compute_factorized_pvalues(
                 gdf['interaction_score'].to_numpy(np.float64))
             sizes = (_cat['offsets'][pair_ids + 1]
                      - _cat['offsets'][pair_ids])
-            p_grp = np.where((sizes == 0) | (anypos == 0), 1.0,
-                             (exceed + 1) / (sizes + 1))
-            for ix, pv in zip(gdf.index, p_grp):
+            degenerate = ((sizes == 0) | (npos_grp == 0)
+                          | (npos_grp < min_null_support))
+            p_grp = np.where(degenerate, 1.0, (exceed + 1) / (sizes + 1))
+            for ix, pv, nz in zip(gdf.index, p_grp, npos_grp):
                 p_vals[pos_of[ix]] = pv
+                n_pos[pos_of[ix]] = nz
             continue
         for row in gdf.itertuples():
             ii, jj, dw_flat, flat, rowmap, colmap = _delta_block(
@@ -712,13 +839,45 @@ def compute_factorized_pvalues(
                 continue
             null = (spec_s[ii][rowmap] * spec_r[jj][colmap]
                     * dw_flat * M[flat])
-            if not np.any(null > 0):
+            npos_row = int(np.count_nonzero(null > 0))
+            n_pos[pos_of[row.Index]] = npos_row
+            if npos_row == 0 or npos_row < min_null_support:
                 p_vals[pos_of[row.Index]] = 1.0
                 continue
             exceed = int(np.count_nonzero(null >= row.interaction_score))
             p_vals[pos_of[row.Index]] = (exceed + 1) / (len(flat) + 1)
 
-    return pd.Series(p_vals, index=res_laris.index)
+    if len(p_vals) and not np.isfinite(p_vals).any():
+        # Every row was skipped, which means no (sender, receiver) group in
+        # the results matched a cell-type pair the co-localization step
+        # built. Returning a column of NaN looks like a p-value of "no
+        # evidence" and silently propagates into the FDR; it is a broken
+        # run, so say so. Reported by a user on degenerate input.
+        raise ValueError(
+            "No interaction could be tested: none of the "
+            f"{len(res_laris):,} sender-receiver rows matched a cell-type "
+            f"pair among the {len(ctc_names):,} the co-localization step "
+            "produced. This usually means `groupby` labels changed between "
+            "prepareLRInteraction and runLARIS, or that every group was "
+            "dropped as too small. Check that the groupby column is the "
+            "same in both calls and has at least two non-empty groups.")
+
+    n_tested = int(np.count_nonzero(n_pos > 0))
+    if n_tested:
+        thin = int(np.count_nonzero((n_pos > 0) & (n_pos < 100)))
+        if thin > 0.05 * n_tested:
+            warnings.warn(
+                f"{thin:,} of {n_tested:,} tested interactions "
+                f"({100 * thin / n_tested:.1f}%) have a null with fewer "
+                "than 100 non-zero pseudo-pairs. Their p-values are "
+                "reported against a denominator of "
+                f"{int(np.median(n_pos[n_pos > 0])):,} but can only "
+                "resolve about 1/(effective support). Inspect the "
+                "'null_support' column, and consider "
+                "min_null_support= to drop them.",
+                UserWarning, stacklevel=2)
+    return pd.DataFrame({'p_value': p_vals, 'null_support': n_pos},
+                        index=res_laris.index)
 
 
 # ---------------------------------------------------------------------------
@@ -733,7 +892,8 @@ def _is_cytome_source(obj) -> bool:
 
 
 def _prepare_background_from_cytome(
-    source, lr_df, n_pool, n_matched_genes, number_nearest_neighbors,
+    source, lr_df, n_pool, augment_pool, n_matched_genes,
+    number_nearest_neighbors,
     use_rep_spatial, use_rep_gsp, n_nearest_neighbors_gsp, sigma_gsp,
     section_key, block_size, verbosity,
 ) -> "LRBackground":
@@ -785,6 +945,16 @@ def _prepare_background_from_cytome(
         lr_genes = pd.Index(pd.unique(np.concatenate([
             np.asarray(lr_df['ligand']), np.asarray(lr_df['receptor'])])))
         lr_genes = lr_genes[lr_genes.isin(all_genes)]
+        if augment_pool:
+            _q = pd.Index(all_genes).get_indexer(lr_genes)
+            _q = _q[_q >= 0]
+            _before = len(pool_pos)
+            pool_pos = _augment_pool_for_saturation(
+                np.column_stack([means, variances]), pool_pos, _q,
+                n_matched_genes)
+            if len(pool_pos) > _before:
+                say(f"  - pool grown {_before:,} -> {len(pool_pos):,} genes "
+                    "so every LR gene has matched peers above it")
         needed = pd.Index(all_genes[pool_pos]).union(lr_genes)
 
         say(f"  - loading {len(needed):,} genes (pool + LR) from cytome...")
@@ -796,10 +966,446 @@ def _prepare_background_from_cytome(
     # the subset AnnData has obs/obsm from the file; run the standard
     # builder with a pool that covers (almost) the whole loaded gene set
     return prepareLRBackground(
-        sub, lr_df, n_pool=len(pool_pos), n_matched_genes=n_matched_genes,
+        sub, lr_df, n_pool=len(pool_pos), augment_pool=False,
+        n_matched_genes=n_matched_genes,
         number_nearest_neighbors=number_nearest_neighbors,
         use_rep_spatial=use_rep_spatial, use_rep_gsp=use_rep_gsp,
         n_nearest_neighbors_gsp=n_nearest_neighbors_gsp,
         sigma_gsp=sigma_gsp, section_key=section_key,
         block_size=block_size, verbosity=verbosity,
         _pool_genes=list(all_genes[pool_pos]))
+
+
+# ---------------------------------------------------------------------------
+# Calibration control
+# ---------------------------------------------------------------------------
+
+def _degree_preserving_decoys(lr_df, rng, data=None, n_swap_rounds=20):
+    """Rewire the database by double-edge swaps, preserving every degree.
+
+    Each swap replaces (L1,R1),(L2,R2) with (L1,R2),(L2,R1), which leaves
+    both degree sequences untouched. Swaps that would duplicate an
+    existing decoy pair are rejected. Pairs that survive as real pairs
+    are reported in ``.attrs['n_real_retained']``: with a hub-heavy
+    database a perfect rewiring is not always reachable, and the caller
+    should exclude those rows rather than count them as decoys.
+    """
+    lig = lr_df['ligand'].astype(str).to_numpy()
+    rec = lr_df['receptor'].astype(str).to_numpy()
+    if data is not None:
+        present = set(np.asarray(data.var_names, dtype=str))
+        keep = np.array([l in present and r in present
+                         for l, r in zip(lig, rec)])
+        lig, rec = lig[keep], rec[keep]
+    real = set(zip(lig, rec))
+    edges = list(zip(lig, rec))
+    current = set(edges)
+    n = len(edges)
+    target = n_swap_rounds * n
+    done = 0
+    for _ in range(target * 12):          # bounded: rejections are common
+        if done >= target:
+            break
+        i, j = rng.integers(0, n, 2)
+        if i == j:
+            continue
+        l1, r1 = edges[i]
+        l2, r2 = edges[j]
+        if l1 == l2 or r1 == r2:
+            continue
+        if (l1, r2) in current or (l2, r1) in current:
+            continue
+        current.discard((l1, r1)); current.discard((l2, r2))
+        current.add((l1, r2)); current.add((l2, r1))
+        edges[i] = (l1, r2); edges[j] = (l2, r1)
+        done += 1
+
+    decoy = pd.DataFrame(edges, columns=['ligand', 'receptor'])
+    decoy['interaction_name'] = decoy['ligand'] + '::' + decoy['receptor']
+    retained = int(sum(1 for e in edges if e in real))
+    decoy.attrs['n_real_retained'] = retained
+    decoy.attrs['n_swaps'] = done
+    if retained:
+        warnings.warn(
+            f"{retained:,} of {len(decoy):,} rewired pairs coincide with a "
+            "real database pair; a hub-heavy database cannot always be "
+            "fully rewired. Exclude them before using this as a null "
+            "(they are marked in the 'is_real' column).", UserWarning)
+    decoy['is_real'] = [e in real for e in edges]
+    return decoy
+
+
+def permuteLRPairs(
+    lr_df: pd.DataFrame,
+    data=None,
+    random_seed: int = 0,
+    preserve_genes: bool = True,
+    method: str = 'degree',
+) -> pd.DataFrame:
+    """Build a decoy LR database: the calibration control for this test.
+
+    LARIS's p-value is a *competitive* test in the sense of Goeman &
+    Bühlmann (2007): it asks whether a real ligand-receptor pair beats
+    expression-matched genes. The null distribution of a competitive test
+    is generated by permuting **gene identity**, not sample labels.
+
+    Shuffling cell-type labels or spatial coordinates is the calibration
+    procedure for a *self-contained* test (the design CellPhoneDB and
+    CellChat use), and it is not this test's null. Under a label shuffle
+    every group converges to the tissue average, so the cell-type factors
+    become a constant that cancels between the observed score and the
+    null, leaving a comparison of spatial co-expression that real
+    database pairs win on merit. Such a run can therefore return *more*
+    calls than the real one, and that is not evidence of a defect. See
+    tutorial 07.
+
+    This function builds the control that does apply: a database of the
+    same size in which the pairings are random. Every returned pair is a
+    decoy, so a correctly calibrated run over it should yield p-values
+    that are close to uniform and essentially no FDR-significant calls,
+    at any dataset size.
+
+    Parameters
+    ----------
+    lr_df : pandas.DataFrame
+        The real database, with 'ligand' and 'receptor' columns. Its size
+        sets the size of the decoy database so that the multiple-testing
+        burden matches.
+    data : AnnData, optional
+        If given, decoy genes are drawn from ``data.var_names``. Without
+        it they are drawn from the genes appearing in ``lr_df``.
+    random_seed : int, default=0
+        Seed for the pairing.
+    preserve_genes : bool, default=True
+        Draw ligands from the real ligand pool and receptors from the
+        real receptor pool, re-pairing them at random. This keeps the
+        marginal expression distribution of each side realistic and
+        changes only the pairing, which is the thing being tested. Set
+        False to draw both sides from all available genes. Ignored when
+        ``method='degree'``, which always reuses the real genes.
+    method : {'degree', 'uniform'}, default='degree'
+        How the decoys are drawn.
+
+        ``'degree'`` rewires the real database by repeated double-edge
+        swaps: pick two pairs (L1,R1) and (L2,R2) and replace them with
+        (L1,R2) and (L2,R1). Every gene therefore appears in **exactly as
+        many decoy pairs as real ones**, and only the pairing changes.
+
+        This matters more than it sounds. Curated databases are strongly
+        hub-structured - in CellChatDB's human table restricted to a
+        tonsil, ITGB1 appears in 55 pairs and the median gene in 2, with
+        the top 10% of genes carrying ~40% of the pairs. Drawing decoys
+        uniformly flattens that: it under-samples the broadly expressed
+        integrin and collagen hubs, which are individually unremarkable
+        and dilute the real database's hit rate, and over-samples rare
+        cell-type-restricted genes, which are not. A uniform decoy is
+        therefore an *easier* database than the real one and will
+        overstate the false-positive rate.
+
+        ``'uniform'`` is the naive version, kept because it is the
+        obvious thing to try and the comparison between the two is
+        informative.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Columns 'ligand', 'receptor' and 'interaction_name', containing no
+        pair present in ``lr_df``.
+
+    Examples
+    --------
+    >>> decoy = la.tl.permuteLRPairs(lr_df, adata, random_seed=0)
+    >>> bg_d = la.tl.prepareLRBackground(adata, decoy,
+    ...                                  use_rep_spatial="X_spatial")
+    >>> lr_d = la.tl.prepareLRInteraction(adata, decoy,
+    ...                                   use_rep_spatial="X_spatial")
+    >>> _, res_d = la.tl.runLARIS(lr_d, adata, groupby="cell_type",
+    ...                           background=bg_d)
+    >>> (res_d.p_value_fdr < 0.05).sum()      # should be ~0
+    """
+    rng = np.random.default_rng(random_seed)
+    n_target = len(lr_df)
+    real = set(zip(lr_df['ligand'].astype(str), lr_df['receptor'].astype(str)))
+
+    if method not in ('degree', 'uniform'):
+        raise ValueError("method must be 'degree' or 'uniform'")
+    if method == 'degree':
+        return _degree_preserving_decoys(lr_df, rng, data)
+
+    if preserve_genes:
+        lig_pool = pd.unique(lr_df['ligand'].astype(str))
+        rec_pool = pd.unique(lr_df['receptor'].astype(str))
+    else:
+        if data is None:
+            raise ValueError(
+                "preserve_genes=False needs `data` to draw genes from.")
+        allg = np.asarray(data.var_names, dtype=str)
+        lig_pool = rec_pool = allg
+
+    if data is not None:
+        present = set(np.asarray(data.var_names, dtype=str))
+        lig_pool = np.array([g for g in lig_pool if g in present])
+        rec_pool = np.array([g for g in rec_pool if g in present])
+    lig_pool = np.asarray(lig_pool, dtype=str)
+    rec_pool = np.asarray(rec_pool, dtype=str)
+    if len(lig_pool) == 0 or len(rec_pool) == 0:
+        raise ValueError(
+            "No database genes are present in `data`; cannot build decoys.")
+
+    # Sample with rejection so that no decoy coincides with a real pair
+    # (a real pair among the decoys would not be a decoy) and no decoy is
+    # a gene paired with itself.
+    max_unique = len(lig_pool) * len(rec_pool)
+    if n_target > max_unique // 2:
+        n_target = max(1, max_unique // 2)
+    seen, out = set(), []
+    for _ in range(200):
+        if len(out) >= n_target:
+            break
+        need = (n_target - len(out)) * 2 + 16
+        li = lig_pool[rng.integers(0, len(lig_pool), need)]
+        ri = rec_pool[rng.integers(0, len(rec_pool), need)]
+        for a, b in zip(li, ri):
+            if len(out) >= n_target:
+                break
+            if a == b or (a, b) in real or (a, b) in seen:
+                continue
+            seen.add((a, b))
+            out.append((a, b))
+    if len(out) < n_target:
+        warnings.warn(
+            f"Only {len(out):,} decoy pairs could be drawn (asked for "
+            f"{n_target:,}); the gene pools are small.", UserWarning)
+
+    decoy = pd.DataFrame(out, columns=['ligand', 'receptor'])
+    decoy['interaction_name'] = decoy['ligand'] + '::' + decoy['receptor']
+    return decoy
+
+
+# ---------------------------------------------------------------------------
+# Target-decoy empirical FDR
+# ---------------------------------------------------------------------------
+
+def decoyFDR(
+    target_res: pd.DataFrame,
+    decoy_res: pd.DataFrame,
+    p_col: str = 'p_value',
+    pseudocount: float = 1.0,
+) -> pd.Series:
+    """Empirical pairing-FDR for each target row, by target-decoy estimation.
+
+    The factorized p-value certifies that a pair's expression is arranged
+    with respect to the tested cell types beyond expression-matched
+    chance. It does not certify the *pairing*: a degree-preserving
+    rewiring of the database scores almost as well (tonsil: 947 vs 1,195
+    calls at FDR<0.05), because for marker-structured pairs the pairing
+    is unidentifiable from expression and coordinates alone. See
+    tutorial 07 and the discussion record.
+
+    This function measures that error rate empirically, the way
+    proteomics has done for two decades (target-decoy search, Elias &
+    Gygi 2007): run the same pipeline on a decoy database whose pairings
+    are scrambled but whose genes and degrees are identical
+    (:func:`permuteLRPairs` with ``method='degree'``), and estimate, at
+    each threshold t,
+
+        FDR(t) = (decoy rows with p <= t, +pseudocount) / n_decoy
+                 -------------------------------------------------
+                 (target rows with p <= t)               / n_target
+
+    monotonized into a q-value (minimum over all looser thresholds) and
+    clipped to 1. The +1 pseudocount keeps the estimate conservative
+    when decoy counts are small.
+
+    Because the degree decoy re-pairs real genes, a fraction of decoys
+    may be genuine unannotated interactions; on tonsil this contamination
+    measures 0.3% (pathway-sharing check), so the estimate is effectively
+    unbiased there, and in general it errs conservative.
+
+    Parameters
+    ----------
+    target_res, decoy_res : pandas.DataFrame
+        Results from :func:`runLARIS` on the real and decoy databases,
+        run with the same settings and (ideally) the same background.
+        Rows of ``decoy_res`` whose pair coincides with a real database
+        pair should be excluded first (``computeDecoyFDR`` does this).
+    p_col : str, default='p_value'
+        Column holding the raw p-values. Raw, not BH-adjusted: the two
+        runs have different multiplicity structures, and the raw p is the
+        comparable scale.
+    pseudocount : float, default=1.0
+        Added to the decoy count at every threshold.
+
+    Returns
+    -------
+    pandas.Series
+        ``q_decoy``, aligned to ``target_res.index``; NaN where the
+        target p is NaN.
+    """
+    pt = pd.to_numeric(target_res[p_col], errors='coerce').to_numpy(float)
+    pdec = pd.to_numeric(decoy_res[p_col], errors='coerce').to_numpy(float)
+    pdec = pdec[np.isfinite(pdec)]
+    n_d = len(pdec)
+    if n_d == 0:
+        raise ValueError("decoy_res has no finite p-values; run the decoy "
+                         "database through runLARIS first.")
+    finite = np.isfinite(pt)
+    n_t = int(finite.sum())
+    if n_t == 0:
+        return pd.Series(np.nan, index=target_res.index, name='q_decoy')
+
+    pt_sorted = np.sort(pt[finite])
+    pdec_sorted = np.sort(pdec)
+    # counts at each distinct target p (ties handled by side='right')
+    uniq = np.unique(pt_sorted)
+    t_cnt = np.searchsorted(pt_sorted, uniq, side='right')
+    d_cnt = np.searchsorted(pdec_sorted, uniq, side='right')
+    fdr = ((d_cnt + pseudocount) / n_d) / (t_cnt / n_t)
+    # q-value: minimum over all thresholds at least as loose
+    q_at_uniq = np.minimum.accumulate(np.clip(fdr, 0.0, 1.0)[::-1])[::-1]
+    q = np.full(len(pt), np.nan)
+    q[finite] = q_at_uniq[np.searchsorted(uniq, pt[finite])]
+    return pd.Series(q, index=target_res.index, name='q_decoy')
+
+
+def computeDecoyFDR(
+    data,
+    lr_df: pd.DataFrame,
+    target_res: pd.DataFrame,
+    background: "LRBackground",
+    random_seed: int = 0,
+    prepare_kwargs: Optional[dict] = None,
+    run_kwargs: Optional[dict] = None,
+    verbosity: int = 1,
+):
+    """One-call target-decoy FDR: build the decoy, run it, return q_decoy.
+
+    Builds a degree-preserving decoy database, runs it through
+    ``prepareLRInteraction`` + ``runLARIS`` against the *same* background
+    (valid because the rewiring preserves the exact gene multiset, so
+    every per-gene matched set is identical), drops decoy rows whose
+    pair coincides with a real one, and returns
+    ``(q_decoy, decoy_res)``.
+
+    ``prepare_kwargs`` and ``run_kwargs`` must repeat the settings of the
+    target run (``use_rep_spatial``, ``groupby``, ...); they are passed
+    through verbatim.
+
+    Examples
+    --------
+    >>> q, dec = la.tl.computeDecoyFDR(
+    ...     adata, lr_df, res, background=bg,
+    ...     prepare_kwargs={"use_rep_spatial": "X_spatial"},
+    ...     run_kwargs={"use_rep": "X_spatial",
+    ...                 "use_rep_spatial": "X_spatial",
+    ...                 "groupby": "cell_type"})
+    >>> res["q_decoy"] = q
+    """
+    from ._prepare import prepareLRInteraction
+    from ._runLARIS import runLARIS
+
+    say = print if verbosity else (lambda *a, **k: None)
+    decoy = permuteLRPairs(lr_df, data, random_seed=random_seed,
+                           method='degree')
+    n_real = int(decoy['is_real'].sum())
+    say(f"  - decoy database: {len(decoy):,} rewired pairs "
+        f"({n_real:,} coincide with real pairs and will be excluded)")
+
+    prep = dict(prepare_kwargs or {})
+    runk = dict(run_kwargs or {})
+    lr_d = prepareLRInteraction(data, decoy[['ligand', 'receptor']], **prep)
+    out = runLARIS(lr_d, data, background=background, **runk)
+    decoy_res = out[1] if isinstance(out, tuple) else out
+    real_names = set(decoy.loc[decoy['is_real'], 'interaction_name'])
+    decoy_res = decoy_res[
+        ~decoy_res['interaction_name'].isin(real_names)].copy()
+    say(f"  - decoy rows tested: {len(decoy_res):,}")
+
+    q = decoyFDR(target_res, decoy_res)
+    return q, decoy_res
+
+
+def decoyReport(
+    target_res: pd.DataFrame,
+    decoy_res: pd.DataFrame,
+    thresholds=(0.05, 0.01),
+    p_col: str = 'p_value',
+    fdr_col: str = 'p_value_fdr',
+    verbosity: int = 1,
+) -> dict:
+    """Dataset-level summary of what the database contributes over chance.
+
+    ``p_value`` answers: *is this pair's expression arranged specifically
+    with respect to these two cell types, beyond expression-matched
+    chance?* It does not answer *does this ligand bind this receptor
+    here?* - the pairing is asserted by the database, not measured from
+    the data. A degree-preserving rewiring of the database, scored
+    identically, quantifies the difference: whatever it recovers is what
+    chance pairing alone achieves on this dataset.
+
+    This returns (and by default prints) that comparison at the dataset
+    level, which is the scale at which it is informative - the per-row
+    q-value from :func:`decoyFDR` is close to constant within a dataset,
+    so a single figure carries nearly all of the signal.
+
+    Parameters
+    ----------
+    target_res, decoy_res : pandas.DataFrame
+        ``runLARIS`` results for the real and decoy databases, same
+        settings, ideally the same background. See
+        :func:`computeDecoyFDR`, which produces ``decoy_res``.
+    thresholds : tuple of float, default=(0.05, 0.01)
+        FDR thresholds to report.
+    verbosity : int, default=1
+        1 prints the report; 0 returns it silently.
+
+    Returns
+    -------
+    dict
+        ``per_threshold`` (target calls, decoy calls, and the estimated
+        pairing-FDR at each threshold), ``q_min``, and ``n_rows``.
+
+    Examples
+    --------
+    >>> q, dec = la.tl.computeDecoyFDR(adata, lr_df, res, background=bg,
+    ...                                prepare_kwargs=..., run_kwargs=...)
+    >>> rep = la.tl.decoyReport(res, dec)
+    """
+    n_t = int(target_res[p_col].notna().sum())
+    n_d = int(decoy_res[p_col].notna().sum())
+    if n_t == 0 or n_d == 0:
+        raise ValueError("target_res and decoy_res must both contain "
+                         "finite p-values.")
+    out = {"n_rows": {"target": n_t, "decoy": n_d}, "per_threshold": {}}
+    for t in thresholds:
+        a = int((target_res[fdr_col] < t).sum())
+        b = int((decoy_res[fdr_col] < t).sum())
+        est = ((b + 1) / n_d) / max(a / n_t, 1e-12)
+        out["per_threshold"][t] = {
+            "target_calls": a, "decoy_calls": b,
+            "pairing_fdr": round(float(min(est, 1.0)), 3)}
+    q = decoyFDR(target_res, decoy_res, p_col=p_col)
+    out["q_min"] = None if q.isna().all() else round(float(q.min()), 3)
+
+    if verbosity:
+        print("\n" + "=" * 66)
+        print("TARGET-DECOY REPORT — what the database contributes")
+        print("=" * 66)
+        print("  The p-value tests how the pair's expression is ARRANGED "
+              "with respect\n  to the cell types. The PAIRING itself comes "
+              "from the database, not\n  from the data. A rewired database "
+              "scored the same way shows how much\n  of the result chance "
+              "pairing alone reproduces here.\n")
+        for t, d in out["per_threshold"].items():
+            print(f"  FDR < {t:<5}  real database {d['target_calls']:>7,} calls"
+                  f"   |  rewired {d['decoy_calls']:>7,}"
+                  f"   |  estimated pairing-FDR {d['pairing_fdr']:.2f}")
+        print(f"\n  Best attainable pairing-FDR on this dataset: {out['q_min']}")
+        print("  Read as: of the calls at this threshold, roughly this "
+              "fraction are\n  matched by a database whose pairings are "
+              "random. High values do not\n  mean the interactions are "
+              "absent - they mean the DATA cannot\n  distinguish this "
+              "pairing from a comparable one, so the evidence for\n  the "
+              "pairing rests on the database. See tutorial 07.")
+        print("=" * 66 + "\n")
+    return out
