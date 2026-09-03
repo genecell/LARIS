@@ -47,7 +47,7 @@ def runLARIS(
     calculate_pvalues: bool = True,
     layer_celltype: Optional[str] = None,
     n_neighbors_permutation: int = 30,
-    n_permutations: int = 1000,
+    n_permutations=_UNSET,
     chunk_size: int = 50000,
     prefilter_fdr: bool = True,
     prefilter_threshold: float = 0.0,
@@ -217,10 +217,20 @@ def runLARIS(
         diffused score profiles.
         
     n_permutations : int, default=1000
-        Number of permutations for statistical testing. Common values:
-        - 1000: Quick testing
-        - 5000: More precise p-values
-        - 10000: Publication-quality precision
+        **Legacy path only, and ignored when ``background=`` is given.**
+
+        Without a background, p-values come from sampling
+        ``n_permutations`` draws from a resampled-pair null, and the
+        floor is ``1/(n_permutations+1)``.
+
+        With a background the null is *enumerated exactly* - every one of
+        the ``n_matched_genes ** 2`` pseudo-pairs is scored and the
+        p-value is the exact tail ``(exceed + 1) / (support + 1)``. There
+        is no sampling, no seed and nothing for this parameter to do:
+        the floor is ``1/(n_matched_genes ** 2 + 1)`` and
+        ``n_matched_genes`` is the only knob that moves it. Passing this
+        parameter together with ``background=`` raises a
+        ``FutureWarning``.
         
     chunk_size : int, default=50000
         Number of interactions to process simultaneously during permutation.
@@ -552,6 +562,23 @@ def runLARIS(
             "baseline is now computed analytically (closed form of the "
             "random-graph expectation), so no realized random graphs are "
             "built and the spatial specificity is deterministic.",
+            FutureWarning, stacklevel=2,
+        )
+
+    # n_permutations drives only the legacy resampled-pair null. With a
+    # background the null is enumerated exactly (every n_matched_genes**2
+    # pseudo-pair is scored), so the parameter has nothing to do and
+    # silently ignoring it invites the misreading that raising it buys
+    # precision - which is exactly how the sampled-null description
+    # outlived the sampled null.
+    if n_permutations is _UNSET:
+        n_permutations = 1000
+    elif background is not None:
+        warnings.warn(
+            "n_permutations is ignored when background= is given: the "
+            "factorized null is enumerated exactly, so its floor is "
+            "1/(n_matched_genes**2 + 1) and only n_matched_genes moves "
+            "it. Set n_matched_genes in prepareLRBackground instead.",
             FutureWarning, stacklevel=2,
         )
     sections = _utils._resolve_sections(lr_adata, section_key, lr_adata.n_obs)

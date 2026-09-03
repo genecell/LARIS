@@ -125,6 +125,32 @@ On these objects the maxima are 0.16
 nothing is sweeping the grid. Anything above ~0.25 deserves a look
 before it goes in a figure.
 
+**Expect a large drop if you are coming from v0.12.0.** On binned data
+the v0.13.0 background fix removes far more calls than it does on
+dissociated data:
+
+| object | v0.12.0 | v0.13.0 | change |
+|---|---|---|---|
+| Slide-tags tonsil (single cells) | 1,630 | 1,345 | **−17%** |
+| Visium HD 16 µm | 1,638 | 683 | **−58%** |
+| Stereo-seq (mouse embryo) | 12,421 | 7,251 | **−42%** |
+
+This is the fix working, not a regression, and the reason is the same
+label impurity as above. v0.12.0's candidate pool under-sampled the most
+abundant genes, which let a class of tissue-ubiquitous pairs beat their
+own null and be called across most of the grid. On binned data those
+pairs made up much of the *real* result too — before the fix, 13 of the
+top 20 calls on Visium HD and 16 of 20 on Stereo-seq were the same pairs
+the shuffled-label arm returned, against 4 of 20 on tonsil. Removing that
+class therefore removes proportionally more from binned objects. What
+remains is more specific: the top Visium HD interaction is now
+`Slc1a2::Grm3` rather than a pair called in 255 of 256 combinations.
+
+Counter-intuitively this is *not* about binned data having more abundant
+genes — it has fewer (49 genes detected in over half the spots on our
+Visium HD object, against 485 on tonsil). It is about mixed labels
+flattening cell-type specificity, which lets ubiquitous pairs dominate.
+
 **Check `null_matchability`.** Values near 1.0 mean the pair's matched
 genes were all weaker than the real genes, so its p-value overstates.
 LARIS warns when a significant call is affected; the pool augmentation in

@@ -204,6 +204,18 @@ via L::R"). Different cell-type pairs have different specificity
 profiles, so per-pair correction keeps each pair's threshold driven by
 its own p-value distribution.
 
+**The test is calibrated, and here is the check.** On data with no
+structure to find - random counts, random coordinates, random labels -
+the test returns **zero** interactions at FDR < 0.05; on data with a
+planted spatially coherent interaction it recovers it with a small
+p-value. Both are pinned in the test suite
+(`test_calibration_on_noise`, `test_power_on_planted_signal`), and that
+pair is the calibration control worth copying into your own. Note what
+is *not* on the list: shuffling labels, shuffling coordinates, and
+scoring a rewired database are none of them calibration checks -
+[§6](#6-why-a-label-or-coordinate-shuffle-is-not-the-null) and
+[§7](#7-what-the-database-contributes-measured) explain why.
+
 **The floor and the FDR interact.** In a group of `m` tested
 interactions where `k` reach the p-value floor, the smallest attainable
 FDR is `(m/k) x floor`. With the default floor of 1e-4 this is rarely
@@ -284,31 +296,48 @@ competitive test doing exactly what it says. Neither shuffle is this
 test's null.
 
 **Two things this means in practice.** Do not read a coordinate shuffle
-as a failed sanity check. And do not compare `interaction_score` across
-two runs at all: scores are rescaled per run so that the top-100 mean is
-0.1, which makes the same numeric threshold a different bar in each.
+as a failed sanity check. And do not compare *rescaled*
+`interaction_score` values across runs **directly**: scores are rescaled
+per run so the top-100 mean is 0.1, which makes the same numeric
+threshold a different bar in each. Cross-run comparison is supported, it
+just needs the factor divided out - every run records its own in
+`celltype_results.attrs['laris_scale_factor']` (and
+`lr_adata.uns['laris_scale_factor']`), so dividing each run's scores by
+its factor puts them back on a common scale. Passing `rescale=False`
+sets the factor to 1.0 and skips the step entirely.
 
 ### The control that does apply
 
-`permuteLRPairs` builds a decoy database of the same size in which the
-pairings are random. Every decoy pair is null by construction, so a
-calibrated run should return almost nothing — at any dataset size.
+If neither shuffle is the null, what is? A dataset with **no structure to
+find**. That is the calibration check, and it is the one in our own test
+suite:
 
-```python
-decoy = la.tl.permuteLRPairs(lr_df, adata, random_seed=0)
-lr_d  = la.tl.prepareLRInteraction(adata, decoy, use_rep_spatial="X_spatial")
-bg_d  = la.tl.prepareLRBackground(adata, decoy, use_rep_spatial="X_spatial")
-_, res_d = la.tl.runLARIS(lr_d, adata, use_rep="X_spatial",
-                          use_rep_spatial="X_spatial",
-                          groupby="cell_type", background=bg_d)
+- **Noise returns nothing.** A random count matrix with random
+  coordinates and random labels yields **zero** interactions at
+  FDR < 0.05, with the raw p-values centred near the middle of their
+  range (`tests/test_factorized_null.py::test_calibration_on_noise`).
+- **Planted signal is found.** A spatially coherent ligand blob in cell
+  type A next to a receptor blob in B is recovered with a small p-value
+  (`test_power_on_planted_signal`).
 
-(res_d.p_value_fdr < 0.05).sum()      # expect ~0
-```
+Those two together are the calibration story: the test finds structure
+that is there and none that is not. If you want a control in your own
+suite, that pair is the one to copy.
 
-By default the decoy ligands are drawn from the real ligand pool and the
-receptors from the real receptor pool, so each side keeps a realistic
-expression distribution and only the *pairing* is destroyed — which is
-exactly the thing the p-value is testing.
+### What the decoy database is *not*
+
+`permuteLRPairs` rewires the database so that only the *pairing* changes.
+It is tempting to read that as a pass/fail control — every decoy pair is
+"wrong", so surely a calibrated run should return almost none of them.
+
+**It does not, and that is not a defect.** On the tonsil data a rewired
+database recovers most of what the real one calls. The reason is the
+subject of the next section: the p-value tests how a pair's expression is
+*arranged*, and a rewired pair of two genes with the same marker
+structure is arranged just as well. The decoy is therefore a
+**measurement of what the database contributes**, not a check that your
+run is calibrated — see [§7](#7-what-the-database-contributes-measured),
+which is where it belongs.
 
 ## 7. What the database contributes, measured
 

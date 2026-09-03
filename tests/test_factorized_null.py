@@ -949,3 +949,222 @@ class TestDecoyReport:
         rep = la.tl.decoyReport(self._pair(planted=100), self._pair(seed=8),
                                 thresholds=(0.1,), verbosity=0)
         assert list(rep["per_threshold"]) == [0.1]
+
+
+class TestObservedPairExcludedByPairIdentity:
+    """The exactness guarantee: the observed pair is never in its own null.
+
+    LARIS does not exclude self by *gene* identity - a ligand may sit in
+    its own matched set, and on the tonsil data 135 of 515 ligands and
+    117 of 483 receptors do. Exactness comes from ``db_mask``, which
+    removes every *database pair* from every k x k block, so the observed
+    pair is outside its own support by PAIR identity. That is a set
+    lookup on (ligand, receptor), which makes it immune to the KDTree
+    distance-tie problem that breaks positional self-exclusion
+    (``indices[:, 1:]``) when duplicate mean/variance stats collide - see
+    the PIASO note of 2026-09-01 and its reply.
+
+    These tests pin the property so a refactor that switches to gene
+    identity "for simplicity" fails loudly.
+    """
+
+    def _block(self, bg, lig, rec, spatial_weight=3.0, mu_gsp=0.25):
+        """Rebuild one pair's valid block exactly as _delta_block does."""
+        U = len(bg.gene_index)
+        pos = {g: i for i, g in enumerate(bg.gene_index)}
+        rows, cols = [], []
+        for _l, _r in bg.db_pairs:
+            li, ri = pos.get(_l), pos.get(_r)
+            if li is not None and ri is not None:
+                rows.append(li); cols.append(ri)
+        db_bool = sp.csr_matrix(
+            (np.ones(len(rows), dtype=np.int8), (rows, cols)), shape=(U, U))
+        ii = bg.matched_ligand[lig]
+        jj = bg.matched_receptor[rec]
+        db_mask = np.asarray(db_bool[np.ix_(ii, jj)].todense()).astype(bool)
+        valid = ~db_mask.ravel()
+        flat = (ii[:, None] * U + jj[None, :]).ravel()[valid]
+        return ii, jj, flat, db_mask, pos, U
+
+    def test_self_matched_pair_is_absent_from_its_own_block(self, fixture):
+        """A pair whose BOTH genes self-match must still be excluded."""
+        A, lr_df, lr, bg = fixture
+        pos = {g: i for i, g in enumerate(bg.gene_index)}
+        selfmatched = [
+            (l, r) for l, r in zip(lr_df.ligand, lr_df.receptor)
+            if l in bg.matched_ligand and r in bg.matched_receptor
+            and pos.get(l) in set(bg.matched_ligand[l].tolist())
+            and pos.get(r) in set(bg.matched_receptor[r].tolist())
+        ]
+        assert selfmatched, (
+            "fixture must contain a pair whose ligand and receptor both "
+            "appear in their own matched sets - otherwise this test proves "
+            "nothing")
+        for lig, rec in selfmatched:
+            ii, jj, flat, _, pos_, U = self._block(bg, lig, rec)
+            own = pos_[lig] * U + pos_[rec]
+            assert own not in set(flat.tolist()), (
+                f"{lig}::{rec} is present in its own null support")
+
+    def test_block_size_is_k2_minus_database_pairs(self, fixture):
+        """len(flat) == k**2 - (database pairs falling inside the block)."""
+        A, lr_df, lr, bg = fixture
+        for lig, rec in list(zip(lr_df.ligand, lr_df.receptor))[:8]:
+            if lig not in bg.matched_ligand or rec not in bg.matched_receptor:
+                continue
+            ii, jj, flat, db_mask, _, _ = self._block(bg, lig, rec)
+            assert len(flat) == len(ii) * len(jj) - int(db_mask.sum())
+
+    def test_no_database_pair_survives_in_any_block(self, fixture):
+        """Not just the observed pair: no real pair may be in any null."""
+        A, lr_df, lr, bg = fixture
+        real = {(l, r) for l, r in zip(lr_df.ligand, lr_df.receptor)}
+        for lig, rec in list(zip(lr_df.ligand, lr_df.receptor))[:6]:
+            if lig not in bg.matched_ligand or rec not in bg.matched_receptor:
+                continue
+            ii, jj, flat, _, _, U = self._block(bg, lig, rec)
+            names = bg.gene_index
+            for f in flat.tolist():
+                pair = (names[f // U], names[f % U])
+                assert pair not in real, (
+                    f"database pair {pair[0]}::{pair[1]} survived inside the "
+                    f"null of {lig}::{rec}")
+
+    def test_exclusion_survives_exact_feature_ties(self):
+        """Duplicate mean/variance stats must not smuggle a pair back in.
+
+        This is the failure mode positional self-exclusion has: with
+        identical features the KDTree ordering is arbitrary, so a gene can
+        outrank itself. Pair-identity exclusion is indifferent to it.
+        """
+        rng = np.random.default_rng(11)
+        n, g = 400, 60
+        # twin genes: columns 0/1 and 2/3 are exact duplicates, so the
+        # ligand and receptor tie with their twins in feature space
+        base = rng.poisson(4, size=(n, g)).astype(float)
+        base[:, 1] = base[:, 0]
+        base[:, 3] = base[:, 2]
+        genes = [f"G{i:03d}" for i in range(g)]
+        A = ad.AnnData(X=sp.csr_matrix(base), var=pd.DataFrame(index=genes))
+        A.obsm["X_spatial"] = rng.random((n, 2)) * 100
+        A.obs["ct"] = pd.Categorical(rng.choice(["A", "B"], n))
+        lr_df = pd.DataFrame({"ligand": ["G000"], "receptor": ["G002"]})
+        bg = _quiet(la.tl.prepareLRBackground, A, lr_df, n_pool=40,
+                    n_matched_genes=8, use_rep_spatial="X_spatial",
+                    verbosity=0)
+        ii, jj, flat, _, pos, U = self._block(bg, "G000", "G002")
+        assert pos["G000"] * U + pos["G002"] not in set(flat.tolist())
+
+    def test_end_to_end_pvalue_never_below_the_exact_floor(self, fixture):
+        """The reported p can never undercut 1/(support+1)."""
+        A, lr_df, lr, bg = fixture
+        _, res = _quiet(la.tl.runLARIS, lr.copy(), A, use_rep="X_spatial",
+                        use_rep_spatial="X_spatial", groupby="ct",
+                        background=bg, n_cells_expressed_threshold=5,
+                        specificity_reference="all")
+        k = bg.params["n_matched_genes"]
+        live = res.p_value.dropna()
+        assert (live >= 1.0 / (k * k + 1) - 1e-12).all()
+
+
+class TestNPermutationsIsLegacyOnly:
+    """n_permutations drives only the sampled null.
+
+    With a background the null is enumerated exactly, so the parameter has
+    nothing to do. Silently ignoring it is what let the "raise it for
+    publication-quality precision" docstring outlive the sampled null.
+    """
+
+    def test_warns_when_passed_with_a_background(self, fixture):
+        A, lr_df, lr, bg = fixture
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            with contextlib.redirect_stdout(io.StringIO()):
+                la.tl.runLARIS(lr.copy(), A, use_rep="X_spatial",
+                               use_rep_spatial="X_spatial", groupby="ct",
+                               background=bg, n_permutations=5000,
+                               n_cells_expressed_threshold=5,
+                               specificity_reference="all")
+        msgs = [str(x.message) for x in w
+                if issubclass(x.category, FutureWarning)]
+        assert any("ignored when background=" in m for m in msgs), msgs
+        assert any("n_matched_genes" in m for m in msgs), msgs
+
+    def test_silent_when_left_at_default(self, fixture):
+        A, lr_df, lr, bg = fixture
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            with contextlib.redirect_stdout(io.StringIO()):
+                la.tl.runLARIS(lr.copy(), A, use_rep="X_spatial",
+                               use_rep_spatial="X_spatial", groupby="ct",
+                               background=bg,
+                               n_cells_expressed_threshold=5,
+                               specificity_reference="all")
+        assert not [x for x in w if issubclass(x.category, FutureWarning)
+                    and "n_permutations" in str(x.message)]
+
+    def test_no_warning_without_a_background(self, fixture):
+        """On the legacy path the parameter is real and must stay quiet."""
+        A, lr_df, lr, bg = fixture
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            with contextlib.redirect_stdout(io.StringIO()):
+                la.tl.runLARIS(lr.copy(), A, use_rep="X_spatial",
+                               use_rep_spatial="X_spatial", groupby="ct",
+                               n_permutations=200,
+                               n_cells_expressed_threshold=5,
+                               specificity_reference="all")
+        assert not [x for x in w if issubclass(x.category, FutureWarning)
+                    and "n_permutations" in str(x.message)]
+
+    def test_value_does_not_change_the_factorized_result(self, fixture):
+        """Ignored means ignored: the p-values must be identical."""
+        A, lr_df, lr, bg = fixture
+
+        def run(**kw):
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                _, r = _quiet(la.tl.runLARIS, lr.copy(), A,
+                              use_rep="X_spatial",
+                              use_rep_spatial="X_spatial", groupby="ct",
+                              background=bg, n_cells_expressed_threshold=5,
+                              specificity_reference="all", **kw)
+            return r
+
+        a = run()
+        b = run(n_permutations=99)
+        np.testing.assert_array_equal(a.p_value.to_numpy(),
+                                      b.p_value.to_numpy())
+
+    def test_floor_warning_names_n_matched_genes_not_n_permutations(self):
+        """The floor advice must not send a background user to a no-op."""
+        rng = np.random.default_rng(5)
+        n, g = 300, 120
+        X = sp.csr_matrix(rng.poisson(3, size=(n, g)).astype(float))
+        genes = [f"G{i:03d}" for i in range(g)]
+        A = ad.AnnData(X=X, var=pd.DataFrame(index=genes))
+        A.obsm["X_spatial"] = rng.random((n, 2)) * 100
+        # many small groups -> large m per group -> the floor bound bites
+        A.obs["ct"] = pd.Categorical(rng.choice([f"c{i}" for i in range(6)], n))
+        lr_df = pd.DataFrame({"ligand": genes[0:40:2],
+                              "receptor": genes[1:40:2]})
+        with contextlib.redirect_stdout(io.StringIO()):
+            lr = la.tl.prepareLRInteraction(A, lr_df,
+                                            use_rep_spatial="X_spatial")
+            bg = la.tl.prepareLRBackground(A, lr_df, n_pool=60,
+                                           n_matched_genes=4,
+                                           use_rep_spatial="X_spatial",
+                                           verbosity=0)
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                la.tl.runLARIS(lr, A, use_rep="X_spatial",
+                               use_rep_spatial="X_spatial", groupby="ct",
+                               background=bg, n_cells_expressed_threshold=3,
+                               specificity_reference="all")
+        floor = [str(x.message) for x in w
+                 if "minimum achievable FDR" in str(x.message)]
+        assert floor, "fixture must trigger the floor warning to prove anything"
+        m = floor[0]
+        assert "n_matched_genes" in m, m
+        assert "n_permutations does not affect this null" in m, m
+        assert "use n_permutations >=" not in m, m

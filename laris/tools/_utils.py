@@ -1591,8 +1591,10 @@ def _calculate_laris_score_by_celltype(
         These are selected based on similarity of diffused score profiles.
         
     n_permutations : int, default=1000
-        Number of permutations for statistical testing. More permutations give
-        more precise p-values but take longer. Common values: 1000-10000.
+        Legacy resampled-pair null only; ignored when ``background`` is
+        given, where the null is enumerated exactly and the floor is
+        1/(n_matched_genes**2 + 1). More permutations give more precise
+        p-values but take longer. Common values: 1000-10000.
         P-values have a floor of 1/(n_permutations+1), and BH within a
         sender-receiver group of m tests raises the smallest attainable FDR
         to (m/k)/(n_permutations+1), where k is the number of interactions
@@ -2178,10 +2180,11 @@ def _calculate_laris_score_by_celltype(
 
         print(f"  ✓ Corrected {n_pairs_corrected} sender-receiver pairs")
 
-        # Permutation p-values have a floor of 1/(n_permutations+1). Within-
-        # group BH scales that floor by m/k, where m is the number of tests in
-        # the group and k the number of them reaching the floor, so the
-        # smallest achievable FDR in the group is (m/k)/(n_permutations+1).
+        # Both nulls have a floor: 1/(n_permutations+1) when sampled,
+        # 1/(n_matched_genes**2+1) when enumerated against a background.
+        # Within-group BH scales that floor by m/k, where m is the number of
+        # tests in the group and k the number of them reaching the floor, so
+        # the smallest achievable FDR in the group is (m/k)/(support+1).
         # The binding case is an isolated hit (k=1), giving m/(n_permutations+1);
         # warn when that exceeds 0.05, i.e. when a single strong interaction
         # could not clear FDR < 0.05 for purely numerical reasons. Groups where
@@ -2189,16 +2192,35 @@ def _calculate_laris_score_by_celltype(
         # 50 floor hits among 1,000 tests already reach FDR = 0.02 at the
         # default n_permutations=1000.
         if n_groups_fdr_floor_above_005 > 0:
+            # The arithmetic is identical for both nulls, but the knob is
+            # not: with a background the support is the enumerated
+            # n_matched_genes**2 and n_permutations does nothing, so
+            # naming it here would send the user to a no-op.
+            if background is not None:
+                _k = background.params.get('n_matched_genes', 0)
+                _advice = (
+                    f"the exact floor is 1/(n_matched_genes**2 + 1) = "
+                    f"1/{_k ** 2 + 1:,} with n_matched_genes={_k}. To make "
+                    f"an isolated hit attainable, raise n_matched_genes in "
+                    f"prepareLRBackground so that n_matched_genes**2 >= 20*m "
+                    f"for FDR < 0.05, 100*m for FDR < 0.01 and 1000*m for "
+                    f"FDR < 0.001 (n_permutations does not affect this null, "
+                    f"which is enumerated exactly)")
+            else:
+                _advice = (
+                    f"the sampling floor is 1/(n_permutations+1) with "
+                    f"n_permutations={n_permutations}. To make an isolated "
+                    f"hit attainable, use n_permutations >= 20*m for "
+                    f"FDR < 0.05, 100*m for FDR < 0.01 and 1000*m for "
+                    f"FDR < 0.001")
             warnings.warn(
                 f"{n_groups_fdr_floor_above_005} of {n_pairs_corrected} "
                 f"sender-receiver groups have a minimum achievable FDR above "
-                f"0.05 with n_permutations={n_permutations} (the smallest "
-                f"possible FDR in a group of m tests where k of them reach "
-                f"the permutation floor is (m/k)/(n_permutations+1), and this "
-                f"bound is for an isolated hit, k=1). Groups with several "
-                f"genuinely significant interactions are unaffected. To make "
-                f"an isolated hit attainable, use n_permutations >= 20*m for "
-                f"FDR < 0.05, 100*m for FDR < 0.01 and 1000*m for FDR < 0.001.",
+                f"0.05 (the smallest possible FDR in a group of m tests "
+                f"where k of them reach the floor is (m/k)/(support+1), and "
+                f"this bound is for an isolated hit, k=1). Groups with "
+                f"several genuinely significant interactions are unaffected. "
+                f"Here {_advice}.",
                 UserWarning,
                 stacklevel=2,
             )
