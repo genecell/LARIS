@@ -199,7 +199,14 @@ def _spatial_uns_from(source) -> dict:
     acc = getattr(source, 'spatial_images', None)
     if acc is not None:
         try:
-            return acc.as_uns() or {}
+            # Materialised: readCytome returns a detached AnnData that the
+            # caller may write to h5ad, and anndata's writer rejects a lazy
+            # image proxy in `uns`. Callers holding the Dataset open can use
+            # `ds.spatial_images.as_uns()` directly for the lazy form.
+            try:
+                return acc.as_uns(lazy=False) or {}
+            except TypeError:            # cytome < 0.4 has no `lazy` argument
+                return acc.as_uns() or {}
         except ImportError as exc:      # optional decoder missing
             warnings.warn(f"spatial image present but not decodable: {exc}")
             return {}

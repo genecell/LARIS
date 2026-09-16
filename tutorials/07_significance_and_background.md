@@ -156,17 +156,17 @@ not change:
 
 | `n_matched_genes` | floor | FDR < 0.05 | FDR < 0.01 |
 |---|---|---|---|
-| 10 | 9.9e-3 | 650 | **0** |
-| 30 | 1.1e-3 | 1,372 | 225 |
-| 100 (default) | 1.0e-4 | 1,345 | 120 |
+| 10 | 9.9e-3 | 934 | **0** |
+| 30 | 1.1e-3 | 1,435 | 331 |
+| 100 (default) | 1.0e-4 | 1,312 | 144 |
 
 At `k = 10` the floor is 1/101, so **no interaction can reach FDR < 0.01
 at all** - the zero in that row is arithmetic, not biology. Between
-`k = 30` and `k = 100` the loose column barely moves (1,372 to 1,345)
-while the strict column falls sharply (225 to 120): the larger support
-resolves the tail better and withdraws calls the coarser lattice had let
-through. The default is chosen to leave room below the thresholds people
-actually quote. The default is chosen to leave room below the
+`k = 30` and `k = 100` the strict column falls sharply (331 to 144): the
+larger support resolves the tail better and withdraws calls the coarser
+lattice had let through. The call count is **not monotone** in `k`, which
+is itself the point - this knob sets the *resolution* of the p-value, and
+it has to be reported. The default is chosen to leave room below the
 thresholds people actually quote.
 
 `n_pool` (default 4,000) sets how many genes the matched sets are drawn
@@ -280,13 +280,14 @@ genuinely co-expressed genes. Measured on the Slide-tags tonsil:
 
 | tonsil | FDR<0.05 | FDR<0.01 |
 |---|---|---|
-| real labels | 1,345 | 120 |
-| labels shuffled | 54 | 11 |
-| coordinates shuffled | 1,373 | 179 |
+| real labels | 1,312 | 144 |
+| labels shuffled | 33 | 14 |
+| coordinates shuffled | 1,276 | 166 |
 
 The two controls behave very differently, and the difference is the
 point. Shuffling **labels** destroys the cell-type structure the score
-is built on, and the calls collapse. Shuffling **coordinates** barely
+is built on, and the calls collapse - to 2.5% of the real-label count
+here, and to **zero** on a Visium HD mouse brain. Shuffling **coordinates** barely
 moves the count at all - because the null is rebuilt in the same shuffled
 world, so both the observed pair and its 10,000 pseudo-pairs lose their
 spatial structure together and the comparison between them survives.
@@ -371,10 +372,10 @@ TARGET-DECOY REPORT — what the database contributes
   from the data. A rewired database scored the same way shows how much
   of the result chance pairing alone reproduces here.
 
-  FDR < 0.05   real database   1,345 calls   |  rewired   1,241   |  estimated pairing-FDR 0.99
-  FDR < 0.01   real database     120 calls   |  rewired     109   |  estimated pairing-FDR 0.98
+  FDR < 0.05   real database   1,312 calls   |  rewired   1,178   |  estimated pairing-FDR 0.96
+  FDR < 0.01   real database     144 calls   |  rewired     144   |  estimated pairing-FDR 1.00
 
-  Best attainable pairing-FDR on this dataset: 0.886
+  Best attainable pairing-FDR on this dataset: 0.879
   Read as: of the calls at this threshold, roughly this fraction are
   matched by a database whose pairings are random. High values do not
   mean the interactions are absent - they mean the DATA cannot

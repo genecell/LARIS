@@ -170,7 +170,14 @@ def _augment_pool_for_saturation(
     kdt_all = KDTree(zfeat)
     pool = np.asarray(pool_pos)
     for _ in range(max_rounds):
-        idx = _matched_sets(feats[query_pos], feats[pool], k)
+        # A gene is never its own peer when deciding whether it HAS peers:
+        # the saturation test here always excludes self, independently of
+        # prepareLRBackground(exclude_self=...), which governs the matched
+        # sets actually used for the null. Counting a gene as its own
+        # above-neighbour would mask exactly the saturation this repairs.
+        qpi = _self_index(pool, query_pos)
+        idx = _matched_sets(feats[query_pos], feats[pool], k,
+                            query_pool_index=qpi)
         frac_below = (feats[pool][idx, 0] < feats[query_pos, 0][:, None]).mean(1)
         sat = np.flatnonzero(frac_below >= tol)
         if sat.size == 0:
@@ -184,29 +191,128 @@ def _augment_pool_for_saturation(
     return np.sort(pool)
 
 
+def _self_index(pool_pos: np.ndarray, query_pos: np.ndarray) -> np.ndarray:
+    """For each query gene, its own position inside `pool_pos`, else -1."""
+    where = {int(g): i for i, g in enumerate(np.asarray(pool_pos))}
+    return np.array([where.get(int(g), -1) for g in np.asarray(query_pos)],
+                    dtype=np.int64)
+
+
 def _matched_sets(query_feats: np.ndarray, pool_feats: np.ndarray,
-                  k: int) -> np.ndarray:
+                  k: int, query_pool_index: Optional[np.ndarray] = None
+                  ) -> np.ndarray:
     """k nearest pool genes per query gene in (mean, variance) space.
 
     Features are standardized on the pool's statistics so neither axis
     dominates. Same KDTree matcher as the rest of the ecosystem, restricted
     to the bounded candidate pool.
+
+    `query_pool_index` gives, for each query gene, its own position inside
+    the pool, or -1 when it is not a pool member. When supplied, a gene is
+    never its own match. This matters: the candidate pool is drawn by
+    quantiles over the whole transcriptome, so LR genes land in it (246 of
+    962 on tonsil), and a k-NN query returns the gene itself first. Its
+    pseudo-pairs then share the observed pair's exact profile on one side
+    and score systematically high, inflating the null.
     """
     mu = pool_feats.mean(axis=0)
     sd = pool_feats.std(axis=0)
     sd[sd == 0] = 1.0
     kdt = KDTree((pool_feats - mu) / sd)
-    k = min(k, pool_feats.shape[0])
-    _, idx = kdt.query((query_feats - mu) / sd, k=k)
-    return idx
+    want = min(k + (1 if query_pool_index is not None else 0),
+               pool_feats.shape[0])
+    _, idx = kdt.query((query_feats - mu) / sd, k=want)
+    idx = np.atleast_2d(idx)
+    if query_pool_index is None:
+        return idx[:, :k]
+    out = np.empty((idx.shape[0], k), dtype=idx.dtype)
+    for i in range(idx.shape[0]):
+        row = idx[i]
+        if query_pool_index[i] >= 0:
+            row = row[row != query_pool_index[i]]
+        out[i] = row[:k]
+    return out
 
 
-# ---------------------------------------------------------------------------
-# Gram tables
-# ---------------------------------------------------------------------------
+def _balanced_sets(feats: np.ndarray, pool_pos: np.ndarray,
+                   query_pos: np.ndarray, k: int,
+                   query_pool_index: Optional[np.ndarray] = None):
+    """Matched sets that **straddle** the gene: k/2 below, k/2 above.
 
-def _edge_gram(P: np.ndarray, Q: np.ndarray, graph: sp.spmatrix,
-               edge_chunk: int = 200_000) -> np.ndarray:
+    Plain k-NN suffers boundary bias - at the edge of a covariate
+    distribution every neighbour lies on one side - so an abundant gene's
+    matched set is systematically weaker than the gene and its null is too
+    easy. Splitting the nearest neighbours either side of the gene on the
+    mean axis makes ``match_frac_below`` = 0.5 by construction, at no cost
+    in pool size.
+
+    Distances are still taken in standardized (mean, variance) space: a
+    pure rank window on the mean was measured and rejected, since it
+    degrades the variance match 5.8-fold for the same mean balance.
+
+    Returns ``(idx, pool_sorted, n_edge_limited)`` where ``idx`` indexes
+    ``pool_sorted``, and ``n_edge_limited`` counts genes with fewer than
+    k/2 pool candidates on one side - genuinely at the top or bottom of
+    the transcriptome, backfilled from the other side and reported rather
+    than papered over.
+    """
+    mu = feats.mean(axis=0)
+    sd = feats.std(axis=0)
+    sd[sd == 0] = 1.0
+    z = (feats - mu) / sd
+    pool_pos = np.asarray(pool_pos)
+    order = np.argsort(feats[pool_pos, 0], kind="stable")
+    pool_sorted = pool_pos[order]
+    zp = z[pool_sorted]
+    means_sorted = feats[pool_sorted, 0]
+    npool = len(pool_sorted)
+    k = min(k, npool if query_pool_index is None else max(npool - 1, 1))
+    half = k // 2
+    out = np.empty((len(query_pos), k), dtype=np.int64)
+    edge_limited = 0
+    # position of each query gene inside pool_sorted, or -1
+    where = {g: i for i, g in enumerate(pool_sorted)}
+    for i, gi in enumerate(query_pos):
+        cut = int(np.searchsorted(means_sorted, feats[gi, 0], side="right"))
+        below = np.arange(0, cut)
+        above = np.arange(cut, npool)
+        self_i = where.get(int(gi), -1)
+        if query_pool_index is not None and self_i >= 0:
+            below = below[below != self_i]
+            above = above[above != self_i]
+        need_lo, need_hi = half, k - half
+        if above.size < need_hi:
+            need_hi = above.size
+            need_lo = k - need_hi
+            edge_limited += 1
+        elif below.size < need_lo:
+            need_lo = below.size
+            need_hi = k - need_lo
+            edge_limited += 1
+        pick = []
+        for side, need in ((below, need_lo), (above, need_hi)):
+            if need <= 0 or side.size == 0:
+                continue
+            if side.size <= need:
+                pick.append(side)
+            else:
+                d = np.linalg.norm(zp[side] - z[gi], axis=1)
+                pick.append(side[np.argpartition(d, need)[:need]])
+        sel = np.concatenate(pick) if pick else np.empty(0, dtype=np.int64)
+        if sel.size < k:                       # degenerate pool
+            rest = np.setdiff1d(np.arange(npool), sel, assume_unique=False)
+            if self_i >= 0 and query_pool_index is not None:
+                rest = rest[rest != self_i]
+            d = np.linalg.norm(zp[rest] - z[gi], axis=1)
+            sel = np.concatenate(
+                [sel, rest[np.argsort(d)[:k - sel.size]]])
+        out[i] = sel[:k]
+    return out, pool_sorted, edge_limited
+
+
+def _edge_gram(Pt: np.ndarray, Qt: np.ndarray, graph: sp.spmatrix,
+               chunk_bytes: int = 256 << 20,
+               assume_symmetric: Optional[bool] = None) -> np.ndarray:
     """Edge Gram of the MASKED pseudo-pair profiles.
 
     ``prepareLRInteraction`` masks each pair score to cells where the
@@ -219,8 +325,36 @@ def _edge_gram(P: np.ndarray, Q: np.ndarray, graph: sp.spmatrix,
         v(u) v(c) =  [P(u)P(c)]_i [P(u)P(c)]_j  -  [P(u)Q(c)]_i [P(u)Q(c)]_j
                    - [Q(u)P(c)]_i [Q(u)P(c)]_j  +  [Q(u)Q(c)]_i [Q(u)Q(c)]_j
 
-    each term separable per gene, hence a (U x nnz) @ (nnz x U) product.
-    Chunked over edges so the U x chunk intermediates stay bounded.
+    each term separable per gene, hence a ``(U x nnz) @ (nnz x U)``
+    product. The row end and the column end are coupled through a per-gene
+    product, so this does **not** collapse to ``P W P.T``; the
+    ``U^2 x nnz`` cost is inherent (checked, R88.3).
+
+    Layout
+    ------
+    ``Pt`` and ``Qt`` are **cells x genes**, C-contiguous, so the per-edge
+    gather ``Pt[rows]`` is a contiguous row copy rather than a strided
+    column gather. That is what this routine is bound by: measured at
+    tonsil's shapes (U = 4,824, n = 5,695, 358,877 edges) the transposed
+    layout runs in 175 s against 450 s for genes x cells, with checksums
+    agreeing to every printed digit.
+
+    Memory
+    ------
+    The chunk is sized from ``chunk_bytes`` rather than fixed, and the
+    four terms are built one at a time. The previous fixed 200,000-edge
+    chunk held four ``U x 200_000`` float32 arrays at once - 14.4 GB at
+    tonsil's U - for no speed benefit at all (450 s at 200k against 449 s
+    at 20k).
+
+    Symmetry
+    --------
+    When the graph is symmetric - ``W.T @ W`` is, bitwise, on real data -
+    each unordered edge appears twice with an identical contribution,
+    because ``P_i(u)P_i(c)`` is unchanged by swapping ``u`` and ``c``.
+    ``assume_symmetric=True`` halves the edge list. ``W`` itself is
+    row-normalised and is **not** symmetric, so it must not take this
+    path; ``None`` detects the symmetry instead of assuming it.
 
     A sparser identity exists and was implemented, measured and rejected.
     Splitting P = Q + R (R nonzero only on raw-detected cells) and lifting
@@ -232,32 +366,48 @@ def _edge_gram(P: np.ndarray, Q: np.ndarray, graph: sp.spmatrix,
     in which every term carries an R factor. R is ~7x sparser than P
     (0.048 vs 0.344 on tonsil), giving roughly 400x fewer multiply-adds.
     A threaded Rust kernel over R's nonzeros nevertheless benchmarked
-    **2x SLOWER** than the four dense products (172 s vs 85 s on tonsil's
-    W graph): the dominant <A,D> term is a scatter over all U rows per
-    nonzero, which is memory-bound and cache-hostile, while the dense
-    path runs at near-peak BLAS throughput. Same lesson as the
-    co-localization pass. Float32 sgemm was also tried: 1.44x faster at
-    1.8e-7 relative error, rejected because the tail counts are exact
-    comparisons. The dense form below is the fastest correct version we
-    have.
+    **2x SLOWER** than the four dense products: the dominant <A,D> term is
+    a scatter over all U rows per nonzero, memory-bound and cache-hostile,
+    while the dense path runs at near-peak BLAS throughput. Float32 sgemm
+    was also tried: 1.44x faster at 1.8e-7 relative error, rejected
+    because the tail counts are exact comparisons.
     """
     g = sp.coo_matrix(graph)
-    U = P.shape[0]
+    U = Pt.shape[1]
+    rows, cols, w = g.row, g.col, g.data.astype(np.float64)
+
+    if assume_symmetric is None:
+        gc = g.tocsr()
+        assume_symmetric = (gc.shape[0] == gc.shape[1]
+                            and (abs(gc - gc.T) > 0).nnz == 0)
+    if assume_symmetric:
+        keep = rows <= cols
+        rows, cols = rows[keep], cols[keep]
+        w = w[keep].copy()
+        w[rows != cols] *= 2.0
+
+    nnz = len(rows)
+    # Per chunk we hold E as float32 (4 B) and E * w as float64 (8 B).
+    # The weights stay float64 ON PURPOSE: that upcast is what makes the
+    # product a dgemm. Downcasting them turns this into the float32 sgemm
+    # that was measured and rejected above, and the chunk-invariance test
+    # catches it.
+    edge_chunk = max(1024, min(nnz, int(chunk_bytes // max(12 * U, 1))))
 
     G = np.zeros((U, U), dtype=np.float64)
-    for start in range(0, g.nnz, edge_chunk):
-        stop = min(start + edge_chunk, g.nnz)
-        rows = g.row[start:stop]
-        cols = g.col[start:stop]
-        w = g.data[start:stop]
-        Epp = P[:, rows] * P[:, cols]
-        Epq = P[:, rows] * Q[:, cols]
-        Eqp = Q[:, rows] * P[:, cols]
-        Eqq = Q[:, rows] * Q[:, cols]
-        G += (Epp * w) @ Epp.T
-        G -= (Epq * w) @ Epq.T
-        G -= (Eqp * w) @ Eqp.T
-        G += (Eqq * w) @ Eqq.T
+    for start in range(0, nnz, edge_chunk):
+        stop = min(start + edge_chunk, nnz)
+        r = rows[start:stop]
+        c = cols[start:stop]
+        ww = w[start:stop][:, None]                 # float64, deliberately
+        for A, B, sign in ((Pt, Pt, 1.0), (Pt, Qt, -1.0),
+                           (Qt, Pt, -1.0), (Qt, Qt, 1.0)):
+            E = A[r] * B[c]                       # (chunk, U), contiguous
+            if sign > 0:
+                G += (E * ww).T @ E
+            else:
+                G -= (E * ww).T @ E
+            del E
     return G
 
 
@@ -271,17 +421,19 @@ class LRBackground:
 
     ``gene_index`` lists the U genes covered by the tables (candidate pool
     plus every LR gene, so real pairs resolve against the same tables).
-    ``P`` is their diffused matrix (U x cells, dense float32) using the
-    same kernel graph as ``prepareLRInteraction``. The Gram tables are
+    ``P`` is their diffused matrix (**cells x U**, dense float32,
+    C-contiguous) using the same kernel graph as
+    ``prepareLRInteraction``. The cells-major layout is deliberate: every
+    consumer gathers cells, and that is a contiguous copy here. The Gram tables are
     over the *gsp* graph that ``runLARIS`` builds for spatial specificity.
     """
     gene_index: pd.Index                     # U gene names
-    P: np.ndarray                            # (U, n_cells) diffused, float32
+    P: np.ndarray                            # (n_cells, U) diffused, float32
     Q: np.ndarray                            # P masked to raw-zero cells
     G_W: np.ndarray                          # edge Gram, observed gsp graph
     G_W2: np.ndarray                         # edge Gram, W'W of the gsp graph
-    G_dot: np.ndarray                        # P @ P.T      (=> m1 * n)
-    G_sq: np.ndarray                         # P^2 @ (P^2).T (=> m2 * n, ||v||^2)
+    G_dot: np.ndarray                        # P.T @ P      (=> m1 * n)
+    G_sq: np.ndarray                         # (P^2).T @ P^2 (=> m2 * n, ||v||^2)
     R: float                                 # analytic E[sum row w'^2] * n
     n_cells: int
     matched_ligand: Dict[str, np.ndarray] = field(default_factory=dict)
@@ -290,6 +442,9 @@ class LRBackground:
     # per LR gene: fraction of its matched set with a lower mean (1.0 =
     # saturated; every pseudo-pair is weaker than the real one)
     match_frac_below: Dict[str, float] = field(default_factory=dict)
+    # genes with fewer than k/2 pool candidates on one side under
+    # balanced matching: genuinely at the edge of the transcriptome
+    edge_limited: int = 0
     params: dict = field(default_factory=dict)
 
     def positions(self, genes) -> np.ndarray:
@@ -311,6 +466,8 @@ def prepareLRBackground(
     n_pool: int = 4000,
     augment_pool: bool = True,
     n_matched_genes: int = 100,
+    matching: str = 'balanced',
+    exclude_self: bool = True,
     number_nearest_neighbors: int = 20,
     use_rep_spatial: str = 'X_spatial',
     use_rep_gsp: Optional[str] = None,
@@ -437,23 +594,45 @@ def prepareLRBackground(
     # matched sets: k nearest *pool* genes per LR gene (kNN-within-pool)
     feats = np.column_stack([m, v])
     # positions of the pool genes inside the table gene set
-    pool_tab_pos = pos_in_tables(var_names[pool_pos])
-    lig_idx = _matched_sets(feats[var_names.get_indexer(lig_genes)],
-                            feats[pool_pos], n_matched_genes)
-    rec_idx = _matched_sets(feats[var_names.get_indexer(rec_genes)],
-                            feats[pool_pos], n_matched_genes)
-    matched_ligand = {g: pool_tab_pos[lig_idx[i]]
+    def _qpi(pos_):
+        return _self_index(pool_pos, pos_) if exclude_self else None
+
+    if matching not in ('knn', 'balanced'):
+        raise ValueError(f"matching must be 'knn' or 'balanced', got {matching!r}")
+    lig_pos = var_names.get_indexer(lig_genes)
+    rec_pos = var_names.get_indexer(rec_genes)
+    edge_limited = 0
+    if matching == 'balanced':
+        lig_idx, lig_pool, e1 = _balanced_sets(
+            feats, pool_pos, lig_pos, n_matched_genes,
+            query_pool_index=_qpi(lig_pos))
+        rec_idx, rec_pool, e2 = _balanced_sets(
+            feats, pool_pos, rec_pos, n_matched_genes,
+            query_pool_index=_qpi(rec_pos))
+        edge_limited = e1 + e2
+    else:
+        lig_idx = _matched_sets(feats[lig_pos], feats[pool_pos],
+                                n_matched_genes,
+                                query_pool_index=_qpi(lig_pos))
+        rec_idx = _matched_sets(feats[rec_pos], feats[pool_pos],
+                                n_matched_genes,
+                                query_pool_index=_qpi(rec_pos))
+        lig_pool = rec_pool = np.asarray(pool_pos)
+    lig_tab = pos_in_tables(var_names[lig_pool])
+    rec_tab = pos_in_tables(var_names[rec_pool])
+    matched_ligand = {g: lig_tab[lig_idx[i]]
                       for i, g in enumerate(lig_genes)}
-    matched_receptor = {g: pool_tab_pos[rec_idx[i]]
+    matched_receptor = {g: rec_tab[rec_idx[i]]
                         for i, g in enumerate(rec_genes)}
     # Matchability: fraction of a gene's matched set with a LOWER mean
     # than the gene itself. 1.0 means every match is weaker - the null
     # for any pair containing this gene is systematically easy, and its
     # p-values overstate. With the n_extreme pool repair this should be
     # rare; the value is reported so the residual cases are visible.
-    pool_means = m[pool_pos]
     match_frac_below = {}
-    for genes_, idx_ in ((lig_genes, lig_idx), (rec_genes, rec_idx)):
+    for genes_, idx_, pl in ((lig_genes, lig_idx, lig_pool),
+                             (rec_genes, rec_idx, rec_pool)):
+        pool_means = m[np.asarray(pl)]
         gm = m[var_names.get_indexer(genes_)]
         for i, g in enumerate(genes_):
             match_frac_below[g] = float((pool_means[idx_[i]] < gm[i]).mean())
@@ -470,16 +649,19 @@ def prepareLRBackground(
         mode='distance', include_self=True)
     knn = sp.csr_matrix(_utils._apply_knn_kernel(knn, sigma='adaptive'))
     genexcell = sp.csr_matrix(X[:, gene_pos]).T
-    P = np.empty((U, n_cells), dtype=np.float32)
+    # cells x genes, C-contiguous: every downstream consumer gathers
+    # CELLS, and in this layout that is a contiguous row copy rather than
+    # a strided column gather. Measured 2.6x on the edge Grams (R89.8).
+    P = np.empty((n_cells, U), dtype=np.float32)
     for start in range(0, n_cells, block_size * 32):
         stop = min(start + block_size * 32, n_cells)
-        P[:, start:stop] = np.asarray(
-            (genexcell @ knn[start:stop, :].T).todense())
+        P[start:stop, :] = np.asarray(
+            (knn[start:stop, :] @ genexcell.T).todense())
     # prepareLRInteraction keeps a pair's score only in cells where ligand
     # OR receptor raw counts are nonzero. Q carries each gene's diffused
     # values on its raw-zero cells; the masked pseudo-pair profile is then
     # P_i*P_j - Q_i*Q_j (see _edge_gram), which keeps every Gram identity.
-    raw_nonzero = np.asarray((X[:, gene_pos] != 0).todense()).T
+    raw_nonzero = np.asarray((X[:, gene_pos] != 0).todense())   # cells x genes
     Q = np.where(raw_nonzero, 0.0, P).astype(np.float32)
     del raw_nonzero
 
@@ -491,15 +673,28 @@ def prepareLRBackground(
         n_nearest_neighbors=n_nearest_neighbors_gsp,
         sigma=sigma_gsp, sections=sections)
 
-    G_W = _edge_gram(P, Q, W)
-    G_W2 = _edge_gram(P, Q, (W.T @ W).tocoo())
-    P64 = P.astype(np.float64)
-    Q64 = Q.astype(np.float64)
-    G_dot = P64 @ P64.T - Q64 @ Q64.T
-    Psq = P64 ** 2
-    Qsq = Q64 ** 2
-    G_sq = Psq @ Psq.T - Qsq @ Qsq.T
-    del P64, Q64, Psq, Qsq
+    # W is row-normalised and therefore NOT symmetric; W'W is (bitwise,
+    # checked on real data). Only the latter may halve its edge list.
+    G_W = _edge_gram(P, Q, W, assume_symmetric=False)
+    G_W2 = _edge_gram(P, Q, (W.T @ W).tocoo(), assume_symmetric=True)
+
+    # Accumulate over cell blocks instead of materialising four full
+    # float64 copies of a cells x genes array at once (149 GB at one
+    # million cells and U = 5,000; R88.2).
+    G_dot = np.zeros((U, U), dtype=np.float64)
+    G_sq = np.zeros((U, U), dtype=np.float64)
+    cell_block = max(1, min(n_cells, int((256 << 20) // max(8 * U, 1))))
+    for start in range(0, n_cells, cell_block):
+        stop = min(start + cell_block, n_cells)
+        Pb = P[start:stop].astype(np.float64)
+        Qb = Q[start:stop].astype(np.float64)
+        G_dot += Pb.T @ Pb
+        G_dot -= Qb.T @ Qb
+        Pb *= Pb                      # in place: Pb is now P^2
+        Qb *= Qb
+        G_sq += Pb.T @ Pb
+        G_sq -= Qb.T @ Qb
+        del Pb, Qb
 
     R = n_cells * _expected_row_sq_sum(W.data, n_nearest_neighbors_gsp)
 
@@ -516,7 +711,9 @@ def prepareLRBackground(
         R=R, n_cells=n_cells,
         matched_ligand=matched_ligand, matched_receptor=matched_receptor,
         db_pairs=db_pairs, match_frac_below=match_frac_below,
+        edge_limited=edge_limited,
         params=dict(n_pool=n_pool, n_matched_genes=n_matched_genes,
+                    matching=matching, exclude_self=exclude_self,
                     number_nearest_neighbors=number_nearest_neighbors,
                     use_rep_spatial=use_rep_spatial, use_rep_gsp=use_rep_gsp,
                     n_nearest_neighbors_gsp=n_nearest_neighbors_gsp,
@@ -633,17 +830,21 @@ def compute_factorized_pvalues(
     # masked pseudo-pair is nonzero iff both diffused values are nonzero
     # AND the raw-OR mask holds: D_i D_j - E_i E_j with E = D on raw-zero
     # cells (same difference structure as the score itself).
-    D = (P > 0).astype(np.float32)
-    E = (bg.Q > 0).astype(np.float32)
+    # bool masks, not float32: a quarter of the memory, and the per-group
+    # slice is what gets cast. P is cells x genes, so D[cells] is a
+    # contiguous row gather.
+    D = P > 0
+    E = bg.Q > 0
     frac = {}
     for g in groups_order:
         cells = np.flatnonzero(group_labels == g)
         if len(cells) == 0:
             frac[g] = np.zeros((U, U), dtype=np.float32)
         else:
-            Dg = D[:, cells]
-            Eg = E[:, cells]
-            frac[g] = (Dg @ Dg.T - Eg @ Eg.T) / np.float32(len(cells))
+            Dg = D[cells].astype(np.float32)
+            Eg = E[cells].astype(np.float32)
+            frac[g] = (Dg.T @ Dg - Eg.T @ Eg) / np.float32(len(cells))
+            del Dg, Eg
     del D, E
 
     # --- co-localization: pass A accumulates the row-sum of cos^2 ---------
@@ -669,10 +870,14 @@ def compute_factorized_pvalues(
         # threaded sparse decomposition (see src/lib.rs): flops scale
         # with the raw data's sparsity; measured 2.1x over threaded BLAS
         # at tonsil's 4.8% density, growing as density falls
-        _Pnz = sp.csr_matrix(P - Q)
+        # P is already cells x genes, which is exactly what the kernel
+        # wants - the ascontiguousarray(P.T) copy this used to make is
+        # gone. Pnz must still be presented genes x cells: csc of the
+        # cells-major difference transposes to csr for free, sharing
+        # the same index and data arrays.
+        _Pnz = sp.csc_matrix(P - Q).T.tocsr()
         _Pnz_csc = _Pnz.tocsc()
-        _Pt = np.ascontiguousarray(P.T)
-        _rust_args = (_Pt,
+        _rust_args = (P,
                       _Pnz.indptr.astype(np.int64),
                       _Pnz.indices.astype(np.int32),
                       _Pnz.data.astype(np.float32),
@@ -682,10 +887,23 @@ def compute_factorized_pvalues(
 
     def _ctc_cos(idx):
         y = np.asarray(ctXct_cell[idx].todense()).ravel().astype(np.float32)
+        # y = o_s * o_r is exactly zero wherever the two cell types do not
+        # both have neighbours. At fine annotation the median pair
+        # co-locates in under 1% of cells, so the zeros are the work.
+        nz = np.flatnonzero(y)
+        if nz.size == 0:
+            return np.zeros((U, U), dtype=np.float64)
         if _rust is not None:
+            # the kernel skips zero-y cells internally (see src/lib.rs)
             N = _rust.ctc_cos_numerator(*_rust_args, y)
         else:
-            N = (P * y) @ P.T - (Q * y) @ Q.T
+            # same restriction for the pure-NumPy path. Equivalent
+            # arithmetic, not bitwise: restricting the product changes
+            # the dgemm's internal blocking. P is cells-major, so P[nz]
+            # is a contiguous row gather.
+            yc = y[nz][:, None]
+            Pn, Qn = P[nz], Q[nz]
+            N = (Pn * yc).T @ Pn - (Qn * yc).T @ Qn
         den = v_norm * y_norms[idx]
         out = np.zeros_like(N, dtype=np.float64)
         np.divide(N, den, out=out, where=den > 0)

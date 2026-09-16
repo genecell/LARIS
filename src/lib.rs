@@ -58,6 +58,17 @@ fn ctc_cos_numerator<'py>(
                 let stop = rp[j + 1] as usize;
                 for e in start..stop {
                     let c = ri[e] as usize;
+                    // y is the co-location profile o_s * o_r of one
+                    // sender-receiver pair: exactly zero in every cell
+                    // where the two types do not both have neighbours.
+                    // At fine annotation the median pair co-locates in
+                    // 0.6% of cells, so without this line ~98% of the
+                    // arithmetic below is multiplication by zero. The
+                    // skip is BITWISE exact - it removes a contribution
+                    // of exactly +/-0.0 from a sequential accumulator.
+                    if y[c] == 0.0 {
+                        continue;
+                    }
                     let w = y[c] * rd[e];
                     let pcol = &pt_flat[c * u..(c + 1) * u];
                     for (a, p) in acol.iter_mut().zip(pcol.iter()) {

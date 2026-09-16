@@ -19,6 +19,7 @@ import laris as la
 from laris.tools import _utils
 from laris.tools._background import (
     _analytic_random_gsp,
+    _rust_kernels,
     _edge_gram,
     _expected_row_sq_sum,
     _iqr_apply,
@@ -63,15 +64,40 @@ class TestGramIdentities:
     def test_edge_gram_matches_bruteforce(self):
         rng = np.random.default_rng(3)
         n, U = 150, 7
-        P = rng.random((U, n)).astype(np.float32)
-        mask = rng.random((U, n)) < 0.4
+        # cells x genes, the layout _edge_gram now takes
+        P = rng.random((n, U)).astype(np.float32)
+        mask = rng.random((n, U)) < 0.4
         Q = np.where(mask, P, 0.0).astype(np.float32)
         W = sp.random(n, n, density=0.05, random_state=5)
-        G = _edge_gram(P, Q, W, edge_chunk=100)
+        G = _edge_gram(P, Q, W, chunk_bytes=12 * U * 100,
+                       assume_symmetric=False)
         for i, j in [(0, 1), (2, 5), (6, 6)]:
-            v = P[i] * P[j] - Q[i] * Q[j]
+            v = P[:, i] * P[:, j] - Q[:, i] * Q[:, j]
             direct = float(v @ (W @ v))
             assert np.isclose(G[i, j], direct, rtol=1e-5), (i, j)
+
+    def test_edge_gram_symmetric_shortcut_matches_full(self):
+        """The upper-triangle path must agree with the full edge list."""
+        rng = np.random.default_rng(11)
+        n, U = 120, 6
+        P = rng.random((n, U)).astype(np.float32)
+        Q = np.where(rng.random((n, U)) < 0.4, P, 0.0).astype(np.float32)
+        B = sp.random(n, n, density=0.05, random_state=7)
+        W = (B.T @ B).tocoo()                       # symmetric by construction
+        full = _edge_gram(P, Q, W, assume_symmetric=False)
+        half = _edge_gram(P, Q, W, assume_symmetric=True)
+        assert np.allclose(full, half, rtol=1e-9, atol=1e-12)
+
+    def test_edge_gram_chunking_is_invariant(self):
+        """Chunk size must not change the answer beyond rounding."""
+        rng = np.random.default_rng(12)
+        n, U = 140, 5
+        P = rng.random((n, U)).astype(np.float32)
+        Q = np.where(rng.random((n, U)) < 0.4, P, 0.0).astype(np.float32)
+        W = sp.random(n, n, density=0.06, random_state=9)
+        a = _edge_gram(P, Q, W, chunk_bytes=1 << 30, assume_symmetric=False)
+        b = _edge_gram(P, Q, W, chunk_bytes=12 * U * 8, assume_symmetric=False)
+        assert np.allclose(a, b, rtol=1e-10, atol=1e-12)
 
     def test_masked_profile_is_difference_of_products(self):
         # v = P_i*P_j on OR-mask cells, 0 elsewhere == P_i*P_j - Q_i*Q_j
@@ -89,7 +115,8 @@ class TestGramIdentities:
         for lig, rec in [("G000", "G001"), ("G010", "G011")]:
             i = bg.positions([lig])[0]
             j = bg.positions([rec])[0]
-            v_tab = bg.P[i] * bg.P[j] - bg.Q[i] * bg.Q[j]
+            v_tab = (bg.P[:, i] * bg.P[:, j]
+                     - bg.Q[:, i] * bg.Q[:, j])
             v_pipe = np.asarray(lr[:, f"{lig}::{rec}"].X.todense()).ravel()
             assert np.allclose(v_tab, v_pipe, rtol=1e-4, atol=1e-6)
 
@@ -986,25 +1013,74 @@ class TestObservedPairExcludedByPairIdentity:
         flat = (ii[:, None] * U + jj[None, :]).ravel()[valid]
         return ii, jj, flat, db_mask, pos, U
 
-    def test_self_matched_pair_is_absent_from_its_own_block(self, fixture):
-        """A pair whose BOTH genes self-match must still be excluded."""
+    def test_no_gene_is_its_own_match(self, fixture):
+        """A gene must never appear in its own matched set.
+
+        The candidate pool is drawn by quantiles over the whole
+        transcriptome, so LR genes land in it and a plain k-NN query
+        returns the gene itself first. Its pseudo-pairs then share the
+        observed pair's exact profile on one side, which inflates the
+        null. Until v0.13.0 this happened for 246 of 962 tonsil LR genes.
+        """
         A, lr_df, lr, bg = fixture
         pos = {g: i for i, g in enumerate(bg.gene_index)}
-        selfmatched = [
-            (l, r) for l, r in zip(lr_df.ligand, lr_df.receptor)
-            if l in bg.matched_ligand and r in bg.matched_receptor
-            and pos.get(l) in set(bg.matched_ligand[l].tolist())
-            and pos.get(r) in set(bg.matched_receptor[r].tolist())
-        ]
-        assert selfmatched, (
-            "fixture must contain a pair whose ligand and receptor both "
-            "appear in their own matched sets - otherwise this test proves "
-            "nothing")
-        for lig, rec in selfmatched:
-            ii, jj, flat, _, pos_, U = self._block(bg, lig, rec)
-            own = pos_[lig] * U + pos_[rec]
-            assert own not in set(flat.tolist()), (
-                f"{lig}::{rec} is present in its own null support")
+        offenders = []
+        for g, ii in bg.matched_ligand.items():
+            if pos.get(g) in set(np.asarray(ii).tolist()):
+                offenders.append(("ligand", g))
+        for g, jj in bg.matched_receptor.items():
+            if pos.get(g) in set(np.asarray(jj).tolist()):
+                offenders.append(("receptor", g))
+        assert not offenders, f"genes matched to themselves: {offenders[:5]}"
+
+    def test_default_matching_is_balanced_and_self_excluding(self, fixture):
+        """v0.14.0 default: the matched set straddles the gene, and the
+        gene is never in it."""
+        A, lr_df, lr, bg = fixture
+        assert bg.params["matching"] == "balanced"
+        assert bg.params["exclude_self"] is True
+
+    def test_balanced_matching_straddles_the_gene(self, fixture):
+        """match_frac_below must sit at 0.5 by construction, where plain
+        k-NN drifts above it for abundant genes."""
+        A, lr_df, lr, _ = fixture
+        bal = _quiet(la.tl.prepareLRBackground, A, lr_df, n_pool=40,
+                     n_matched_genes=6, matching="balanced",
+                     use_rep_spatial="X_spatial", verbosity=0)
+        knn = _quiet(la.tl.prepareLRBackground, A, lr_df, n_pool=40,
+                     n_matched_genes=6, matching="knn",
+                     use_rep_spatial="X_spatial", verbosity=0)
+        fb_bal = np.array(list(bal.match_frac_below.values()))
+        fb_knn = np.array(list(knn.match_frac_below.values()))
+        assert abs(np.median(fb_bal) - 0.5) <= abs(np.median(fb_knn) - 0.5)
+        # and the pool is not grown to achieve it
+        assert len(bal.gene_index) == len(knn.gene_index)
+
+    def test_knn_reproduces_the_legacy_path(self, fixture):
+        """matching='knn' must still be available, and must differ from
+        the new default - otherwise the flip did nothing."""
+        A, lr_df, lr, bg = fixture
+        legacy = _quiet(la.tl.prepareLRBackground, A, lr_df, n_pool=40,
+                        n_matched_genes=6, matching="knn",
+                        use_rep_spatial="X_spatial", verbosity=0)
+        assert legacy.params["matching"] == "knn"
+        # at least one gene's matched set must actually differ, or the
+        # flip changed nothing
+        differs = any(
+            not np.array_equal(np.sort(bg.matched_ligand[g]),
+                               np.sort(legacy.matched_ligand[g]))
+            for g in bg.matched_ligand if g in legacy.matched_ligand)
+        assert differs, "balanced and knn produced identical matched sets"
+
+    def test_pool_member_genes_exist_in_the_fixture(self, fixture):
+        """Guard the guard: the exclusion above is only meaningful if some
+        LR gene really is a pool member."""
+        A, lr_df, lr, bg = fixture
+        pool_genes = set(bg.gene_index)
+        lr_genes = set(lr_df.ligand) | set(lr_df.receptor)
+        assert lr_genes & pool_genes, (
+            "no LR gene is in the background tables - the self-match "
+            "exclusion test would be vacuous")
 
     def test_block_size_is_k2_minus_database_pairs(self, fixture):
         """len(flat) == k**2 - (database pairs falling inside the block)."""
@@ -1168,3 +1244,176 @@ class TestNPermutationsIsLegacyOnly:
         assert "n_matched_genes" in m, m
         assert "n_permutations does not affect this null" in m, m
         assert "use n_permutations >=" not in m, m
+
+
+class TestZeroProfileSkip:
+    """Pass A multiplies every pseudo-pair by a cell-type pair's
+    co-location profile y = o_s * o_r, which is exactly zero wherever the
+    two types do not both have neighbours. The kernel skips those cells.
+    These tests pin that the skip is real and that it changes nothing.
+    """
+
+    @staticmethod
+    def _args(rng, n=140, u=9, density=0.35):
+        P = rng.random((n, u)).astype(np.float32)          # cells x genes
+        Q = np.where(rng.random((n, u)) < 0.5, P, 0.0).astype(np.float32)
+        Pnz = sp.csc_matrix(P - Q).T.tocsr()
+        Pnz_csc = Pnz.tocsc()
+        return P, Q, (P, Pnz.indptr.astype(np.int64),
+                      Pnz.indices.astype(np.int32),
+                      Pnz.data.astype(np.float32),
+                      Pnz_csc.indptr.astype(np.int64),
+                      Pnz_csc.indices.astype(np.int32),
+                      Pnz_csc.data.astype(np.float32))
+
+    def test_zero_profile_cells_are_genuinely_ignored(self):
+        """BITWISE: perturbing the data in cells where y == 0 must not
+        move a single bit of the output. This is the strongest statement
+        of the skip's correctness, and it fails loudly if the branch is
+        ever removed."""
+        rust = _rust_kernels()
+        if rust is None:
+            pytest.skip("compiled kernels unavailable")
+        rng = np.random.default_rng(17)
+        n, u = 140, 9
+        P, Q, args = self._args(rng, n, u)
+        y = np.zeros(n, dtype=np.float32)
+        live = rng.choice(n, 20, replace=False)            # only 20 cells co-locate
+        y[live] = rng.random(20).astype(np.float32) + 0.1
+        base = rust.ctc_cos_numerator(*args, y)
+
+        # rebuild the inputs with the DEAD cells' expression replaced by
+        # arbitrary different values; the live cells are untouched
+        P2 = P.copy()
+        dead = np.setdiff1d(np.arange(n), live)
+        P2[dead] = rng.random((len(dead), u)).astype(np.float32) * 7.0
+        Q2 = np.where(rng.random((n, u)) < 0.5, P2, 0.0).astype(np.float32)
+        Q2[live] = Q[live]
+        P2[live] = P[live]
+        Pnz2 = sp.csc_matrix(P2 - Q2).T.tocsr()
+        Pnz2_csc = Pnz2.tocsc()
+        args2 = (P2, Pnz2.indptr.astype(np.int64),
+                 Pnz2.indices.astype(np.int32), Pnz2.data.astype(np.float32),
+                 Pnz2_csc.indptr.astype(np.int64),
+                 Pnz2_csc.indices.astype(np.int32),
+                 Pnz2_csc.data.astype(np.float32))
+        other = rust.ctc_cos_numerator(*args2, y)
+        assert np.array_equal(base, other), (
+            "cells with a zero co-location profile influenced the result")
+
+    def test_kernel_matches_dense_reference(self):
+        """The skipped kernel must still agree with the plain dense
+        formula over ALL cells, to float tolerance."""
+        rust = _rust_kernels()
+        if rust is None:
+            pytest.skip("compiled kernels unavailable")
+        rng = np.random.default_rng(18)
+        n, u = 120, 7
+        P, Q, args = self._args(rng, n, u)
+        y = np.zeros(n, dtype=np.float32)
+        live = rng.choice(n, 30, replace=False)
+        y[live] = rng.random(30).astype(np.float32) + 0.1
+        got = rust.ctc_cos_numerator(*args, y)
+        yc = y[:, None]
+        want = (P * yc).T @ P - (Q * yc).T @ Q
+        assert np.allclose(got, want, rtol=1e-4, atol=1e-5)
+
+    def test_restricted_numpy_path_matches_full(self):
+        """The NumPy fallback's nonzero restriction is arithmetically
+        equivalent to the full product (not bitwise: blocking differs)."""
+        rng = np.random.default_rng(19)
+        n, u = 130, 8
+        P, Q, _ = self._args(rng, n, u)
+        y = np.zeros(n, dtype=np.float32)
+        live = rng.choice(n, 25, replace=False)
+        y[live] = rng.random(25).astype(np.float32) + 0.1
+        yc = y[:, None]
+        full = (P * yc).T @ P - (Q * yc).T @ Q
+        nz = np.flatnonzero(y)
+        ycn = y[nz][:, None]
+        Pn, Qn = P[nz], Q[nz]
+        restricted = (Pn * ycn).T @ Pn - (Qn * ycn).T @ Qn
+        assert np.allclose(full, restricted, rtol=1e-5, atol=1e-6)
+
+    def test_all_zero_profile_returns_zeros(self):
+        """A cell-type pair that never co-locates contributes nothing."""
+        rust = _rust_kernels()
+        if rust is None:
+            pytest.skip("compiled kernels unavailable")
+        rng = np.random.default_rng(20)
+        n, u = 100, 6
+        _, _, args = self._args(rng, n, u)
+        y = np.zeros(n, dtype=np.float32)
+        out = rust.ctc_cos_numerator(*args, y)
+        assert np.array_equal(out, np.zeros((u, u), dtype=np.float32))
+
+
+class TestAnchorBalance:
+    """Anchors must not inherit one condition's oversampling.
+
+    k-means is symmetric in the LABELS but centroid density follows POINT
+    density, so on an unbalanced cohort the pooled fit puts most anchors
+    in the larger condition's states. The matched profile is a mean over
+    anchors, so that weights the effect by prevalence - the very thing
+    the matched estimator exists to condition away.
+    """
+
+    @staticmethod
+    def _cloud(rng, n_a, n_b):
+        """Two conditions with partly disjoint states; B is oversampled."""
+        a = rng.normal(0, 1, (n_a, 4))
+        b = rng.normal(0, 1, (n_b, 4)) + np.array([6.0, 0, 0, 0])
+        emb = np.vstack([a, b])
+        lab = np.array(["A"] * n_a + ["B"] * n_b)
+        return emb, lab
+
+    def test_balanced_anchors_are_less_skewed(self):
+        from laris.tools._compareMatched import _anchor_points
+        rng = np.random.default_rng(0)
+        emb, lab = self._cloud(rng, 500, 4500)      # B is 90% of cells
+        from sklearn.neighbors import NearestNeighbors
+
+        def allocation(anchors):
+            """Fraction of ANCHORS that sit in B's region.
+
+            Not the median share per anchor: with two well-separated
+            clusters every anchor is entirely in one of them, so the
+            per-anchor share is 0 or 1 and its median only reports which
+            side won. What matters is how the anchors are ALLOCATED.
+            """
+            nn = NearestNeighbors(n_neighbors=25).fit(emb)
+            _, idx = nn.kneighbors(anchors)
+            per_anchor = (lab[idx] == "B").mean(axis=1)
+            return float((per_anchor > 0.5).mean())
+
+        pooled = allocation(_anchor_points(emb, 40, 0))
+        balanced = allocation(_anchor_points(emb, 40, 0, balance_labels=lab))
+        assert balanced < pooled, (pooled, balanced)
+        # and it should move toward parity, not past it into the other bias
+        assert abs(balanced - 0.5) < abs(pooled - 0.5), (pooled, balanced)
+
+    def test_balance_is_a_no_op_on_a_balanced_cohort(self):
+        from laris.tools._compareMatched import _anchor_points
+        rng = np.random.default_rng(1)
+        emb, lab = self._cloud(rng, 2000, 2000)
+        a = _anchor_points(emb, 20, 3)
+        b = _anchor_points(emb, 20, 3, balance_labels=lab)
+        # same shape and comparable spread; exact equality is not expected
+        # because the subsample differs, but the geometry must not move much
+        assert a.shape == b.shape
+        assert abs(float(a.std()) - float(b.std())) < 0.5 * float(a.std())
+
+    def test_single_condition_falls_back_to_pooled(self):
+        from laris.tools._compareMatched import _anchor_points
+        rng = np.random.default_rng(2)
+        emb = rng.normal(0, 1, (300, 3))
+        lab = np.array(["only"] * 300)
+        a = _anchor_points(emb, 10, 5)
+        b = _anchor_points(emb, 10, 5, balance_labels=lab)
+        assert np.allclose(a, b), "one condition must not change the fit"
+
+    def test_default_is_balanced(self):
+        import inspect
+        from laris.tools._compareMatched import compareLARISMatched
+        assert (inspect.signature(compareLARISMatched)
+                .parameters["anchor_balance"].default is True)

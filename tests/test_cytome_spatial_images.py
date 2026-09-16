@@ -269,3 +269,35 @@ class TestLrAdataCarriesImages:
         assert "spatial" in lr_adata.uns
         ctx = _resolve_background_image(lr_adata)
         assert ctx is not None and ctx["img"].shape == img.shape
+
+
+class TestMaterialisedUns:
+    """`readCytome` hands back a detached AnnData the caller may write to
+    h5ad, and anndata's writer rejects a lazy image proxy in ``uns``. So
+    ``_spatial_uns_from`` asks for the materialised form when the
+    accessor supports it, and falls back when it does not.
+    """
+
+    class _LazyAware:
+        """Accessor whose as_uns defaults to lazy, as a newer cytome would."""
+
+        def __init__(self, eager, lazy):
+            self._eager, self._lazy = eager, lazy
+            self.calls = []
+
+        def as_uns(self, lazy=True):
+            self.calls.append(lazy)
+            return self._lazy if lazy else self._eager
+
+    def test_materialised_form_is_requested_when_supported(self):
+        eager = {"libA": {"images": {"hires": "EAGER"}, "scalefactors": {}}}
+        lazy = {"libA": {"images": {"hires": "LAZY"}, "scalefactors": {}}}
+        acc = self._LazyAware(eager, lazy)
+        out = _spatial_uns_from(_AccessorOnly(acc))
+        assert out == eager, "must take the eager branch, not the lazy proxy"
+        assert acc.calls == [False]
+
+    def test_falls_back_when_accessor_has_no_lazy_argument(self):
+        d = {"libA": {"images": {"hires": "IMG"}, "scalefactors": {}}}
+        src = _AccessorOnly(_FakeSpatialImages(d))
+        assert _spatial_uns_from(src) == d
