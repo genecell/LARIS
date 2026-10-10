@@ -219,6 +219,98 @@ def _spatial_uns_from(source) -> dict:
     return {}
 
 
+def _cytome_gene_names(ds, gene_name_column: str = 'auto') -> pd.Index:
+    """Gene names of a cytome, one per stored feature column, in file order.
+
+    'auto' uses ``symbol`` where present and fills the gaps from
+    ``gene_id`` (``cytome.from_anndata`` stores AnnData var_names in
+    ``gene_id`` and leaves ``symbol`` empty). Position ``i`` of the result
+    names stored column ``i``, so it doubles as the column index used by
+    :func:`_read_cytome_columns`.
+    """
+    genes_df = ds.genes.to_pandas()
+    if gene_name_column == 'auto':
+        symbols = genes_df.get('symbol')
+        gene_ids = genes_df.get('gene_id')
+        if symbols is None and gene_ids is None:
+            raise KeyError(
+                f"Neither 'symbol' nor 'gene_id' found in the cytome "
+                f"genes table (available: {list(genes_df.columns)}). "
+                f"Pass gene_name_column= explicitly."
+            )
+        if symbols is None:
+            symbols = gene_ids.astype(str)
+        elif gene_ids is not None:
+            symbols = symbols.where(symbols.notna(), gene_ids).astype(str)
+        else:
+            symbols = symbols.astype(str)
+    else:
+        if gene_name_column not in genes_df.columns:
+            raise KeyError(
+                f"Column {gene_name_column!r} not found in the cytome genes "
+                f"table (available: {list(genes_df.columns)}). Pass "
+                f"gene_name_column= explicitly."
+            )
+        symbols = genes_df[gene_name_column].astype(str)
+    return pd.Index(np.asarray(symbols), dtype=object)
+
+
+def _read_cytome_columns(ds, modality: str, layer: str, feat_indices,
+                         batch_size: int = 4096) -> sp.csr_matrix:
+    """Stored feature columns as a cells x features CSR matrix.
+
+    One streaming pass over the on-disk chunks (``ds.iter_chunks`` with a
+    column mask). The result stays sparse and keeps the **stored dtype and
+    values**, so a gene-subset read equals the same columns of a whole-file
+    read (``ds.to_anndata``) exactly.
+
+    ``cytome.read_feature_columns``, used here up to v0.14.0, densifies to
+    an n_cells x features **float32** array instead: that costs
+    n_cells x features x 4 bytes (8.5 GB for 500,000 cells and 4,240
+    genes) and rounds float64 data, so subset reads and whole-file reads of
+    the same file disagreed beyond float32 precision.
+    """
+    fi = np.asarray(feat_indices, dtype=np.int64)
+    n_cells = int(ds.n_cells)
+    parts, rows = [], []
+    for chunk, idx in ds.iter_chunks(modality=modality, layer=layer,
+                                     col_mask=fi, batch_size=batch_size):
+        parts.append(chunk if sp.issparse(chunk) else sp.csr_matrix(chunk))
+        rows.append(np.asarray(idx, dtype=np.int64))
+    if not parts:
+        return sp.csr_matrix((n_cells, fi.size), dtype=np.float32)
+    X = sp.vstack(parts, format='csr')
+    r = np.concatenate(rows)
+    if r.size == n_cells and np.array_equal(r, np.arange(n_cells)):
+        return X
+    # Chunks out of order or rows missing: place every row by its global
+    # cell index (missing cells stay empty), as a whole-file read would.
+    coo = X.tocoo()
+    return sp.csr_matrix((coo.data, (r[coo.row], coo.col)),
+                         shape=(n_cells, fi.size), dtype=X.dtype)
+
+
+def _restore_cell_dtypes(ds, obs: pd.DataFrame) -> pd.DataFrame:
+    """Give ``obs`` the column dtypes ``ds.to_anndata`` restores.
+
+    The cells table stores categoricals as plain strings; ``to_anndata``
+    restores them (and bool / integer columns) from the file's column
+    metadata. Gene-subset reads skipped that, so a label column came back
+    as ``object`` instead of ``category`` - and COSG then took a different
+    floating-point route: cell type specificity differed by up to 1.2e-14
+    from a whole-file read of the same data (Xenium benchmark, 10,000
+    cells), enough to move interaction scores in the last bit.
+
+    Uses cytome's own restorer so both reads cannot drift apart; it is not
+    public cytome API, so on any failure ``obs`` is returned as stored.
+    """
+    try:
+        from cytome.io.convert_anndata import _restore_column_dtypes
+        return _restore_column_dtypes(ds._conn, "cells", obs)
+    except Exception:
+        return obs
+
+
 def readCytome(
     source,
     genes: Optional[List[str]] = None,
@@ -236,7 +328,8 @@ def readCytome(
         Path to a ``.cytome`` file, or an open dataset.
     genes : list of str, optional
         Gene names to load. When given, only these genes' expression is
-        streamed from disk (one pass, bounded memory) — for LARIS this is
+        streamed from disk (one pass, sparse, in the stored dtype, so the
+        values equal the same columns of a whole-file read) — for LARIS this is
         the union of ligand and receptor names, typically a few thousand
         genes. Genes absent from the dataset are silently skipped here;
         `prepareLRInteraction` reports them through its `unmatched`
@@ -269,7 +362,7 @@ def readCytome(
         dataset stores tissue images (cytome >= 0.2.6),
         ``uns['spatial']`` in the scanpy convention.
     """
-    cytome = _import_cytome()
+    _import_cytome()                       # clear error if cytome is missing
     ds, opened_here = _open_cytome(source)
     try:
         if layer == 'auto':
@@ -280,35 +373,12 @@ def readCytome(
                 adata.X = sp.csr_matrix(adata.X)
             return adata
 
-        genes_df = ds.genes.to_pandas()
-        if gene_name_column == 'auto':
-            symbols = genes_df.get('symbol')
-            gene_ids = genes_df.get('gene_id')
-            if symbols is None and gene_ids is None:
-                raise KeyError(
-                    f"Neither 'symbol' nor 'gene_id' found in the cytome "
-                    f"genes table (available: {list(genes_df.columns)}). "
-                    f"Pass gene_name_column= explicitly."
-                )
-            if symbols is None:
-                symbols = gene_ids.astype(str)
-            elif gene_ids is not None:
-                symbols = symbols.where(symbols.notna(), gene_ids).astype(str)
-            else:
-                symbols = symbols.astype(str)
-        else:
-            if gene_name_column not in genes_df.columns:
-                raise KeyError(
-                    f"Column {gene_name_column!r} not found in the cytome genes "
-                    f"table (available: {list(genes_df.columns)}). Pass "
-                    f"gene_name_column= explicitly."
-                )
-            symbols = genes_df[gene_name_column].astype(str)
+        symbols = _cytome_gene_names(ds, gene_name_column)
         requested = pd.Index(pd.unique(pd.Series(genes, dtype=str)))
         # Keep the dataset's first occurrence per symbol; preserve requested
         # gene order for a deterministic var_names layout.
         symbol_to_idx = {}
-        for idx, symbol in zip(genes_df.index, symbols):
+        for idx, symbol in enumerate(symbols):
             if symbol not in symbol_to_idx:
                 symbol_to_idx[symbol] = idx
         found = [g for g in requested if g in symbol_to_idx]
@@ -319,11 +389,9 @@ def readCytome(
             )
         feat_indices = [symbol_to_idx[g] for g in found]
 
-        arr = cytome.read_feature_columns(ds, modality, layer, feat_indices)
-        X = sp.csr_matrix(arr)
+        X = _read_cytome_columns(ds, modality, layer, feat_indices)
 
-        cells_df = ds.cells.to_pandas()
-        obs = cells_df.copy()
+        obs = _restore_cell_dtypes(ds, ds.cells.to_pandas().copy())
         if obs_name_column in obs.columns:
             obs.index = obs[obs_name_column].astype(str)
         obs.index.name = None

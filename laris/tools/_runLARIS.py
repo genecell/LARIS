@@ -525,16 +525,28 @@ def runLARIS(
     print(f"Mode: {'Cell type-specific analysis' if by_celltype else 'Spatial specificity only'}")
 
     # With streaming COSG the expression object stays on disk. Otherwise a
-    # cytome source is materialised, but only for the ligand and receptor
-    # genes - they are all the cell-type step ever reads.
+    # cytome source is materialised for exactly the genes the cell-type
+    # step scores: the ligands and receptors, plus - with a background -
+    # the background's table genes, whose specificity the exact null needs
+    # (v0.14.0 loaded the LR genes only, so every matched gene got
+    # specificity 0, its pseudo-pairs scored 0 and the null was too easy:
+    # 1,024 calls against 817 in memory on 10,000 Xenium cells).
+    # specificity_reference='all' normalises over every gene, so it needs
+    # them all.
     cytome_source = data if stream_cosg else None
     if stream_cosg:
         adata = None
     elif data is not None and not isinstance(data, ad.AnnData):
-        lr_genes = list(pd.unique(pd.Series(
-            [g for name in lr_adata.var_names for g in name.split('::')]
-        )))
-        adata = _ensure_expression_anndata(data, genes=lr_genes)
+        if specificity_reference == 'all':
+            cell_type_genes = None
+        else:
+            cell_type_genes = list(pd.unique(pd.Series(
+                [g for name in lr_adata.var_names for g in name.split('::')]
+            )))
+            if background is not None:
+                cell_type_genes = list(pd.Index(cell_type_genes).union(
+                    pd.Index(background.gene_index), sort=False))
+        adata = _ensure_expression_anndata(data, genes=cell_type_genes)
     else:
         adata = data
     

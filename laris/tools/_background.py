@@ -460,102 +460,59 @@ class LRBackground:
         return k * k
 
 
-def prepareLRBackground(
-    data=_UNSET,
-    lr_df: Optional[pd.DataFrame] = None,
-    n_pool: int = 4000,
-    augment_pool: bool = True,
-    n_matched_genes: int = 100,
-    matching: str = 'balanced',
-    exclude_self: bool = True,
-    number_nearest_neighbors: int = 20,
-    use_rep_spatial: str = 'X_spatial',
-    use_rep_gsp: Optional[str] = None,
-    n_nearest_neighbors_gsp: int = 20,
-    sigma_gsp='adaptive',
-    layer: Optional[str] = None,
-    section_key: Optional[str] = None,
-    block_size: int = 512,
-    verbosity: int = 1,
-    adata=_UNSET,
-    _pool_genes=None,
-) -> LRBackground:
-    """Build the matched-gene background for factorized null p-values.
 
-    One background serves every ``runLARIS`` call on the same cells: the
-    Gram tables depend only on the spatial graphs and the gene pool, not on
-    the cell-type grouping or on ``mu`` / ``spatial_weight``, so parameter
-    sweeps and different ``groupby`` choices reuse it unchanged.
+# ---------------------------------------------------------------------------
+# One definition of the background, shared by the in-memory and cytome paths
+# ---------------------------------------------------------------------------
 
-    Parameters
-    ----------
-    data : AnnData
-        The same expression object passed to ``prepareLRInteraction``
-        (raw counts; ``layer`` selects a layer).
-    lr_df : DataFrame
-        The LR database subset used for the analysis ('ligand'/'receptor'
-        columns). Needed to know which genes require matched sets and which
-        gene combinations are real database pairs (excluded from nulls).
-    n_pool : int
-        Candidate pool size U. The Gram tables are U x U; the default keeps
-        them ~130 MB each in float64.
-    augment_pool : bool, default=True
-        Grow the candidate pool until no ligand or receptor has a matched
-        set lying entirely below it in expression. The quantile grid is
-        rank-uniform and so starves the extreme top of the abundance
-        range; a gene left there has no peers, every pseudo-pair built
-        from it is weaker than the real pair, and it beats its own null
-        arithmetically. Genes that fail contribute their own nearest
-        neighbours from the whole transcriptome, and matching is
-        recomputed (see ``match_frac_below``). Set False to reproduce the
-        v0.12.0 pool exactly.
-    n_matched_genes : int
-        Matched genes per side (k). The factorized support per pair is
-        k**2 and the exact p-value floor is 1/(k**2+1) before exclusions.
-    number_nearest_neighbors, use_rep_spatial, layer, section_key
-        Must match the ``prepareLRInteraction`` call so the diffusion is
-        identical.
-    use_rep_gsp, n_nearest_neighbors_gsp, sigma_gsp
-        Must match ``runLARIS``'s ``use_rep`` / ``n_nearest_neighbors`` /
-        ``sigma`` (the spatial-specificity graph). ``use_rep_gsp`` defaults
-        to ``use_rep_spatial``.
+def _gene_moments(X):
+    """Per-gene mean and (population) variance, as v0.14.0 computed them.
+
+    Column-wise on CSC, in the matrix's own dtype, so each gene's value
+    depends on its own column only. The cytome path calls this on gene
+    blocks of the same stored columns and so gets bit-identical values -
+    which is what makes both paths rank near-tied genes the same way and
+    therefore draw the same pool and matched sets.
     """
-    from . import _utils
-
-    adata = resolve_data_arg(data, 'prepareLRBackground', adata=adata)
-    if lr_df is None:
-        raise TypeError("prepareLRBackground() requires lr_df")
-    if use_rep_gsp is None:
-        use_rep_gsp = use_rep_spatial
-
-    say = print if verbosity else (lambda *a, **k: None)
-
-    if _is_cytome_source(adata):
-        # Pool selection needs per-gene mean/variance over ALL genes, which
-        # is computed in gene blocks (bounded memory); only the selected
-        # pool + LR genes are then loaded, so the memory profile matches
-        # the streaming pipeline.
-        return _prepare_background_from_cytome(
-            adata, lr_df, n_pool=n_pool, augment_pool=augment_pool,
-            n_matched_genes=n_matched_genes,
-            number_nearest_neighbors=number_nearest_neighbors,
-            use_rep_spatial=use_rep_spatial, use_rep_gsp=use_rep_gsp,
-            n_nearest_neighbors_gsp=n_nearest_neighbors_gsp,
-            sigma_gsp=sigma_gsp, section_key=section_key,
-            block_size=block_size, verbosity=verbosity)
-
-    X = adata.layers[layer] if layer is not None else adata.X
     if not sp.issparse(X):
         X = sp.csr_matrix(X)
     X = X.tocsc()
-    n_cells = adata.n_obs
-
-    # ---- gene features and pool -----------------------------------------
     m = np.asarray(X.mean(axis=0)).ravel()
     m2 = np.asarray(X.power(2).mean(axis=0)).ravel()
-    v = m2 - m ** 2
-    var_names = pd.Index(adata.var_names)
+    return m, m2 - m ** 2
 
+
+@dataclass
+class _MatchingSelection:
+    """Table genes and matched sets chosen by :func:`_select_matching`."""
+    gene_pos: np.ndarray                     # table genes, sorted positions in var_names
+    gene_index: pd.Index                     # their names, in var_names order
+    matched_ligand: Dict[str, np.ndarray]    # positions into gene_index
+    matched_receptor: Dict[str, np.ndarray]
+    match_frac_below: Dict[str, float]
+    edge_limited: int
+
+
+def _select_matching(var_names, m, v, lr_df, n_pool, augment_pool,
+                     n_matched_genes, matching, exclude_self, say
+                     ) -> _MatchingSelection:
+    """Candidate pool, table genes and matched sets from WHOLE-matrix gene
+    statistics ``m`` / ``v`` (one value per gene of ``var_names``).
+
+    This is the only place matching is defined. Both input paths call it on
+    statistics over every gene, so they cannot disagree. Up to v0.14.0 the
+    cytome path re-ran matching on its loaded pool + LR subset, where
+    ``_balanced_sets`` standardised the (mean, variance) features over the
+    subset instead of the whole matrix: ~70% of matched sets differed by
+    1-5 of 100 genes and FDR<0.05 calls moved (817 vs 780 on 10,000 Xenium
+    cells).
+    """
+    var_names = pd.Index(var_names)
+    if not var_names.is_unique:
+        dup = list(var_names[var_names.duplicated()].unique()[:5])
+        raise ValueError(
+            f"Gene names must be unique to define matched sets; duplicated: "
+            f"{dup}. Make them unique (e.g. var_names_make_unique()).")
     lr_genes = pd.Index(pd.unique(np.concatenate([
         np.asarray(lr_df['ligand']), np.asarray(lr_df['receptor'])])))
     lr_genes = lr_genes[lr_genes.isin(var_names)]
@@ -564,23 +521,17 @@ def prepareLRBackground(
     rec_genes = pd.Index(pd.unique(np.asarray(lr_df['receptor'])))
     rec_genes = rec_genes[rec_genes.isin(var_names)]
 
-    if _pool_genes is not None:
-        # pool decided upstream (cytome path selects it from full-matrix
-        # stats before loading the gene subset)
-        pool_pos = var_names.get_indexer(pd.Index(_pool_genes))
-        pool_pos = np.sort(pool_pos[pool_pos >= 0])
-    else:
-        pool_pos = _quantile_grid_pool(m, v, n_pool)
-        if augment_pool:
-            _feats_all = np.column_stack([m, v])
-            _q = var_names.get_indexer(lr_genes)
-            _q = _q[_q >= 0]
-            _before = len(pool_pos)
-            pool_pos = _augment_pool_for_saturation(
-                _feats_all, pool_pos, _q, n_matched_genes)
-            if len(pool_pos) > _before:
-                say(f"  - pool grown {_before:,} -> {len(pool_pos):,} genes "
-                    "so every LR gene has matched peers above it")
+    pool_pos = _quantile_grid_pool(m, v, n_pool)
+    if augment_pool:
+        _feats_all = np.column_stack([m, v])
+        _q = var_names.get_indexer(lr_genes)
+        _q = _q[_q >= 0]
+        _before = len(pool_pos)
+        pool_pos = _augment_pool_for_saturation(
+            _feats_all, pool_pos, _q, n_matched_genes)
+        if len(pool_pos) > _before:
+            say(f"  - pool grown {_before:,} -> {len(pool_pos):,} genes "
+                "so every LR gene has matched peers above it")
     say(f"  - candidate pool: {len(pool_pos):,} genes "
         f"(quantile grid over mean/variance)")
 
@@ -588,7 +539,6 @@ def prepareLRBackground(
     lr_pos = var_names.get_indexer(lr_genes)
     gene_pos = np.unique(np.concatenate([pool_pos, lr_pos]))
     gene_index = var_names[gene_pos]
-    U = len(gene_pos)
     pos_in_tables = pd.Index(gene_index).get_indexer
 
     # matched sets: k nearest *pool* genes per LR gene (kNN-within-pool)
@@ -637,7 +587,24 @@ def prepareLRBackground(
         for i, g in enumerate(genes_):
             match_frac_below[g] = float((pool_means[idx_[i]] < gm[i]).mean())
 
-    # ---- diffusion of the table genes (same kernel as prepare) ----------
+    return _MatchingSelection(
+        gene_pos=gene_pos, gene_index=pd.Index(gene_index),
+        matched_ligand=matched_ligand, matched_receptor=matched_receptor,
+        match_frac_below=match_frac_below, edge_limited=edge_limited)
+
+
+def _build_tables(adata, Xg, n_cells, number_nearest_neighbors,
+                  use_rep_spatial, use_rep_gsp, n_nearest_neighbors_gsp,
+                  sigma_gsp, section_key, block_size, say):
+    """Diffused table-gene profiles ``P``/``Q`` and their Gram tables.
+
+    ``Xg`` is cells x table genes (raw values; columns in table order);
+    ``adata`` supplies ``obs`` / ``obsm`` for the spatial graphs.
+    """
+    from . import _utils
+
+    Xg = sp.csr_matrix(Xg)
+    U = Xg.shape[1]
     say(f"  - diffusing {U:,} genes through the "
         f"{number_nearest_neighbors}-NN kernel graph...")
     coords = np.asarray(adata.obsm[use_rep_spatial])
@@ -648,22 +615,32 @@ def prepareLRBackground(
         coords, n_neighbors=number_nearest_neighbors, sections=sections,
         mode='distance', include_self=True)
     knn = sp.csr_matrix(_utils._apply_knn_kernel(knn, sigma='adaptive'))
-    genexcell = sp.csr_matrix(X[:, gene_pos]).T
     # cells x genes, C-contiguous: every downstream consumer gathers
     # CELLS, and in this layout that is a contiguous row copy rather than
     # a strided column gather. Measured 2.6x on the edge Grams (R89.8).
-    P = np.empty((n_cells, U), dtype=np.float32)
-    for start in range(0, n_cells, block_size * 32):
-        stop = min(start + block_size * 32, n_cells)
-        P[start:stop, :] = np.asarray(
-            (knn[start:stop, :] @ genexcell.T).todense())
+    #
     # prepareLRInteraction keeps a pair's score only in cells where ligand
     # OR receptor raw counts are nonzero. Q carries each gene's diffused
     # values on its raw-zero cells; the masked pseudo-pair profile is then
     # P_i*P_j - Q_i*Q_j (see _edge_gram), which keeps every Gram identity.
-    raw_nonzero = np.asarray((X[:, gene_pos] != 0).todense())   # cells x genes
-    Q = np.where(raw_nonzero, 0.0, P).astype(np.float32)
-    del raw_nonzero
+    #
+    # Q is filled block by block in place. v0.14.0 built it in one
+    # statement, np.where(dense raw-nonzero mask, 0, P).astype(float32),
+    # which held the cells x genes bool mask, the where() result AND the
+    # astype copy alongside P: 3.25x P at once (27.6 GB at 500,000 cells
+    # and 4,240 genes), the peak of the whole exact pipeline. Same values,
+    # bit for bit.
+    P = np.empty((n_cells, U), dtype=np.float32)
+    Q = np.empty((n_cells, U), dtype=np.float32)
+    step = block_size * 32
+    for start in range(0, n_cells, step):
+        stop = min(start + step, n_cells)
+        P[start:stop, :] = np.asarray(
+            (knn[start:stop, :] @ Xg).todense())
+        Q[start:stop, :] = P[start:stop, :]
+        r, c = Xg[start:stop].nonzero()
+        Q[start + r, c] = 0.0
+    del knn
 
     # ---- the gsp graph and its Gram tables ------------------------------
     say("  - building spatial-specificity graph and Gram tables...")
@@ -698,27 +675,147 @@ def prepareLRBackground(
 
     R = n_cells * _expected_row_sq_sum(W.data, n_nearest_neighbors_gsp)
 
+    return P, Q, G_W, G_W2, G_dot, G_sq, R
+
+
+def _assemble_background(sel, tables, n_cells, lr_df, n_matched_genes,
+                         params, say) -> "LRBackground":
+    P, Q, G_W, G_W2, G_dot, G_sq, R = tables
     db_pairs = frozenset(zip(np.asarray(lr_df['ligand']),
                              np.asarray(lr_df['receptor'])))
-
-    say(f"  - done: {U:,} genes, support per pair "
+    say(f"  - done: {len(sel.gene_index):,} genes, support per pair "
         f"{n_matched_genes ** 2:,} (floor "
         f"{1.0 / (n_matched_genes ** 2 + 1):.2e})")
-
     return LRBackground(
-        gene_index=pd.Index(gene_index), P=P, Q=Q,
+        gene_index=pd.Index(sel.gene_index), P=P, Q=Q,
         G_W=G_W, G_W2=G_W2, G_dot=G_dot, G_sq=G_sq,
         R=R, n_cells=n_cells,
-        matched_ligand=matched_ligand, matched_receptor=matched_receptor,
-        db_pairs=db_pairs, match_frac_below=match_frac_below,
-        edge_limited=edge_limited,
-        params=dict(n_pool=n_pool, n_matched_genes=n_matched_genes,
-                    matching=matching, exclude_self=exclude_self,
-                    number_nearest_neighbors=number_nearest_neighbors,
-                    use_rep_spatial=use_rep_spatial, use_rep_gsp=use_rep_gsp,
-                    n_nearest_neighbors_gsp=n_nearest_neighbors_gsp,
-                    sigma_gsp=sigma_gsp, section_key=section_key),
-    )
+        matched_ligand=sel.matched_ligand,
+        matched_receptor=sel.matched_receptor,
+        db_pairs=db_pairs, match_frac_below=sel.match_frac_below,
+        edge_limited=sel.edge_limited, params=params)
+
+
+def prepareLRBackground(
+    data=_UNSET,
+    lr_df: Optional[pd.DataFrame] = None,
+    n_pool: int = 4000,
+    augment_pool: bool = True,
+    n_matched_genes: int = 100,
+    matching: str = 'balanced',
+    exclude_self: bool = True,
+    number_nearest_neighbors: int = 20,
+    use_rep_spatial: str = 'X_spatial',
+    use_rep_gsp: Optional[str] = None,
+    n_nearest_neighbors_gsp: int = 20,
+    sigma_gsp='adaptive',
+    layer: Optional[str] = None,
+    section_key: Optional[str] = None,
+    block_size: int = 512,
+    verbosity: int = 1,
+    adata=_UNSET,
+) -> LRBackground:
+    """Build the matched-gene background for factorized null p-values.
+
+    One background serves every ``runLARIS`` call on the same cells: the
+    Gram tables depend only on the spatial graphs and the gene pool, not on
+    the cell-type grouping or on ``mu`` / ``spatial_weight``, so parameter
+    sweeps and different ``groupby`` choices reuse it unchanged.
+
+    Parameters
+    ----------
+    data : AnnData
+        The same expression object passed to ``prepareLRInteraction``
+        (raw counts; ``layer`` selects a layer).
+    lr_df : DataFrame
+        The LR database subset used for the analysis ('ligand'/'receptor'
+        columns). Needed to know which genes require matched sets and which
+        gene combinations are real database pairs (excluded from nulls).
+    n_pool : int
+        Candidate pool size U. The Gram tables are U x U; the default keeps
+        them ~130 MB each in float64.
+    augment_pool : bool, default=True
+        Grow the candidate pool until no ligand or receptor has a matched
+        set lying entirely below it in expression. The quantile grid is
+        rank-uniform and so starves the extreme top of the abundance
+        range; a gene left there has no peers, every pseudo-pair built
+        from it is weaker than the real pair, and it beats its own null
+        arithmetically. Genes that fail contribute their own nearest
+        neighbours from the whole transcriptome, and matching is
+        recomputed (see ``match_frac_below``). Set False to reproduce the
+        v0.12.0 pool exactly.
+    n_matched_genes : int
+        Matched genes per side (k). The factorized support per pair is
+        k**2 and the exact p-value floor is 1/(k**2+1) before exclusions.
+    number_nearest_neighbors, use_rep_spatial, layer, section_key
+        Must match the ``prepareLRInteraction`` call so the diffusion is
+        identical. For a cytome source ``layer`` names the cytome layer;
+        None reads whichever matrix the file records as ``adata.X``.
+
+    Notes
+    -----
+    An AnnData and a cytome of the same data give the **same background,
+    bit for bit**: the pool and matched sets are chosen once, by one
+    function, from per-gene statistics over every gene, and the tables are
+    built by one builder. The cytome path only reads the data in bounded
+    gene blocks (v0.14.1; up to v0.14.0 the two could differ, see the
+    changelog).
+    use_rep_gsp, n_nearest_neighbors_gsp, sigma_gsp
+        Must match ``runLARIS``'s ``use_rep`` / ``n_nearest_neighbors`` /
+        ``sigma`` (the spatial-specificity graph). ``use_rep_gsp`` defaults
+        to ``use_rep_spatial``.
+    """
+    from . import _utils
+
+    adata = resolve_data_arg(data, 'prepareLRBackground', adata=adata)
+    if lr_df is None:
+        raise TypeError("prepareLRBackground() requires lr_df")
+    if use_rep_gsp is None:
+        use_rep_gsp = use_rep_spatial
+
+    say = print if verbosity else (lambda *a, **k: None)
+
+    if _is_cytome_source(adata):
+        # Pool selection needs per-gene mean/variance over ALL genes, which
+        # is computed in gene blocks (bounded memory); only the selected
+        # pool + LR genes are then loaded, so the memory profile matches
+        # the streaming pipeline.
+        return _prepare_background_from_cytome(
+            adata, lr_df, n_pool=n_pool, augment_pool=augment_pool,
+            n_matched_genes=n_matched_genes, matching=matching,
+            exclude_self=exclude_self,
+            number_nearest_neighbors=number_nearest_neighbors,
+            use_rep_spatial=use_rep_spatial, use_rep_gsp=use_rep_gsp,
+            n_nearest_neighbors_gsp=n_nearest_neighbors_gsp,
+            sigma_gsp=sigma_gsp, layer=layer, section_key=section_key,
+            block_size=block_size, verbosity=verbosity)
+
+    X = adata.layers[layer] if layer is not None else adata.X
+    if not sp.issparse(X):
+        X = sp.csr_matrix(X)
+    X = X.tocsc()
+    n_cells = adata.n_obs
+
+    # ---- gene statistics, pool and matched sets (shared definition) -----
+    m, v = _gene_moments(X)
+    sel = _select_matching(adata.var_names, m, v, lr_df, n_pool,
+                           augment_pool, n_matched_genes, matching,
+                           exclude_self, say)
+
+    # ---- diffusion and Gram tables (shared builder) ---------------------
+    tables = _build_tables(
+        adata, sp.csr_matrix(X[:, sel.gene_pos]), n_cells,
+        number_nearest_neighbors, use_rep_spatial, use_rep_gsp,
+        n_nearest_neighbors_gsp, sigma_gsp, section_key, block_size, say)
+    return _assemble_background(
+        sel, tables, n_cells, lr_df, n_matched_genes,
+        dict(n_pool=n_pool, n_matched_genes=n_matched_genes,
+             matching=matching, exclude_self=exclude_self,
+             number_nearest_neighbors=number_nearest_neighbors,
+             use_rep_spatial=use_rep_spatial, use_rep_gsp=use_rep_gsp,
+             n_nearest_neighbors_gsp=n_nearest_neighbors_gsp,
+             sigma_gsp=sigma_gsp, section_key=section_key, layer=layer),
+        say)
 
 
 def _pair_gsp_from_tables(bg: LRBackground, ii: np.ndarray,
@@ -822,6 +919,19 @@ def compute_factorized_pvalues(
     P = bg.P
 
     # --- spec matrix aligned to table genes (genes x groups) -------------
+    # Every table gene must have been scored. A missing gene would be
+    # zero-filled, its pseudo-pairs would score 0 and the null would be
+    # too easy - silently anti-conservative. That happens when the
+    # expression passed to runLARIS lacks genes the background was built
+    # from (a gene subset, or a cytome read for the LR genes only).
+    missing = pd.Index(bg.gene_index).difference(spec_ext.index)
+    if len(missing):
+        raise ValueError(
+            f"{len(missing)} background gene(s) have no cell type "
+            f"specificity (e.g. {list(missing[:5])}): the expression data "
+            f"passed to runLARIS does not contain every gene the background "
+            f"was built from. Pass the same expression object (all genes) "
+            f"that was given to prepareLRBackground.")
     spec_tab = spec_ext.reindex(bg.gene_index).fillna(0.0)
     spec_tab = spec_tab.loc[:, list(groups_order)].to_numpy(dtype=np.float64)
 
@@ -1110,89 +1220,86 @@ def _is_cytome_source(obj) -> bool:
 
 
 def _prepare_background_from_cytome(
-    source, lr_df, n_pool, augment_pool, n_matched_genes,
-    number_nearest_neighbors,
+    source, lr_df, n_pool, augment_pool, n_matched_genes, matching,
+    exclude_self, number_nearest_neighbors,
     use_rep_spatial, use_rep_gsp, n_nearest_neighbors_gsp, sigma_gsp,
-    section_key, block_size, verbosity,
+    layer, section_key, block_size, verbosity,
+    stats_block_genes: int = 2048,
 ) -> "LRBackground":
-    """Cytome path: gene-blocked stats pass, then a subset load.
+    """Cytome path: the in-memory definition, computed out of core.
 
-    Two disk passes with bounded memory: (1) per-gene mean/variance over
-    all genes, read in blocks via ``readCytome(genes=block)``, to select
-    the candidate pool; (2) one load of the pool + LR genes into an
-    in-memory AnnData, after which the standard builder runs unchanged.
-    The tables and matched sets are identical to what the in-memory path
-    would produce from ``to_anndata`` of the same file (tested).
+    1. Per-gene mean/variance over ALL genes, in gene blocks read sparse
+       and in the stored dtype. Each gene's statistic depends only on its
+       own column, so the values equal the in-memory ones bit for bit.
+    2. :func:`_select_matching` on those whole-matrix statistics - the
+       same function on the same inputs as the in-memory path, so the
+       pool and every matched set are identical.
+    3. One sparse read of the table genes, in file order, then the shared
+       :func:`_build_tables`.
+
+    Memory stays bounded by the table genes (as in v0.14.0); only the
+    gene blocks of step 1 and the table genes of step 3 are ever loaded.
+
+    Up to v0.14.0 step 2 was re-run on the loaded pool + LR subset, so the
+    matching features were standardised on that subset rather than on the
+    whole matrix; ``matching``, ``exclude_self`` and ``layer`` were not
+    forwarded; and reads went through a dense float32 buffer. Together
+    these moved 3-37 FDR<0.05 calls against the in-memory path on the
+    Xenium benchmark (817 vs 780 at 10,000 cells).
     """
-    from ..preprocessing._io import _open_cytome, readCytome
+    from ..preprocessing._io import (_open_cytome, _resolve_x_layer,
+                                     _cytome_gene_names,
+                                     _read_cytome_columns, readCytome)
 
     say = print if verbosity else (lambda *a, **k: None)
+    modality = 'RNA'
     ds, opened_here = _open_cytome(source)
     try:
-        genes_df = ds.genes.to_pandas()
-        # same resolution as readCytome(gene_name_column='auto'): symbol
-        # where present, gene_id filling the gaps
-        symbols = genes_df.get('symbol')
-        gene_ids = genes_df.get('gene_id')
-        if symbols is None and gene_ids is None:
-            raise KeyError(
-                "cytome genes table has neither 'symbol' nor 'gene_id'")
-        if symbols is None:
-            symbols = gene_ids.astype(str)
-        elif gene_ids is not None:
-            symbols = symbols.where(symbols.notna(), gene_ids).astype(str)
-        else:
-            symbols = symbols.astype(str)
-        all_genes = pd.Index(symbols)
+        cy_layer = _resolve_x_layer(ds, modality) if layer is None else layer
+        all_genes = _cytome_gene_names(ds)
+        n_genes = len(all_genes)
+        say(f"  - cytome stats pass over {n_genes:,} genes "
+            f"(sparse gene blocks, stored dtype)...")
+        m = v = None
+        for start in range(0, n_genes, stats_block_genes):
+            cols = np.arange(start, min(start + stats_block_genes, n_genes))
+            mb, vb = _gene_moments(
+                _read_cytome_columns(ds, modality, cy_layer, cols))
+            if m is None:            # the dtype the in-memory path would get
+                m = np.empty(n_genes, dtype=mb.dtype)
+                v = np.empty(n_genes, dtype=vb.dtype)
+            m[cols] = mb
+            v[cols] = vb
 
-        say(f"  - cytome stats pass over {len(all_genes):,} genes "
-            f"(blocked reads)...")
-        means = np.empty(len(all_genes))
-        variances = np.empty(len(all_genes))
-        blk = 2000
-        for start in range(0, len(all_genes), blk):
-            sub = readCytome(ds, genes=list(all_genes[start:start + blk]))
-            Xb = sub.X if sp.issparse(sub.X) else sp.csr_matrix(sub.X)
-            pos = all_genes.get_indexer(sub.var_names)
-            mb = np.asarray(Xb.mean(axis=0)).ravel()
-            m2b = np.asarray(Xb.power(2).mean(axis=0)).ravel()
-            means[pos] = mb
-            variances[pos] = m2b - mb ** 2
+        sel = _select_matching(all_genes, m, v, lr_df, n_pool, augment_pool,
+                               n_matched_genes, matching, exclude_self, say)
 
-        pool_pos = _quantile_grid_pool(means, variances, n_pool)
-        lr_genes = pd.Index(pd.unique(np.concatenate([
-            np.asarray(lr_df['ligand']), np.asarray(lr_df['receptor'])])))
-        lr_genes = lr_genes[lr_genes.isin(all_genes)]
-        if augment_pool:
-            _q = pd.Index(all_genes).get_indexer(lr_genes)
-            _q = _q[_q >= 0]
-            _before = len(pool_pos)
-            pool_pos = _augment_pool_for_saturation(
-                np.column_stack([means, variances]), pool_pos, _q,
-                n_matched_genes)
-            if len(pool_pos) > _before:
-                say(f"  - pool grown {_before:,} -> {len(pool_pos):,} genes "
-                    "so every LR gene has matched peers above it")
-        needed = pd.Index(all_genes[pool_pos]).union(lr_genes)
-
-        say(f"  - loading {len(needed):,} genes (pool + LR) from cytome...")
-        sub = readCytome(ds, genes=list(needed))
+        say(f"  - loading {len(sel.gene_index):,} table genes "
+            f"(pool + LR) from cytome...")
+        # file order (gene_pos is sorted), exactly the in-memory column order
+        sub = readCytome(ds, genes=list(sel.gene_index), modality=modality,
+                         layer=cy_layer)
     finally:
         if opened_here:
             ds.close()
+    if not sub.var_names.equals(sel.gene_index):
+        raise RuntimeError("cytome table-gene read returned a different gene "
+                           "set or order than selected")
 
-    # the subset AnnData has obs/obsm from the file; run the standard
-    # builder with a pool that covers (almost) the whole loaded gene set
-    return prepareLRBackground(
-        sub, lr_df, n_pool=len(pool_pos), augment_pool=False,
-        n_matched_genes=n_matched_genes,
-        number_nearest_neighbors=number_nearest_neighbors,
-        use_rep_spatial=use_rep_spatial, use_rep_gsp=use_rep_gsp,
-        n_nearest_neighbors_gsp=n_nearest_neighbors_gsp,
-        sigma_gsp=sigma_gsp, section_key=section_key,
-        block_size=block_size, verbosity=verbosity,
-        _pool_genes=list(all_genes[pool_pos]))
-
+    n_cells = sub.n_obs
+    tables = _build_tables(
+        sub, sub.X, n_cells, number_nearest_neighbors, use_rep_spatial,
+        use_rep_gsp, n_nearest_neighbors_gsp, sigma_gsp, section_key,
+        block_size, say)
+    return _assemble_background(
+        sel, tables, n_cells, lr_df, n_matched_genes,
+        dict(n_pool=n_pool, n_matched_genes=n_matched_genes,
+             matching=matching, exclude_self=exclude_self,
+             number_nearest_neighbors=number_nearest_neighbors,
+             use_rep_spatial=use_rep_spatial, use_rep_gsp=use_rep_gsp,
+             n_nearest_neighbors_gsp=n_nearest_neighbors_gsp,
+             sigma_gsp=sigma_gsp, section_key=section_key, layer=cy_layer),
+        say)
 
 # ---------------------------------------------------------------------------
 # Calibration control
