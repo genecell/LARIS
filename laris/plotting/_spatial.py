@@ -82,8 +82,9 @@ def plotCCCSpatial(
     
     Parameters
     ----------
-    lr_adata : anndata.AnnData
-        AnnData object containing LR interaction scores and spatial coordinates
+    lr_data : AnnData, str or cytome dataset
+        LR interaction scores with spatial coordinates (from
+        ``prepareLRInteraction``): an AnnData, or an LR cytome.
         
     basis : str
         Key for spatial coordinates in lr_adata.obsm
@@ -125,12 +126,49 @@ def plotCCCSpatial(
         Verbosity level
         
     return_fig : bool, default=False
-        If True, return the figure object
-    
+        If True, return the figure object.
+    color_by : {'cell_type', 'score'}, default='cell_type'
+        'cell_type' highlights the expressing cells by their cell type (the
+        modes above); 'score' colours every cell by its interaction score,
+        optionally over a tissue image.
+    data : AnnData, str or cytome dataset, optional
+        The expression object, searched for a tissue image (scanpy-style
+        ``uns['spatial']`` or a cytome's stored images) before ``lr_data``.
+    library_id : str, optional
+        Which library's image to draw when several have one.
+    img_key : str, default='hires'
+        Which stored image of the library to draw ('hires', 'lowres', ...).
+    library_key : str, optional
+        Column of ``.obs`` naming each cell's library; when several
+        libraries have images, the one the plotted cells belong to is used.
+    img : numpy.ndarray, optional
+        An explicit image to draw instead of a stored one; needs
+        ``scale_factor``.
+    scale_factor : float, optional
+        Image pixels per coordinate unit for ``img`` (1.0 when the
+        coordinates are already image pixels).
+    alpha_img : float, default=1.0
+        Opacity of the tissue image.
+    cmap : str or matplotlib.colors.Colormap, optional
+        Colormap of the score mode (LARIS's own by default).
+    vmax_quantile : float, default=0.995
+        The colour scale saturates at this quantile of the positive scores.
+    score_threshold : float, default=0.0
+        Cells scoring at or below this are drawn as background.
+    crop : bool, default=True
+        Crop the axes to the cells (plus ``margin``).
+    margin : float, default=0.05
+        Margin around the cells when cropping, as a fraction of their
+        extent.
+    colorbar : bool, default=True
+        Draw a colour bar in the score mode.
+    lr_adata, adata : deprecated
+        Former names of ``lr_data`` and ``data``.
+
     Returns
     -------
-    fig or None
-        The figure object if return_fig=True, otherwise None
+    matplotlib.figure.Figure or None
+        The figure object if return_fig=True, otherwise None.
     
     Examples
     --------

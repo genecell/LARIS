@@ -16,6 +16,7 @@ from sklearn.preprocessing import normalize
 from . import _utils
 from .._compat import _UNSET, resolve_data_arg
 from ..preprocessing._io import (
+    DIFFUSION_KEY,
     _ensure_expression_anndata,
     _is_cytome_source,
     _LRCytomeWriter,
@@ -41,6 +42,18 @@ def _default_lr_output(source) -> str:
         if text.endswith(suffix):
             return f"{text[:-len(suffix)]}.lr{suffix}"
     return f"{text}.lr.cytome"
+
+
+def _diffusion_record(number_nearest_neighbors, use_rep_spatial, sigma,
+                      section_key) -> dict:
+    """The diffusion-graph settings of an LR-score object, in a form that
+    survives h5ad and cytome round trips (no None values)."""
+    rec = {'number_nearest_neighbors': int(number_nearest_neighbors),
+           'use_rep_spatial': str(use_rep_spatial),
+           'sigma': sigma if isinstance(sigma, str) else float(sigma)}
+    if section_key is not None:
+        rec['section_key'] = str(section_key)
+    return rec
 
 
 def prepareLRInteraction(
@@ -107,6 +120,12 @@ def prepareLRInteraction(
         when writing a cytome from an in-memory AnnData.
     overwrite : bool, default=False
         Allow replacing an existing ``output`` file.
+    block_size : int, optional
+        Number of cells to diffuse and score at a time. Bounds peak memory
+        to roughly ``block_size x n_lr_pairs`` instead of
+        ``n_cells x n_lr_pairs``. Defaults to a single pass for AnnData
+        output and 10,000-cell blocks when writing a cytome. Results are
+        identical for any block size.
     section_key : str, optional
         Column in ``.obs`` identifying which tissue section each cell
         belongs to. When several sections are tiled into one coordinate
@@ -115,12 +134,6 @@ def prepareLRInteraction(
         the neighbour graph is built independently within each section, so
         no edge crosses a boundary (GitHub issue #8). Leave as None for a
         single section.
-    block_size : int, optional
-        Number of cells to diffuse and score at a time. Bounds peak memory
-        to roughly ``block_size x n_lr_pairs`` instead of
-        ``n_cells x n_lr_pairs``. Defaults to a single pass for AnnData
-        output and 10,000-cell blocks when writing a cytome. Results are
-        identical for any block size.
     adata : deprecated
         Former name of ``data``.
 
@@ -157,7 +170,6 @@ def prepareLRInteraction(
     >>>
     >>> # Straight from a cytome: scores stay on disk
     >>> path = la.tl.prepareLRInteraction("sample.cytome", lr_df)
-
     """
     data = resolve_data_arg(data, 'prepareLRInteraction', canonical='data',
                             adata=adata)
@@ -311,11 +323,16 @@ def prepareLRInteraction(
     writer = None
     blocks = []
     spatial_uns = adata.uns['spatial'] if 'spatial' in getattr(adata, 'uns', {}) else None
+    # The diffusion settings travel with the scores, so runLARIS can check
+    # that a background was built with the same graph before any work.
+    diffusion = _diffusion_record(number_nearest_neighbors, use_rep_spatial,
+                                  sigma, section_key)
     if return_type == 'cytome':
         writer = _LRCytomeWriter(
             output, lr_names=list(lr_names), obs=adata.obs,
             obs_names=adata.obs_names, obsm=dict(adata.obsm),
             spatial_uns=spatial_uns, overwrite=overwrite,
+            diffusion=diffusion,
         )
     try:
         for start in range(0, n_obs, step):
@@ -354,5 +371,6 @@ def prepareLRInteraction(
     # object alone (no data= argument needed). Cheap: the same array objects.
     if spatial_uns is not None:
         lr_adata.uns['spatial'] = spatial_uns
+    lr_adata.uns[DIFFUSION_KEY] = diffusion
 
     return lr_adata

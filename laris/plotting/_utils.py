@@ -177,11 +177,11 @@ def _create_pvalue_legend_log10(ax, bubble_size: float,
         
         # Format label with italic P
         if p < 0.001:
-            label = f'$\it{{P}}$ ≤ {p:.0e}'
+            label = rf'$\it{{P}}$ ≤ {p:.0e}'
         elif p < 0.01:
-            label = f'$\it{{P}}$ = {p:.3f}'
+            label = rf'$\it{{P}}$ = {p:.3f}'
         else:
-            label = f'$\it{{P}}$ = {p:.2f}'
+            label = rf'$\it{{P}}$ = {p:.2f}'
         
         handle = Line2D([0], [0], marker='o', color='w', label=label,
                        markerfacecolor='gray', markersize=np.sqrt(size),
@@ -189,7 +189,7 @@ def _create_pvalue_legend_log10(ax, bubble_size: float,
         legend_handles.append(handle)
     
     # Use italic P in title
-    legend = ax.legend(handles=legend_handles, title="$\it{P}$ value", 
+    legend = ax.legend(handles=legend_handles, title=r"$\it{P}$ value", 
                       loc=loc, bbox_to_anchor=bbox_to_anchor, 
                       frameon=frameon, framealpha=0.9,
                       labelspacing=1.2,  # Add more space between labels

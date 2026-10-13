@@ -52,16 +52,16 @@ def prepareDotPlotAdata(
     
     Parameters
     ----------
-    lr_adata : anndata.AnnData
-        AnnData object containing LR interaction scores
-        
-    adata : anndata.AnnData, str or cytome.CytomeDataset
-        Expression object; a ``.cytome``/``.db`` path or an open cytome
-        dataset is read automatically.
-        Original AnnData object containing gene expression data
-        
+    lr_data : AnnData, str or cytome dataset
+        LR interaction scores (from ``prepareLRInteraction``): an AnnData,
+        or an LR cytome.
+    data : AnnData, str or cytome dataset
+        The gene expression object; a ``.cytome``/``.db`` path or an open
+        cytome dataset is read automatically.
     verbosity : int, default=2
-        Verbosity level
+        Verbosity level.
+    lr_adata, adata : deprecated
+        Former names of ``lr_data`` and ``data``.
     
     Returns
     -------

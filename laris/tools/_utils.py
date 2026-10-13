@@ -294,7 +294,14 @@ def _pairwise_row_multiply(
             row_names.append(row_name)
 
     # Vertically stack all multiplied pairs
-    result = sp.vstack(row_products)
+    result = sp.vstack(row_products, format='csr')
+    # Canonical (sorted) indices make the rows for A::B and B::A identical
+    # in storage, not only in value, so every sum over a row (norms,
+    # cosine similarities) runs in the same order and the two cell-type
+    # pairs get bitwise-identical co-localization values. Unsorted, they
+    # differed in the last bit, which also blocked sharing their null
+    # tables in the exact P-value step.
+    result.sort_indices()
 
     # Convert row names to numpy array
     row_names = np.array(row_names)
@@ -1489,6 +1496,75 @@ def _prepare_background_interactions(
 
 
 
+
+def _resolve_min_null_support(min_null_support, background) -> int:
+    """``'auto'`` is 2 x n_matched_genes with a background, else 0.
+
+    Below 2k non-zero pseudo-pairs the null's non-zero part can come from a
+    single matched gene's row or column of the k x k cross, and a tiny
+    observed score beats an otherwise all-zero null: the test then measures
+    whether the pair clears the COSG detection gate, not its strength.
+    The floor is a property of the null, fixed in advance, so it keeps the
+    FDR valid (v0.15.0).
+    """
+    if isinstance(min_null_support, str):
+        if min_null_support != 'auto':
+            raise ValueError(
+                f"min_null_support must be an int or 'auto', got "
+                f"{min_null_support!r}")
+        if background is None:
+            return 0
+        return 2 * int(background.params.get('n_matched_genes', 0))
+    value = int(min_null_support)
+    if value < 0:
+        raise ValueError(f"min_null_support must be >= 0, got {value}")
+    return value
+
+
+def _fdr_family(res: pd.DataFrame, exact_null: bool, min_null_support: int,
+                prefilter_fdr: bool, prefilter_threshold: float) -> pd.Series:
+    """Rows that enter Benjamini-Hochberg within their sender-receiver pair.
+
+    With the exact matched-gene null the family is defined by the null
+    alone: every row whose null has at least ``max(1, min_null_support)``
+    non-zero pseudo-pairs. Its p-value counts all valid pseudo-pairs, zeros
+    included, so it is valid only if the family does not depend on the
+    observed score; a row whose null is identically zero cannot reach
+    significance (p = 1) and is left out. Restricting the family to rows
+    with a positive score instead (v0.14.1 and earlier) leaves each null
+    row's p-value too small by the share of non-zero pseudo-pairs and
+    inflates the FDR. ``min_null_support`` is a property of the null, fixed
+    in advance, so any value keeps the FDR valid.
+
+    The legacy sampled path keeps ``prefilter_fdr``: there the p-value
+    is the conditional one whenever the family is restricted (see
+    ``use_conditional_pvalue``).
+    """
+    p_ok = res['p_value'].notna()
+    if exact_null:
+        support = res['null_support'] if 'null_support' in res else 0
+        return p_ok & (support >= max(1, int(min_null_support)))
+    if prefilter_fdr:
+        return p_ok & (res['interaction_score'] > prefilter_threshold)
+    return p_ok
+
+
+def _bh_within_pairs(res: pd.DataFrame, family: pd.Series) -> pd.Series:
+    """Benjamini-Hochberg within each sender-receiver pair over ``family``.
+
+    Rows outside the family get FDR 1.0. P-values are rounded to six
+    decimals first, as LARIS always has, so ties are resolved the same way
+    on every platform.
+    """
+    fdr = pd.Series(1.0, index=res.index)
+    sub = res.loc[family, ['sender', 'receiver', 'p_value']]
+    if len(sub):
+        for _, idx in sub.groupby(['sender', 'receiver'],
+                                  observed=True).groups.items():
+            p = sub.loc[idx, 'p_value'].round(6)
+            fdr.loc[idx] = multipletests(p, method='fdr_bh')[1]
+    return fdr
+
 def _calculate_laris_score_by_celltype(
     adata: Optional[ad.AnnData],
     lr_adata: ad.AnnData,
@@ -1510,14 +1586,15 @@ def _calculate_laris_score_by_celltype(
     prefilter_threshold: float = 0.0,
     score_threshold: float = 1e-6,
     spatial_weight: float = 3.0,
-    use_conditional_pvalue: bool = False,
+    use_conditional_pvalue: Optional[bool] = None,
     rescale: bool = True,
     section_key=None,
     specificity_reference: str = 'lr',
     cytome_source=None,
     background=None,
     mu_gsp: float = 0.25,
-    min_null_support: int = 0,
+    min_null_support: Union[int, str] = 'auto',
+    sort_by: str = 'interaction_score',
 ) -> pd.DataFrame:
     """
     Calculate cell type-specific LARIS interaction scores with statistical testing.
@@ -1656,7 +1733,8 @@ def _calculate_laris_score_by_celltype(
         - 'p_value_fdr': Benjamini-Hochberg FDR-corrected p-value per cell type pair
         - 'nlog10_p_value_fdr': -log10(p_value_fdr) for visualization
         
-        Sorted by interaction_score in descending order.
+        Sorted by interaction_score (descending); with sort_by='p_value',
+        by p_value (ascending), ties by interaction_score (descending).
     
     Examples
     --------
@@ -1927,14 +2005,20 @@ def _calculate_laris_score_by_celltype(
     # =========================================================================
     # STEP 5: Statistical Significance Testing (Optional)
     # =========================================================================
+    min_null_support = _resolve_min_null_support(
+        min_null_support,
+        background if calculate_pvalues else None)
     if calculate_pvalues and background is not None:
         from . import _background as _bg_mod
         print("\n" + "="*70)
         print("STATISTICAL SIGNIFICANCE TESTING (factorized matched-gene null)")
         print("="*70)
         k_side = background.params.get('n_matched_genes', 0)
-        print(f"  - Support per pair: {k_side}x{k_side} = {k_side**2:,} "
+        print(f"  - Support per pair: up to {k_side}x{k_side} = {k_side**2:,} "
               f"pseudo-pairs (exact floor {1.0/(k_side**2+1):.2e})")
+        print(f"  - Tested: interactions whose null has at least "
+              f"{max(1, min_null_support):,} non-zero pseudo-pairs; "
+              f"Benjamini-Hochberg within each sender-receiver pair")
         _pv = _bg_mod.compute_factorized_pvalues(
             res_laris,
             background,
@@ -1948,8 +2032,22 @@ def _calculate_laris_score_by_celltype(
             mu_gsp=mu_gsp,
             mu_celltype=mu,
             min_null_support=min_null_support,
+            score_threshold=score_threshold,
         )
         res_laris['p_value'] = _pv['p_value']
+        # Pairs with a gene whose matched set is truncated (the few most
+        # and least abundant genes): the set still straddles the gene, so
+        # the pair stays in the FDR family; the flag is reported.
+        if background.params.get('truncation') != 'symmetric':
+            warnings.warn(
+                "This background was built before the v0.15.0 edge repair: "
+                "genes at the edge of the candidate pool got matched sets "
+                "backfilled from one side, which biases their pairs' nulls. "
+                "Rebuild it with prepareLRBackground.",
+                UserWarning, stacklevel=2)
+        _edge = getattr(background, 'edge_genes', None) or frozenset()
+        res_laris['edge_limited'] = (res_laris['ligand'].isin(_edge)
+                                     | res_laris['receptor'].isin(_edge))
         _mfb = background.match_frac_below
         if _mfb:
             # worst of the two genes: 1.0 means every matched gene is
@@ -1968,15 +2066,24 @@ def _calculate_laris_score_by_celltype(
                     "a gene whose matched set lies entirely below it "
                     "(null_matchability >= 0.99) - their nulls are "
                     "systematically weak and the p-values overstate. "
-                    f"Genes involved include {_genes[:6]}. Consider raising "
-                    "the pool augmentation was disabled; re-run with "
-                    "augment_pool=True in prepareLRBackground.",
+                    f"Genes involved include {_genes[:6]}. If the pool "
+                    "augmentation was disabled, re-run prepareLRBackground "
+                    "with augment_pool=True; under the default balanced "
+                    "matching such genes get a smaller matched set that "
+                    "straddles them (edge_limited).",
                     UserWarning, stacklevel=2)
         # the null's effective support: how many of the k*k pseudo-pairs
         # actually scored above zero. A row whose support is mostly zeros
         # cannot resolve the p-value it reports - see the column's use in
         # tutorial 07.
         res_laris['null_support'] = _pv['null_support']
+        # each row's own support: k**2 minus the database pairs inside its
+        # block, smaller for a gene with a truncated matched set
+        res_laris['null_size'] = _pv['null_size']
+        # descriptive: the observed pair's rank among its ligand's matched
+        # genes paired with the observed receptor, and vice versa
+        res_laris['ligand_rank'] = _pv['ligand_rank']
+        res_laris['receptor_rank'] = _pv['receptor_rank']
         _ns = res_laris['null_support']
         print(f"  - Effective null support: median {int(_ns.median()):,} "
               f"of {k_side ** 2:,}; "
@@ -1989,10 +2096,25 @@ def _calculate_laris_score_by_celltype(
         _run_sampled_permutations = False
 
     if _run_sampled_permutations:
+        # A BH family restricted to non-zero scores needs a p-value that
+        # conditions on the score being non-zero; the unconditional one
+        # counts the zeros of the null and is too small on exactly the rows
+        # the filter keeps (v0.15.0).
+        if use_conditional_pvalue is None:
+            use_conditional_pvalue = bool(prefilter_fdr)
+        elif prefilter_fdr and not use_conditional_pvalue:
+            warnings.warn(
+                "prefilter_fdr=True restricts the FDR to non-zero scores, "
+                "which is only valid with a p-value that conditions on the "
+                "score being non-zero; using use_conditional_pvalue=True. "
+                "Pass prefilter_fdr=False to adjust the unconditional "
+                "p-values over every interaction instead.",
+                UserWarning, stacklevel=2)
+            use_conditional_pvalue = True
         print("\n" + "="*70)
         print("STATISTICAL SIGNIFICANCE TESTING")
         print("="*70)
-        
+
         # Step 5.1: Prepare Background Interactions
         print("\n--- Step 5.1: Preparing background interaction sets ---")
         
@@ -2105,55 +2227,18 @@ def _calculate_laris_score_by_celltype(
     if calculate_pvalues:
         # Step 5.3: FDR Correction
         print("\n--- Step 5.3: Applying FDR correction (Benjamini-Hochberg) ---")
-        print(f"  - Strategy: {'Pre-filtered' if prefilter_fdr else 'All interactions'}")
-        if prefilter_fdr:
-            print(f"  - Pre-filter threshold: {prefilter_threshold}")
-        
-        res_laris['p_value_fdr'] = np.nan
-        
-        n_pairs_corrected = 0
-        n_interactions_tested = 0
-        n_interactions_filtered = 0
-        n_groups_fdr_floor_above_005 = 0
-
-        for (sender, receiver), group_df in tqdm(
-            res_laris.groupby(['sender', 'receiver']),
-            desc="  FDR correction"
-        ):
-            p_values = group_df['p_value']
-            if p_values.empty or p_values.isnull().all():
-                continue
-            
-            # Round for numerical stability
-            p_values = p_values.round(6)
-
-            if prefilter_fdr:
-                filter_mask = group_df['interaction_score'] > prefilter_threshold
-                p_values_to_test = p_values[filter_mask]
-                
-                n_interactions_tested += len(p_values_to_test)
-                n_interactions_filtered += len(p_values) - len(p_values_to_test)
-
-                if not p_values_to_test.empty:
-                    _, p_values_corrected, _, _ = multipletests(
-                        p_values_to_test,
-                        method='fdr_bh'
-                    )
-                    res_laris.loc[p_values_to_test.index, 'p_value_fdr'] = p_values_corrected
-                    if len(p_values_to_test) / (n_permutations + 1) > 0.05:
-                        n_groups_fdr_floor_above_005 += 1
-
-                # Filtered interactions get FDR = 1.0
-                if not p_values.empty:
-                    res_laris.loc[p_values[~filter_mask].index, 'p_value_fdr'] = 1.0
-            else:
-                _, p_values_corrected, _, _ = multipletests(p_values, method='fdr_bh')
-                res_laris.loc[group_df.index, 'p_value_fdr'] = p_values_corrected
-                n_interactions_tested += len(p_values)
-                if len(p_values) / (n_permutations + 1) > 0.05:
-                    n_groups_fdr_floor_above_005 += 1
-
-            n_pairs_corrected += 1
+        family = _fdr_family(res_laris, background is not None,
+                             min_null_support, prefilter_fdr,
+                             prefilter_threshold)
+        res_laris['p_value_fdr'] = _bh_within_pairs(res_laris, family)
+        n_interactions_tested = int(family.sum())
+        n_interactions_filtered = int(len(res_laris) - n_interactions_tested)
+        _fam_sizes = family.groupby(
+            [res_laris['sender'], res_laris['receiver']], observed=True).sum()
+        _fam_sizes = _fam_sizes[_fam_sizes > 0]
+        n_pairs_corrected = int(len(_fam_sizes))
+        n_groups_fdr_floor_above_005 = int(
+            (_fam_sizes / (n_permutations + 1) > 0.05).sum())
 
         # Clean up FDR values. Direct assignment instead of chained
         # .fillna(inplace=True), which stops working in pandas 3.0
@@ -2182,15 +2267,13 @@ def _calculate_laris_score_by_celltype(
 
         # Both nulls have a floor: 1/(n_permutations+1) when sampled,
         # 1/(n_matched_genes**2+1) when enumerated against a background.
-        # Within-group BH scales that floor by m/k, where m is the number of
-        # tests in the group and k the number of them reaching the floor, so
-        # the smallest achievable FDR in the group is (m/k)/(support+1).
-        # The binding case is an isolated hit (k=1), giving m/(n_permutations+1);
-        # warn when that exceeds 0.05, i.e. when a single strong interaction
-        # could not clear FDR < 0.05 for purely numerical reasons. Groups where
-        # many interactions are genuinely significant are far less demanding:
-        # 50 floor hits among 1,000 tests already reach FDR = 0.02 at the
-        # default n_permutations=1000.
+        # Within-group BH scales that floor by m/k, where m is the size of
+        # the group's family and k the number of its tests reaching the
+        # floor, so the smallest achievable FDR in the group is
+        # (m/k)/(support+1). The binding case is an isolated hit (k=1),
+        # giving m/(support+1); warn when that exceeds 0.05, i.e. when a
+        # single strong interaction could not clear FDR < 0.05 for purely
+        # numerical reasons.
         if n_groups_fdr_floor_above_005 > 0:
             # The arithmetic is identical for both nulls, but the knob is
             # not: with a background the support is the enumerated
@@ -2225,16 +2308,31 @@ def _calculate_laris_score_by_celltype(
                 stacklevel=2,
             )
         print(f"  - Interactions tested: {n_interactions_tested:,}")
-        if prefilter_fdr:
-            print(f"  - Interactions filtered: {n_interactions_filtered:,}")
+        print(f"  - Interactions not tested (null support below the floor): "
+              f"{n_interactions_filtered:,}")
         
         # Report significant interactions
         n_sig_05 = (res_laris['p_value_fdr'] < 0.05).sum()
         n_sig_01 = (res_laris['p_value_fdr'] < 0.01).sum()
+        n_sig_10 = (res_laris['p_value_fdr'] < 0.10).sum()
         print(f"\n  Significant interactions:")
-        print(f"  - FDR < 0.05: {n_sig_05:,} ({100*n_sig_05/len(res_laris):.2f}%)")
         print(f"  - FDR < 0.01: {n_sig_01:,} ({100*n_sig_01/len(res_laris):.2f}%)")
-        
+        print(f"  - FDR < 0.05: {n_sig_05:,} ({100*n_sig_05/len(res_laris):.2f}%)")
+        print(f"  - FDR < 0.10: {n_sig_10:,} ({100*n_sig_10/len(res_laris):.2f}%)")
+
+        # Order (changes no value). Default: the score, descending, as in
+        # earlier versions and as the simulation benchmark ranks. With
+        # sort_by='p_value': most significant first, the score among ties
+        # (the exact null's floor ties the strongest rows).
+        if sort_by == 'p_value':
+            res_laris = res_laris.sort_values(
+                ['p_value', 'interaction_score'], ascending=[True, False],
+                kind='mergesort', na_position='last', ignore_index=True)
+        else:
+            res_laris = res_laris.sort_values(
+                'interaction_score', ascending=False, kind='mergesort',
+                ignore_index=True)
+
         print("\n" + "="*70)
         print("STATISTICAL TESTING COMPLETE")
         print("="*70)
@@ -2243,7 +2341,7 @@ def _calculate_laris_score_by_celltype(
         res_laris['p_value'] = np.nan
         res_laris['p_value_fdr'] = np.nan
         res_laris['nlog10_p_value_fdr'] = np.nan
-    
+
     print("\n" + "="*70)
     print("LARIS CELL TYPE ANALYSIS COMPLETE")
     print("="*70)

@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "laris"
-version = "0.14.1"
+version = "0.15.0"
 description = "LARIS enables accurate and efficient ligand and receptor interaction analysis in spatial transcriptomics"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -51,15 +51,18 @@ dependencies = [
 
 # https://docs.pypi.org/project_metadata/#project-urls
 [project.urls]
-Documentation = "https://genecell.github.io/LARIS/"
+Documentation = "https://github.com/genecell/LARIS/blob/master/api/README.md"
 Source = "https://github.com/genecell/LARIS"
-Homepage = "https://genecell.github.io/LARIS/"
+Homepage = "https://github.com/genecell/LARIS"
 "Bug Tracker" = "https://github.com/genecell/LARIS/issues"
 
 [project.optional-dependencies]
 dev = [
     "pre-commit",
     "pytest>=7.0",
+    # generates api/*.md from the docstrings and validates them
+    # (tools/make_api_docs.py, tests/test_api_docs.py)
+    "numpydoc>=1.8",
 ]
 cytome = [
     "cytome>=0.2.3,<1.0",

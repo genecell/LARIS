@@ -63,7 +63,8 @@ jobs:
                            "it was built without compiling the Rust")
               leaked = [n for n in names
                         if n.startswith(("target/", "docs/", "tutorials/",
-                                         "analysis/", "releases/"))]
+                                         "analysis/", "releases/", "api/",
+                                         "tools/"))]
               if leaked:
                   sys.exit(f"::error::{whl} contains build/doc output: {leaked[:5]}")
               print(f"{whl}: {ext[0]}, {len(names)} entries, clean")

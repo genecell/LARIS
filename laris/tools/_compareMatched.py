@@ -148,16 +148,16 @@ def compareLARISMatched(
         ``.obsm`` key of the joint embedding used for anchor matching.
     n_anchors : int, default=100
         Number of k-means anchors spanning the embedding.
+    k_anchor : int, default=10
+        Cells of each subject averaged per anchor. Small values follow
+        local structure; large values smooth toward the subject mean
+        (``k_anchor -> n_cells`` degenerates to the unstandardised mean).
     anchor_balance : bool, default=True
         Fit the anchor k-means on an equal number of cells from each
         condition. Without it the anchors follow pooled cell density, so
         the larger condition's states dominate the matched effect - which
         is what this estimator is meant to condition away. See
         :func:`_anchor_points`.
-    k_anchor : int, default=10
-        Cells of each subject averaged per anchor. Small values follow
-        local structure; large values smooth toward the subject mean
-        (``k_anchor -> n_cells`` degenerates to the unstandardised mean).
     logPseudocount : 'auto' or float, default='auto'
         Passed to the per-sample centring; see :func:`compareLARIS`.
     minSubjectsObserved : int, default=2

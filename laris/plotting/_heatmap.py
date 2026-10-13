@@ -76,7 +76,8 @@ def plotCCCHeatmap(
         Colormap to use for the heatmap (e.g., 'viridis', 'RdBu_r')
         
     n_top : int, default=3000
-        Number of top-ranked interactions to include if no filters are applied
+        Number of top-scoring interactions (by ``interaction_score``) to
+        include if no filters are applied
         
     figsize : tuple, default=(6, 5)
         Figure size as (width, height) in inches
@@ -186,7 +187,9 @@ def plotCCCHeatmap(
             f"No filters applied. Using top {n_top} interactions.",
             2, verbosity, 'info'
         )
-        laris_results_subset = laris_results_subset.iloc[:n_top]
+        laris_results_subset = laris_results_subset.sort_values(
+            'interaction_score', ascending=False, kind='mergesort'
+        ).iloc[:n_top]
 
     if laris_results_subset.empty:
         _log_message(

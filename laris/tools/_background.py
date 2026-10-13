@@ -21,8 +21,9 @@ Rounds 34-38 of the discussion record (factorized null). In brief:
   random graphs are built anywhere in the null.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Optional, Dict
+from typing import Optional, Dict, Union
 
 import warnings
 
@@ -34,6 +35,9 @@ from sklearn.neighbors import KDTree, kneighbors_graph
 from .._compat import _UNSET, resolve_data_arg
 
 
+_RUST_THREADS_SET = False
+
+
 def _rust_kernels():
     """Return LARIS's compiled Rust kernels (``laris._laris``), or None.
 
@@ -43,13 +47,21 @@ def _rust_kernels():
     Set ``LARIS_NO_RUST=1`` to force the NumPy path.
     """
     import os
+    global _RUST_THREADS_SET
     if os.environ.get('LARIS_NO_RUST'):
         return None
     try:
         from .. import _laris
-        return _laris
     except ImportError:
         return None
+    if not _RUST_THREADS_SET:
+        # rayon sizes its pool once per process, on first use: give it the
+        # count the Python side uses before any kernel runs.
+        _RUST_THREADS_SET = True
+        init = getattr(_laris, 'init_threads', None)
+        if init is not None:
+            init(_n_threads())
+    return _laris
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +203,54 @@ def _augment_pool_for_saturation(
     return np.sort(pool)
 
 
+def _side_repair_pool(means: np.ndarray, detected: np.ndarray,
+                      pool_pos: np.ndarray, query_pos: np.ndarray,
+                      k: int) -> np.ndarray:
+    """Give every LR gene k/2 detected candidates on each side by mean.
+
+    Balanced matching (:func:`_balanced_sets`) takes k/2 peers below an LR
+    gene's mean and k/2 above it. The quantile grid can leave fewer than
+    that on one side of the least and most abundant LR genes, and the
+    saturation repair only looks at the top. So each LR gene, taken from
+    the least abundant up, receives the missing genes immediately below it
+    by mean; taken from the most abundant down, those immediately above
+    it. Neighbouring LR genes share the additions, so a tail of the pool
+    grows by about k/2 genes. A gene that the whole transcriptome cannot
+    serve on one side is then truncated symmetrically by
+    :func:`_balanced_sets`.
+
+    Only genes detected in at least one cell are candidates, and genes
+    with no counts leave the pool: a pseudo-pair built from such a gene can
+    never score above zero, so a detected gene would beat it for free
+    (without this rule the repair adds exactly those genes below the
+    scarcest LR genes: 101 on Visium HD). Every other gene keeps its pool.
+
+    Returns the repaired pool positions, sorted.
+    """
+    means = np.asarray(means)
+    detected = np.asarray(detected, dtype=bool)
+    pool = np.asarray(pool_pos)
+    in_pool = np.zeros(len(means), dtype=bool)
+    in_pool[pool[detected[pool]]] = True
+    order = np.argsort(means, kind="stable")
+    order = order[detected[order]]
+    ms = means[order]
+    half = k // 2
+    q = [int(g) for g in np.asarray(query_pos)]
+    for gi in sorted(q, key=lambda g: means[g]):
+        below = order[:int(np.searchsorted(ms, means[gi], side="right"))]
+        below = below[below != gi]
+        need = min(half, below.size) - int(in_pool[below].sum())
+        if need > 0:
+            in_pool[below[~in_pool[below]][::-1][:need]] = True
+    for gi in sorted(q, key=lambda g: -means[g]):
+        above = order[int(np.searchsorted(ms, means[gi], side="right")):]
+        need = min(k - half, above.size) - int(in_pool[above].sum())
+        if need > 0:
+            in_pool[above[~in_pool[above]][:need]] = True
+    return np.flatnonzero(in_pool)
+
+
 def _self_index(pool_pos: np.ndarray, query_pos: np.ndarray) -> np.ndarray:
     """For each query gene, its own position inside `pool_pos`, else -1."""
     where = {int(g): i for i, g in enumerate(np.asarray(pool_pos))}
@@ -234,6 +294,34 @@ def _matched_sets(query_feats: np.ndarray, pool_feats: np.ndarray,
     return out
 
 
+def _edge_limited_mask(means: np.ndarray, pool_pos: np.ndarray,
+                       query_pos: np.ndarray, k: int,
+                       query_pool_index: Optional[np.ndarray] = None
+                       ) -> np.ndarray:
+    """Query genes whose matched set is truncated.
+
+    True when fewer than ``k // 2`` candidates (itself excluded) have a mean
+    at or below the gene's, or fewer than ``k - k // 2`` above it - the rule
+    by which :func:`_balanced_sets` truncates the set symmetrically. After
+    the side repair of the pool (:func:`_side_repair_pool`) this happens
+    only to genes the whole transcriptome cannot serve on one side: the
+    few most and least abundant genes. A property of the gene's position
+    in the pool, so it is defined for ``matching='knn'`` too.
+    """
+    pool_means = np.sort(np.asarray(means)[np.asarray(pool_pos)])
+    npool = len(pool_means)
+    k = min(k, npool if query_pool_index is None else max(npool - 1, 1))
+    half = k // 2
+    cut = np.searchsorted(pool_means, np.asarray(means)[np.asarray(query_pos)],
+                          side="right")
+    below = cut.astype(np.int64)
+    if query_pool_index is not None:
+        # a query gene in the pool has its own mean: counted at-or-below
+        below = below - (np.asarray(query_pool_index) >= 0)
+    above = npool - cut
+    return (above < k - half) | (below < half)
+
+
 def _balanced_sets(feats: np.ndarray, pool_pos: np.ndarray,
                    query_pos: np.ndarray, k: int,
                    query_pool_index: Optional[np.ndarray] = None):
@@ -250,11 +338,19 @@ def _balanced_sets(feats: np.ndarray, pool_pos: np.ndarray,
     pure rank window on the mean was measured and rejected, since it
     degrades the variance match 5.8-fold for the same mean balance.
 
-    Returns ``(idx, pool_sorted, n_edge_limited)`` where ``idx`` indexes
-    ``pool_sorted``, and ``n_edge_limited`` counts genes with fewer than
-    k/2 pool candidates on one side - genuinely at the top or bottom of
-    the transcriptome, backfilled from the other side and reported rather
-    than papered over.
+    A gene with fewer than k/2 candidates on one side gets a **symmetric
+    truncation**: t = min(k/2, candidates below, candidates above) on each
+    side, a smaller set that still straddles it (v0.15.0). Up to the
+    v0.15.0 tag the short side was backfilled from the other side, which
+    biases the null in no fixed direction (measured: 2.9x nominal at 0.05
+    on a pure null), and such pairs were then left untested.
+    t = 0 gives an empty set, an empty null and p = 1. Every other gene
+    gets exactly the set it had before.
+
+    Returns ``(idx, pool_sorted, n_truncated)``: ``idx`` is a list with
+    one array of positions into ``pool_sorted`` per query gene (length k,
+    or 2t for a truncated gene), and ``n_truncated`` counts the truncated
+    genes.
     """
     mu = feats.mean(axis=0)
     sd = feats.std(axis=0)
@@ -268,11 +364,11 @@ def _balanced_sets(feats: np.ndarray, pool_pos: np.ndarray,
     npool = len(pool_sorted)
     k = min(k, npool if query_pool_index is None else max(npool - 1, 1))
     half = k // 2
-    out = np.empty((len(query_pos), k), dtype=np.int64)
-    edge_limited = 0
+    out = []
+    truncated = 0
     # position of each query gene inside pool_sorted, or -1
     where = {g: i for i, g in enumerate(pool_sorted)}
-    for i, gi in enumerate(query_pos):
+    for gi in query_pos:
         cut = int(np.searchsorted(means_sorted, feats[gi, 0], side="right"))
         below = np.arange(0, cut)
         above = np.arange(cut, npool)
@@ -281,33 +377,21 @@ def _balanced_sets(feats: np.ndarray, pool_pos: np.ndarray,
             below = below[below != self_i]
             above = above[above != self_i]
         need_lo, need_hi = half, k - half
-        if above.size < need_hi:
-            need_hi = above.size
-            need_lo = k - need_hi
-            edge_limited += 1
-        elif below.size < need_lo:
-            need_lo = below.size
-            need_hi = k - need_lo
-            edge_limited += 1
+        if above.size < need_hi or below.size < need_lo:
+            truncated += 1
+            need_lo = need_hi = min(below.size, above.size, half)
         pick = []
         for side, need in ((below, need_lo), (above, need_hi)):
-            if need <= 0 or side.size == 0:
+            if need <= 0:
                 continue
             if side.size <= need:
                 pick.append(side)
             else:
                 d = np.linalg.norm(zp[side] - z[gi], axis=1)
                 pick.append(side[np.argpartition(d, need)[:need]])
-        sel = np.concatenate(pick) if pick else np.empty(0, dtype=np.int64)
-        if sel.size < k:                       # degenerate pool
-            rest = np.setdiff1d(np.arange(npool), sel, assume_unique=False)
-            if self_i >= 0 and query_pool_index is not None:
-                rest = rest[rest != self_i]
-            d = np.linalg.norm(zp[rest] - z[gi], axis=1)
-            sel = np.concatenate(
-                [sel, rest[np.argsort(d)[:k - sel.size]]])
-        out[i] = sel[:k]
-    return out, pool_sorted, edge_limited
+        out.append(np.concatenate(pick).astype(np.int64) if pick
+                   else np.empty(0, dtype=np.int64))
+    return out, pool_sorted, truncated
 
 
 def _edge_gram(Pt: np.ndarray, Qt: np.ndarray, graph: sp.spmatrix,
@@ -426,10 +510,57 @@ class LRBackground:
     ``prepareLRInteraction``. The cells-major layout is deliberate: every
     consumer gathers cells, and that is a contiguous copy here. The Gram tables are
     over the *gsp* graph that ``runLARIS`` builds for spatial specificity.
+
+    ``P_det`` is ``P`` on the entries whose raw count is non-zero (sparse
+    CSR, cells x U, genes ascending): the detected part of every profile,
+    which is all the masked pseudo-pair profiles need. It replaces the dense
+    ``Q = P - P_det`` that versions up to 0.14 stored (a second cells x U
+    float32 array: 7.9 GB at 500,000 cells and 4,240 genes); ``Q`` is still
+    available as a property, rebuilt exactly on demand.
+
+    Built by :func:`prepareLRBackground`; not meant to be constructed
+    directly.
+
+    Attributes
+    ----------
+    gene_index : pandas.Index
+        The U table genes: the candidate pool plus every LR gene.
+    P : numpy.ndarray
+        Diffused profiles, cells x U, float32, C-contiguous.
+    P_det : scipy.sparse.csr_matrix
+        ``P`` on the entries whose raw count is non-zero.
+    G_W, G_W2 : numpy.ndarray
+        Edge Gram tables (U x U, float64) over the spatial-specificity
+        graph W and over W'W.
+    G_dot, G_sq : numpy.ndarray
+        Moment Gram tables (U x U, float64): sums over cells of products of
+        profiles and of squared profiles.
+    R : float
+        Analytic expectation of a random-graph row's squared weights,
+        times the number of cells (the shuffled-graph baseline).
+    n_cells : int
+        Number of cells.
+    matched_ligand, matched_receptor : dict of str to numpy.ndarray
+        Every ligand's and receptor's matched genes, as positions in
+        ``gene_index``: k genes, or fewer for a gene whose set is
+        truncated (possibly none).
+    db_pairs : frozenset of tuple
+        The database's (ligand, receptor) pairs; never used as pseudo-pairs.
+    match_frac_below : dict of str to float
+        Per LR gene, the fraction of its matched set with a lower mean
+        (1.0: every match is weaker, the null is easy; NaN: empty set).
+    edge_limited : int
+        Number of LR genes whose matched set is truncated (fewer than k/2
+        candidates on one side even after the side repair).
+    params : dict
+        The settings the background was built with.
+    edge_genes : frozenset of str or None
+        The LR genes whose matched set is truncated (None for backgrounds
+        built before v0.15.0).
     """
     gene_index: pd.Index                     # U gene names
     P: np.ndarray                            # (n_cells, U) diffused, float32
-    Q: np.ndarray                            # P masked to raw-zero cells
+    P_det: sp.csr_matrix                     # P on raw-detected entries
     G_W: np.ndarray                          # edge Gram, observed gsp graph
     G_W2: np.ndarray                         # edge Gram, W'W of the gsp graph
     G_dot: np.ndarray                        # P.T @ P      (=> m1 * n)
@@ -442,10 +573,14 @@ class LRBackground:
     # per LR gene: fraction of its matched set with a lower mean (1.0 =
     # saturated; every pseudo-pair is weaker than the real one)
     match_frac_below: Dict[str, float] = field(default_factory=dict)
-    # genes with fewer than k/2 pool candidates on one side under
-    # balanced matching: genuinely at the edge of the transcriptome
+    # genes whose matched set is truncated: fewer than k/2 candidates on
+    # one side under balanced matching, even after the side repair
     edge_limited: int = 0
     params: dict = field(default_factory=dict)
+    # the LR genes with a truncated matched set (see _edge_limited_mask).
+    # Their sets still straddle them, so their pairs are tested as
+    # usual; the flag is reported. None for backgrounds built earlier.
+    edge_genes: Optional[frozenset] = None
 
     def positions(self, genes) -> np.ndarray:
         pos = self.gene_index.get_indexer(genes)
@@ -456,8 +591,33 @@ class LRBackground:
 
     @property
     def support_per_pair(self) -> int:
+        """Deprecated: the largest possible support, k**2.
+
+        Since v0.15.0 a truncated matched set gives a row fewer
+        pseudo-pairs; each row's own support is ``runLARIS``'s
+        ``null_size`` column.
+        """
+        warnings.warn(
+            "LRBackground.support_per_pair is deprecated: since v0.15.0 a "
+            "row's support depends on its matched sets. Use the null_size "
+            "column of runLARIS's results.", FutureWarning, stacklevel=2)
         k = self.params.get('n_matched_genes', 0)
         return k * k
+
+    @property
+    def Q(self) -> np.ndarray:
+        """``P`` masked to raw-zero entries (dense; built on each access)."""
+        Q = self.P.copy()
+        det = self.P_det.tocoo()
+        Q[det.row, det.col] = 0.0
+        return Q
+
+    def __setstate__(self, state):
+        # backgrounds pickled by LARIS <= 0.14 carry the dense Q
+        if 'Q' in state and 'P_det' not in state:
+            Q = state.pop('Q')
+            state['P_det'] = sp.csr_matrix(state['P'] - Q)
+        self.__dict__.update(state)
 
 
 
@@ -482,6 +642,20 @@ def _gene_moments(X):
     return m, m2 - m ** 2
 
 
+def _gene_detected(X) -> np.ndarray:
+    """Per gene: True if it is non-zero in at least one cell.
+
+    Counts stored values that are non-zero (an explicitly stored 0 is not
+    a detection), column by column, so gene blocks of a cytome give the
+    same answer as the whole matrix.
+    """
+    if not sp.issparse(X):
+        X = sp.csr_matrix(X)
+    X = X.tocsc()
+    nz = np.concatenate([[0], np.cumsum(X.data != 0)])
+    return (nz[X.indptr[1:]] - nz[X.indptr[:-1]]) > 0
+
+
 @dataclass
 class _MatchingSelection:
     """Table genes and matched sets chosen by :func:`_select_matching`."""
@@ -491,11 +665,12 @@ class _MatchingSelection:
     matched_receptor: Dict[str, np.ndarray]
     match_frac_below: Dict[str, float]
     edge_limited: int
+    edge_genes: frozenset = frozenset()
 
 
 def _select_matching(var_names, m, v, lr_df, n_pool, augment_pool,
-                     n_matched_genes, matching, exclude_self, say
-                     ) -> _MatchingSelection:
+                     n_matched_genes, matching, exclude_self, say,
+                     detected=None) -> _MatchingSelection:
     """Candidate pool, table genes and matched sets from WHOLE-matrix gene
     statistics ``m`` / ``v`` (one value per gene of ``var_names``).
 
@@ -506,6 +681,10 @@ def _select_matching(var_names, m, v, lr_df, n_pool, augment_pool,
     subset instead of the whole matrix: ~70% of matched sets differed by
     1-5 of 100 genes and FDR<0.05 calls moved (817 vs 780 on 10,000 Xenium
     cells).
+
+    ``detected`` (one bool per gene: non-zero in at least one cell) limits
+    the side repair to detected genes; None takes it from ``m > 0``, which
+    is the same thing for non-negative expression.
     """
     var_names = pd.Index(var_names)
     if not var_names.is_unique:
@@ -532,6 +711,15 @@ def _select_matching(var_names, m, v, lr_df, n_pool, augment_pool,
         if len(pool_pos) > _before:
             say(f"  - pool grown {_before:,} -> {len(pool_pos):,} genes "
                 "so every LR gene has matched peers above it")
+        if detected is None:
+            detected = np.asarray(m) > 0
+        _before = len(pool_pos)
+        pool_pos = _side_repair_pool(m, detected, pool_pos, _q,
+                                     n_matched_genes)
+        if len(pool_pos) != _before:
+            say(f"  - side repair: pool {_before:,} -> {len(pool_pos):,} "
+                f"genes (k/2 detected peers on each side of every LR gene "
+                f"where the transcriptome has them)")
     say(f"  - candidate pool: {len(pool_pos):,} genes "
         f"(quantile grid over mean/variance)")
 
@@ -579,27 +767,41 @@ def _select_matching(var_names, m, v, lr_df, n_pool, augment_pool,
     # for any pair containing this gene is systematically easy, and its
     # p-values overstate. With the n_extreme pool repair this should be
     # rare; the value is reported so the residual cases are visible.
+    # NaN for an empty (fully truncated) set, so the values stay floats.
     match_frac_below = {}
     for genes_, idx_, pl in ((lig_genes, lig_idx, lig_pool),
                              (rec_genes, rec_idx, rec_pool)):
         pool_means = m[np.asarray(pl)]
         gm = m[var_names.get_indexer(genes_)]
         for i, g in enumerate(genes_):
-            match_frac_below[g] = float((pool_means[idx_[i]] < gm[i]).mean())
+            sel_ = np.asarray(idx_[i])
+            match_frac_below[g] = (float((pool_means[sel_] < gm[i]).mean())
+                                   if sel_.size else float('nan'))
+
+    # LR genes whose matched set is truncated (either role: same pool,
+    # same mean, so the flag is a property of the gene)
+    edge_genes = set()
+    for genes_, pos_ in ((lig_genes, lig_pos), (rec_genes, rec_pos)):
+        mask = _edge_limited_mask(m, pool_pos, pos_, n_matched_genes,
+                                  query_pool_index=_qpi(pos_))
+        edge_genes.update(np.asarray(genes_)[mask].tolist())
 
     return _MatchingSelection(
         gene_pos=gene_pos, gene_index=pd.Index(gene_index),
         matched_ligand=matched_ligand, matched_receptor=matched_receptor,
-        match_frac_below=match_frac_below, edge_limited=edge_limited)
+        match_frac_below=match_frac_below, edge_limited=edge_limited,
+        edge_genes=frozenset(edge_genes))
 
 
 def _build_tables(adata, Xg, n_cells, number_nearest_neighbors,
                   use_rep_spatial, use_rep_gsp, n_nearest_neighbors_gsp,
-                  sigma_gsp, section_key, block_size, say):
-    """Diffused table-gene profiles ``P``/``Q`` and their Gram tables.
+                  sigma_gsp, section_key, block_size, say, sigma='adaptive'):
+    """Diffused table-gene profiles ``P``, their detected part ``P_det``
+    and the Gram tables.
 
     ``Xg`` is cells x table genes (raw values; columns in table order);
-    ``adata`` supplies ``obs`` / ``obsm`` for the spatial graphs.
+    ``adata`` supplies ``obs`` / ``obsm`` for the spatial graphs. ``sigma``
+    is the diffusion kernel's bandwidth, as in ``prepareLRInteraction``.
     """
     from . import _utils
 
@@ -614,42 +816,72 @@ def _build_tables(adata, Xg, n_cells, number_nearest_neighbors,
     knn = _utils._sectioned_kneighbors_graph(
         coords, n_neighbors=number_nearest_neighbors, sections=sections,
         mode='distance', include_self=True)
-    knn = sp.csr_matrix(_utils._apply_knn_kernel(knn, sigma='adaptive'))
+    knn = sp.csr_matrix(_utils._apply_knn_kernel(knn, sigma=sigma))
     # cells x genes, C-contiguous: every downstream consumer gathers
     # CELLS, and in this layout that is a contiguous row copy rather than
     # a strided column gather. Measured 2.6x on the edge Grams (R89.8).
     #
     # prepareLRInteraction keeps a pair's score only in cells where ligand
-    # OR receptor raw counts are nonzero. Q carries each gene's diffused
-    # values on its raw-zero cells; the masked pseudo-pair profile is then
+    # OR receptor raw counts are nonzero. With P_det = P on the raw-nonzero
+    # entries and Q = P - P_det, the masked pseudo-pair profile is
     # P_i*P_j - Q_i*Q_j (see _edge_gram), which keeps every Gram identity.
     #
-    # Q is filled block by block in place. v0.14.0 built it in one
-    # statement, np.where(dense raw-nonzero mask, 0, P).astype(float32),
-    # which held the cells x genes bool mask, the where() result AND the
-    # astype copy alongside P: 3.25x P at once (27.6 GB at 500,000 cells
-    # and 4,240 genes), the peak of the whole exact pipeline. Same values,
-    # bit for bit.
+    # P_det is sparse (the raw matrix's pattern, values from P). v0.14
+    # stored Q densely instead - a second cells x genes float32 array.
     P = np.empty((n_cells, U), dtype=np.float32)
-    Q = np.empty((n_cells, U), dtype=np.float32)
     step = block_size * 32
     for start in range(0, n_cells, step):
         stop = min(start + step, n_cells)
         P[start:stop, :] = np.asarray(
             (knn[start:stop, :] @ Xg).todense())
-        Q[start:stop, :] = P[start:stop, :]
-        r, c = Xg[start:stop].nonzero()
-        Q[start + r, c] = 0.0
     del knn
+    det = Xg.copy()
+    det.eliminate_zeros()
+    det.sort_indices()
+    rows = np.repeat(np.arange(n_cells), np.diff(det.indptr))
+    P_det = sp.csr_matrix((P[rows, det.indices], det.indices.copy(),
+                           det.indptr.copy()), shape=(n_cells, U))
+    del det, rows
 
     # ---- the gsp graph and its Gram tables ------------------------------
     say("  - building spatial-specificity graph and Gram tables...")
     # identical to the graph runLARIS builds for spatial specificity
-    W = _utils._build_adjacency_matrix(
+    W = sp.csr_matrix(_utils._build_adjacency_matrix(
         adata, use_rep=use_rep_gsp,
         n_nearest_neighbors=n_nearest_neighbors_gsp,
-        sigma=sigma_gsp, sections=sections)
+        sigma=sigma_gsp, sections=sections))
 
+    _rust = _rust_kernels()
+    if _rust is not None and hasattr(_rust, 'background_grams'):
+        # One pass over the cells gives all four tables, from P_det's
+        # non-zeros, in float64 with no cancelling terms (src/lib.rs).
+        # Cells are visited in reverse Cuthill-McKee order of the graph,
+        # which keeps their neighbours' profiles in cache; the order moves
+        # the sums by float64 rounding only.
+        from scipy.sparse.csgraph import reverse_cuthill_mckee
+        order = reverse_cuthill_mckee(sp.csr_matrix(W + W.T),
+                                      symmetric_mode=True)
+        G_W, G_W2, G_sq, G_dot = _rust.background_grams(
+            P, P_det.indptr.astype(np.int64),
+            P_det.indices.astype(np.int32), P_det.data.astype(np.float32),
+            W.indptr.astype(np.int64), W.indices.astype(np.int32),
+            W.data.astype(np.float64), np.ascontiguousarray(order, np.int64))
+    else:
+        G_W, G_W2, G_dot, G_sq = _numpy_grams(P, P_det, W)
+
+    R = n_cells * _expected_row_sq_sum(W.data, n_nearest_neighbors_gsp)
+
+    return P, P_det, G_W, G_W2, G_dot, G_sq, R
+
+
+def _numpy_grams(P, P_det, W):
+    """The four Gram tables without the compiled kernel (reference path):
+    the four-term edge expansion of ``_edge_gram`` and the moment Grams."""
+    n_cells, U = P.shape
+    Q = P.copy()
+    det = P_det.tocoo()
+    Q[det.row, det.col] = 0.0
+    del det
     # W is row-normalised and therefore NOT symmetric; W'W is (bitwise,
     # checked on real data). Only the latter may halve its edge list.
     G_W = _edge_gram(P, Q, W, assume_symmetric=False)
@@ -672,40 +904,82 @@ def _build_tables(adata, Xg, n_cells, number_nearest_neighbors,
         G_sq += Pb.T @ Pb
         G_sq -= Qb.T @ Qb
         del Pb, Qb
-
-    R = n_cells * _expected_row_sq_sum(W.data, n_nearest_neighbors_gsp)
-
-    return P, Q, G_W, G_W2, G_dot, G_sq, R
+    return G_W, G_W2, G_dot, G_sq
 
 
 def _assemble_background(sel, tables, n_cells, lr_df, n_matched_genes,
                          params, say) -> "LRBackground":
-    P, Q, G_W, G_W2, G_dot, G_sq, R = tables
+    P, P_det, G_W, G_W2, G_dot, G_sq, R = tables
     db_pairs = frozenset(zip(np.asarray(lr_df['ligand']),
                              np.asarray(lr_df['receptor'])))
-    say(f"  - done: {len(sel.gene_index):,} genes, support per pair "
+    # matched sets of edge genes are truncated symmetrically (v0.15.0);
+    # runLARIS warns about backgrounds built with the earlier backfill
+    params = dict(params, truncation='symmetric')
+    sizes = [len(s) for d in (sel.matched_ligand, sel.matched_receptor)
+             for s in d.values()]
+    n_short = sum(s < n_matched_genes for s in sizes)
+    n_empty = sum(s == 0 for s in sizes)
+    say(f"  - done: {len(sel.gene_index):,} genes, support per pair up to "
         f"{n_matched_genes ** 2:,} (floor "
-        f"{1.0 / (n_matched_genes ** 2 + 1):.2e})")
+        f"{1.0 / (n_matched_genes ** 2 + 1):.2e}); {len(sel.edge_genes)} "
+        f"LR gene(s) with a truncated matched set"
+        + (f" ({n_empty} matched set(s) empty)" if n_empty else ""))
+    del n_short
     return LRBackground(
-        gene_index=pd.Index(sel.gene_index), P=P, Q=Q,
+        gene_index=pd.Index(sel.gene_index), P=P, P_det=P_det,
         G_W=G_W, G_W2=G_W2, G_dot=G_dot, G_sq=G_sq,
         R=R, n_cells=n_cells,
         matched_ligand=sel.matched_ligand,
         matched_receptor=sel.matched_receptor,
         db_pairs=db_pairs, match_frac_below=sel.match_frac_below,
-        edge_limited=sel.edge_limited, params=params)
+        edge_limited=sel.edge_limited, params=params,
+        edge_genes=sel.edge_genes)
 
+
+
+def _resolve_n_matched_genes(n_matched_genes, lr_df, var_names,
+                             n_pool: Optional[int] = None,
+                             fdr: float = 0.05, k_min: int = 100,
+                             k_max: int = 200) -> int:
+    """Matched genes per side; 'auto' sizes k to the LR database.
+
+    A sender-receiver pair has at most one row per LR pair, so with
+    k**2 >= n_pairs / fdr an interaction at the floor 1/(k**2+1) can reach
+    FDR ``fdr`` on its own. Clipped to [k_min, k_max]: below 100 the null
+    is coarse anyway, and above 200 the matched sets widen in expression
+    for little gain. 'auto' never asks for more genes than the candidate
+    pool can supply (``min(n_pool, number of genes) - 1``).
+    """
+    if isinstance(n_matched_genes, str):
+        if n_matched_genes != 'auto':
+            raise ValueError(
+                f"n_matched_genes must be an int or 'auto', got "
+                f"{n_matched_genes!r}")
+        present = pd.Index(var_names)
+        ok = (lr_df['ligand'].isin(present)
+              & lr_df['receptor'].isin(present))
+        n_pairs = int(lr_df.loc[ok, ['ligand', 'receptor']]
+                      .drop_duplicates().shape[0])
+        k = int(min(max(int(np.ceil(np.sqrt(max(n_pairs, 1) / fdr))),
+                        k_min), k_max))
+        n_cand = len(present) if n_pool is None else min(n_pool, len(present))
+        return int(max(1, min(k, n_cand - 1)))
+    k = int(n_matched_genes)
+    if k < 1:
+        raise ValueError(f"n_matched_genes must be >= 1, got {k}")
+    return k
 
 def prepareLRBackground(
     data=_UNSET,
     lr_df: Optional[pd.DataFrame] = None,
     n_pool: int = 4000,
     augment_pool: bool = True,
-    n_matched_genes: int = 100,
+    n_matched_genes='auto',
     matching: str = 'balanced',
     exclude_self: bool = True,
     number_nearest_neighbors: int = 20,
     use_rep_spatial: str = 'X_spatial',
+    sigma: Union[float, str] = 'adaptive',
     use_rep_gsp: Optional[str] = None,
     n_nearest_neighbors_gsp: int = 20,
     sigma_gsp='adaptive',
@@ -724,9 +998,10 @@ def prepareLRBackground(
 
     Parameters
     ----------
-    data : AnnData
+    data : AnnData, str or cytome dataset
         The same expression object passed to ``prepareLRInteraction``
-        (raw counts; ``layer`` selects a layer).
+        (``layer`` selects a layer): an AnnData, or a cytome path or open
+        dataset.
     lr_df : DataFrame
         The LR database subset used for the analysis ('ligand'/'receptor'
         columns). Needed to know which genes require matched sets and which
@@ -735,22 +1010,83 @@ def prepareLRBackground(
         Candidate pool size U. The Gram tables are U x U; the default keeps
         them ~130 MB each in float64.
     augment_pool : bool, default=True
-        Grow the candidate pool until no ligand or receptor has a matched
-        set lying entirely below it in expression. The quantile grid is
-        rank-uniform and so starves the extreme top of the abundance
-        range; a gene left there has no peers, every pseudo-pair built
-        from it is weaker than the real pair, and it beats its own null
-        arithmetically. Genes that fail contribute their own nearest
-        neighbours from the whole transcriptome, and matching is
-        recomputed (see ``match_frac_below``). Set False to reproduce the
-        v0.12.0 pool exactly.
-    n_matched_genes : int
-        Matched genes per side (k). The factorized support per pair is
-        k**2 and the exact p-value floor is 1/(k**2+1) before exclusions.
-    number_nearest_neighbors, use_rep_spatial, layer, section_key
-        Must match the ``prepareLRInteraction`` call so the diffusion is
-        identical. For a cytome source ``layer`` names the cytome layer;
-        None reads whichever matrix the file records as ``adata.X``.
+        Repair the candidate pool so that every ligand and receptor has
+        peers on both sides by expression. Two rules:
+
+        - *saturation*: genes whose matched set would lie entirely below
+          them contribute their own nearest neighbours from the whole
+          transcriptome (the quantile grid is rank-uniform and starves the
+          extreme top of the abundance range; such a gene would beat its
+          own null arithmetically);
+        - *side repair* (v0.15.0): every LR gene gets k/2 candidates below
+          and k/2 above it by mean, taken from the genes nearest to it, and
+          only genes detected in at least one cell are candidates. A gene
+          the whole transcriptome cannot serve on one side gets a smaller
+          set that still straddles it (see ``matching``).
+
+        Set False to reproduce the v0.12.0 pool exactly.
+    n_matched_genes : int or 'auto', default='auto'
+        Matched genes per side (k). The factorized support per pair is at
+        most k**2 and the exact p-value floor is 1/(k**2+1) before
+        exclusions; a row's own support is reported in its ``null_size``
+        column.
+        Within a sender-receiver pair BH can call an isolated interaction
+        at the floor only if 1/(k**2+1) <= 0.05/m with m tested LR
+        pairs, i.e. k**2 >= 20 m. 'auto' sizes k to the database: the
+        smallest k with k**2 >= 20 x (number of LR pairs present in the
+        data), clipped to [100, 200] (v0.15.0; earlier versions used 100,
+        which cannot call an isolated hit among more than 500 tested
+        pairs). Only the null assembly grows with k (as k**2); the Gram
+        tables do not depend on it.
+    matching : {'balanced', 'knn'}, default='balanced'
+        How the k matched genes are chosen around each LR gene in (mean,
+        variance) space. 'balanced' takes k/2 nearest pool genes below the
+        gene's mean and k/2 above, so the matched set straddles it. A gene
+        with fewer than k/2 candidates on one side, even after the side
+        repair, gets t = min(k/2, below, above) on each side: a smaller
+        set that still straddles it, reported as ``edge_limited`` (up to
+        the v0.15.0 tag the short side was backfilled from the other side,
+        and such pairs were left untested). 'knn' takes the k
+        nearest regardless of side (the pre-v0.13 behaviour); it cannot
+        straddle a gene at the edge of the pool and is **deprecated**.
+    exclude_self : bool, default=True
+        Never put an LR gene into its own matched set.
+    number_nearest_neighbors, use_rep_spatial, sigma : int, str, float or 'adaptive'
+        The diffusion graph: must match the ``prepareLRInteraction`` call
+        (defaults 20, 'X_spatial', 'adaptive'). ``sigma`` is the diffusion
+        kernel's bandwidth, 'adaptive' or a number in coordinate units; up
+        to v0.15.0 the background always used 'adaptive'. ``runLARIS``
+        compares these with the settings ``prepareLRInteraction`` records
+        on its output and refuses a mismatch before any work.
+    use_rep_gsp, n_nearest_neighbors_gsp, sigma_gsp : str, int, float or 'adaptive'
+        The spatial-specificity graph: must match ``runLARIS``'s
+        ``use_rep`` / ``n_nearest_neighbors`` / ``sigma`` (defaults: as
+        ``use_rep_spatial``, 20, 'adaptive'). ``runLARIS`` checks them
+        before any work.
+    layer : str, optional
+        Layer holding the expression values (default: ``.X``); must match
+        what ``prepareLRInteraction`` read. For a cytome source it names
+        the cytome layer; None reads whichever matrix the file records as
+        ``adata.X``.
+    section_key : str, optional
+        Column of ``.obs`` naming each cell's tissue section, as passed to
+        ``prepareLRInteraction``: the neighbour graphs are then built within
+        sections.
+    block_size : int, default=512
+        Cells per block when diffusing the table genes (bounds peak
+        memory; results do not depend on it).
+    verbosity : int, default=1
+        1 prints progress; 0 is silent.
+    adata : deprecated
+        Former name of ``data``.
+
+    Returns
+    -------
+    LRBackground
+        The candidate pool, every LR gene's matched sets, and the diffused
+        profiles and Gram tables that score any pseudo-pair; pass it to
+        ``runLARIS(..., background=)``. ``params`` records the settings it
+        was built with.
 
     Notes
     -----
@@ -760,10 +1096,6 @@ def prepareLRBackground(
     built by one builder. The cytome path only reads the data in bounded
     gene blocks (v0.14.1; up to v0.14.0 the two could differ, see the
     changelog).
-    use_rep_gsp, n_nearest_neighbors_gsp, sigma_gsp
-        Must match ``runLARIS``'s ``use_rep`` / ``n_nearest_neighbors`` /
-        ``sigma`` (the spatial-specificity graph). ``use_rep_gsp`` defaults
-        to ``use_rep_spatial``.
     """
     from . import _utils
 
@@ -772,6 +1104,13 @@ def prepareLRBackground(
         raise TypeError("prepareLRBackground() requires lr_df")
     if use_rep_gsp is None:
         use_rep_gsp = use_rep_spatial
+    if matching == 'knn':
+        warnings.warn(
+            "matching='knn' is deprecated and will be removed: plain "
+            "nearest neighbours cannot straddle a gene at the edge of the "
+            "candidate pool, so the null of every pair with such a gene is "
+            "biased. Use the default matching='balanced'.",
+            FutureWarning, stacklevel=2)
 
     say = print if verbosity else (lambda *a, **k: None)
 
@@ -788,7 +1127,7 @@ def prepareLRBackground(
             use_rep_spatial=use_rep_spatial, use_rep_gsp=use_rep_gsp,
             n_nearest_neighbors_gsp=n_nearest_neighbors_gsp,
             sigma_gsp=sigma_gsp, layer=layer, section_key=section_key,
-            block_size=block_size, verbosity=verbosity)
+            block_size=block_size, verbosity=verbosity, sigma=sigma)
 
     X = adata.layers[layer] if layer is not None else adata.X
     if not sp.issparse(X):
@@ -796,23 +1135,28 @@ def prepareLRBackground(
     X = X.tocsc()
     n_cells = adata.n_obs
 
+    n_matched_genes = _resolve_n_matched_genes(n_matched_genes, lr_df,
+                                               adata.var_names, n_pool)
+
     # ---- gene statistics, pool and matched sets (shared definition) -----
     m, v = _gene_moments(X)
     sel = _select_matching(adata.var_names, m, v, lr_df, n_pool,
                            augment_pool, n_matched_genes, matching,
-                           exclude_self, say)
+                           exclude_self, say, detected=_gene_detected(X))
 
     # ---- diffusion and Gram tables (shared builder) ---------------------
     tables = _build_tables(
         adata, sp.csr_matrix(X[:, sel.gene_pos]), n_cells,
         number_nearest_neighbors, use_rep_spatial, use_rep_gsp,
-        n_nearest_neighbors_gsp, sigma_gsp, section_key, block_size, say)
+        n_nearest_neighbors_gsp, sigma_gsp, section_key, block_size, say,
+        sigma=sigma)
     return _assemble_background(
         sel, tables, n_cells, lr_df, n_matched_genes,
         dict(n_pool=n_pool, n_matched_genes=n_matched_genes,
              matching=matching, exclude_self=exclude_self,
              number_nearest_neighbors=number_nearest_neighbors,
-             use_rep_spatial=use_rep_spatial, use_rep_gsp=use_rep_gsp,
+             use_rep_spatial=use_rep_spatial, sigma=sigma,
+             use_rep_gsp=use_rep_gsp,
              n_nearest_neighbors_gsp=n_nearest_neighbors_gsp,
              sigma_gsp=sigma_gsp, section_key=section_key, layer=layer),
         say)
@@ -856,6 +1200,159 @@ def _iqr_apply(values, iqr):
 
 
 # ---------------------------------------------------------------------------
+# Helpers of the fused (Rust) P-value path
+# ---------------------------------------------------------------------------
+
+def _usable_cpus() -> int:
+    """CPUs this process may run on.
+
+    ``os.cpu_count()`` counts every CPU of the machine. On a cluster node
+    where the scheduler grants 8 of 128 cores (cpuset / CPU affinity), that
+    would start 128 workers on 8 cores. The affinity mask is the right
+    count: ``os.process_cpu_count()`` (Python >= 3.13), else
+    ``os.sched_getaffinity`` (Linux), else ``os.cpu_count()`` (macOS and
+    Windows, which have no affinity mask).
+    """
+    import os
+    count = getattr(os, 'process_cpu_count', None)
+    if count is not None:
+        n = count()
+        if n:
+            return int(n)
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except (AttributeError, OSError):
+        return os.cpu_count() or 1
+
+
+def _n_threads() -> int:
+    """Threads for the fused path and the background Grams:
+    RAYON_NUM_THREADS, else OMP_NUM_THREADS, else the CPUs this process may
+    use (:func:`_usable_cpus`). The Rust pool is sized to the same number
+    (:func:`_rust_kernels`)."""
+    import os
+    for var in ('RAYON_NUM_THREADS', 'OMP_NUM_THREADS'):
+        value = os.environ.get(var, '').strip()
+        if value.isdigit() and int(value) > 0:
+            return int(value)
+    return _usable_cpus()
+
+
+def _log1p_inplace(x: np.ndarray, pool, n_blocks: int) -> np.ndarray:
+    """``np.log1p(x, out=x)`` on row blocks in parallel threads.
+
+    NumPy releases the GIL inside the ufunc, and the result is element-wise,
+    so the blocks give exactly the values of one call (checked bitwise for
+    the SIMD log1p this NumPy uses).
+    """
+    n_rows = x.shape[0]
+    if pool is None or n_blocks <= 1 or n_rows < 2 * n_blocks:
+        return np.log1p(x, out=x)
+    bounds = np.linspace(0, n_rows, n_blocks + 1).astype(int)
+
+    def _block(ab):
+        a, b = ab
+        np.log1p(x[a:b], out=x[a:b])
+
+    list(pool.map(_block, zip(bounds[:-1], bounds[1:])))
+    return x
+
+
+def _dense_delta_weight(bg: 'LRBackground', mu_gsp: float,
+                        spatial_weight: float, block: int = 512) -> np.ndarray:
+    """``max(delta, 0) ** spatial_weight`` for every pair of table genes.
+
+    The same element-wise arithmetic as the per-pair blocks
+    (``_pair_gsp_from_tables`` - ``mu_gsp`` * ``_pair_random_gsp_from_tables``),
+    evaluated on row blocks of the full tables, so every entry is bitwise
+    the value the per-pair path computes. U x U float64.
+    """
+    U = len(bg.gene_index)
+    n = bg.n_cells
+    out = np.empty((U, U), dtype=np.float64)
+    for a in range(0, U, block):
+        b = min(a + block, U)
+        num = bg.G_W[a:b]
+        den = np.sqrt(bg.G_sq[a:b] * bg.G_W2[a:b])
+        gsp = np.zeros_like(num)
+        np.divide(num, den, out=gsp, where=den > 0)
+        d = gsp - mu_gsp * _analytic_random_gsp(
+            bg.G_dot[a:b] / n, bg.G_sq[a:b] / n, n, bg.R)
+        if spatial_weight == 0:
+            out[a:b] = 1.0
+        else:
+            out[a:b] = np.clip(d, 0.0, None) ** spatial_weight
+    return out
+
+
+# Relative difference above which an observed score and the same pair scored
+# through the background tables are taken to come from different data or
+# settings. The two paths sum in different orders and precisions: the
+# pipeline accumulates the co-localization numerator in float64, the table
+# kernels in float32 over every cell of a group. On a 14,149-cell cluster
+# (Atera, 10x k-means) that alone differed by 1.04e-4, and v0.15.0's 1e-4
+# raised. A different graph setting or expression object moves scores by
+# far more than 1%, and runLARIS checks every graph setting before this
+# point, so the guard is a backstop for a different expression object.
+_TABLE_REL_TOL = 1e-2
+
+
+def _table_score_mismatch(table: np.ndarray, pipe: np.ndarray,
+                          zero_tol: float,
+                          rel_tol: float = _TABLE_REL_TOL) -> np.ndarray:
+    """Rows whose pipeline score and table score disagree beyond rounding:
+    a relative difference above ``rel_tol``, or a zero pipeline score whose
+    table score clears the cleanup threshold (``zero_tol``)."""
+    table = np.asarray(table, dtype=np.float64)
+    pipe = np.asarray(pipe, dtype=np.float64)
+    return (((pipe > 0) & (np.abs(table - pipe) > rel_tol * pipe))
+            | ((pipe == 0) & (table > zero_tol)))
+
+
+# Cells per block when building the detection-fraction tables. Each block
+# holds ~10 bytes per cell x table gene at once (boolean masks and their
+# float32 copies): 0.4 GB at 8,192 cells and U = 5,111, where one whole
+# group used to take 2.9 GB (Atera's largest type, 62,815 cells).
+_FRAC_CELL_BLOCK = 8192
+
+
+def _detection_fraction_tables(P, P_det, group_labels, groups_order,
+                               cell_block: Optional[int] = None):
+    """Per group g, the U x U table frac_g[i, j]: the share of g's cells in
+    which both diffused profiles are positive and at least one of the two
+    genes is detected - the masked pseudo-pair's detection fraction.
+
+    It is ``D'D - E'E`` over the group's cells, with D = (P > 0) and E = D
+    on raw-zero entries (Q > 0), divided by the group size. The two Grams
+    are integer counts, exact in float32 below 2**24, so building them in
+    cell blocks gives the same tables bit for bit, whatever the block
+    size, while bounding peak memory (v0.15.0).
+    """
+    U = P.shape[1]
+    block = int(cell_block or _FRAC_CELL_BLOCK)
+    frac = {}
+    for g in groups_order:
+        cells = np.flatnonzero(group_labels == g)
+        acc = np.zeros((U, U), dtype=np.float32)
+        for start in range(0, len(cells), block):
+            cb = cells[start:start + block]
+            Dg = P[cb] > 0
+            Eg = Dg.copy()
+            det_g = P_det[cb].tocoo()
+            Eg[det_g.row, det_g.col] = False
+            del det_g
+            Dg = Dg.astype(np.float32)
+            Eg = Eg.astype(np.float32)
+            acc += Dg.T @ Dg
+            acc -= Eg.T @ Eg
+            del Dg, Eg
+        if len(cells):
+            acc /= np.float32(len(cells))
+        frac[g] = acc
+    return frac
+
+
+# ---------------------------------------------------------------------------
 # Factorized null p-values
 # ---------------------------------------------------------------------------
 
@@ -873,6 +1370,7 @@ def compute_factorized_pvalues(
     mu_celltype: float,
     min_null_support: int = 0,
     verbosity: int = 1,
+    score_threshold: float = 0.0,
 ) -> pd.DataFrame:
     """Exact p-values against the factorized matched-gene null.
 
@@ -895,22 +1393,37 @@ def compute_factorized_pvalues(
     themselves database pairs are excluded. The p-value is the exact tail
     (exceed + 1) / (n_valid + 1); a degenerate all-zero support gives 1.0.
 
+    The null sees exactly what the observed score sees (v0.15.0):
+
+    * a pseudo-pair counts as non-zero only if it reaches
+      ``score_threshold``, the cleanup that sets small observed scores to
+      0, so ``null_support`` is the number of pseudo-pairs that could have
+      been a non-zero observed score;
+    * the observed pair is scored through the same tables as its
+      pseudo-pairs, so the comparison is between numbers computed with
+      identical arithmetic. That score is checked against the pipeline's
+      ``interaction_score`` and a difference above 1% raises: it means
+      the background and the observed scores were built from different
+      data or settings, which would make every p-value wrong. (The two
+      paths sum in different orders and precisions, so they agree to
+      float32 accuracy, not bitwise.)
+
     Many pseudo-pairs score exactly zero, because their matched genes are
-    not co-detected in the two groups. A zero can never exceed a positive
-    observed score, so it enlarges the denominator without contributing
-    resolution: a row whose support is 9,900 zeros and 100 positive
-    entries can still report p = 1e-4 while the null can only really
-    resolve 1e-2. The count of positive entries is therefore the null's
-    *effective support*, and it is returned alongside the p-value so the
-    caller can see it. ``min_null_support`` sets p = 1.0 for rows whose
-    effective support falls below it; the default of 0 leaves every
-    p-value exactly as v0.12.0 computed it.
+    not co-detected in the two groups. The p-value counts them, which is
+    correct for an unconditional test, *provided* the interactions that
+    enter Benjamini-Hochberg are not chosen by the observed score.
+    ``_fdr_family`` therefore chooses them by the null: every row whose
+    ``null_support`` reaches ``max(1, min_null_support)``. Rows below
+    that get p = 1.0 here.
 
     Returns
     -------
     pandas.DataFrame
-        Indexed like ``res_laris``, with columns ``p_value`` and
-        ``null_support`` (the number of pseudo-pairs scoring above zero).
+        Indexed like ``res_laris``, with columns ``p_value``,
+        ``null_support`` (the number of pseudo-pairs scoring at least
+        ``score_threshold``, or above zero when it is 0), ``null_size``
+        (the row's valid pseudo-pairs) and the descriptive partner ranks
+        ``ligand_rank`` and ``receptor_rank``.
     """
     say = print if verbosity else (lambda *a, **k: None)
     n_groups = len(groups_order)
@@ -939,23 +1452,12 @@ def compute_factorized_pvalues(
     say("  - detection-fraction tables per cell type...")
     # masked pseudo-pair is nonzero iff both diffused values are nonzero
     # AND the raw-OR mask holds: D_i D_j - E_i E_j with E = D on raw-zero
-    # cells (same difference structure as the score itself).
-    # bool masks, not float32: a quarter of the memory, and the per-group
-    # slice is what gets cast. P is cells x genes, so D[cells] is a
-    # contiguous row gather.
-    D = P > 0
-    E = bg.Q > 0
-    frac = {}
-    for g in groups_order:
-        cells = np.flatnonzero(group_labels == g)
-        if len(cells) == 0:
-            frac[g] = np.zeros((U, U), dtype=np.float32)
-        else:
-            Dg = D[cells].astype(np.float32)
-            Eg = E[cells].astype(np.float32)
-            frac[g] = (Dg.T @ Dg - Eg.T @ Eg) / np.float32(len(cells))
-            del Dg, Eg
-    del D, E
+    # cells (same difference structure as the score itself). Both masks
+    # are built per group: D from P (cells x genes, so P[cells] is a
+    # contiguous row gather), E as D with the group's detected entries
+    # cleared - exactly Q > 0, without a whole-data Q or mask in memory.
+    P_det = bg.P_det
+    frac = _detection_fraction_tables(P, P_det, group_labels, groups_order)
 
     # --- co-localization: pass A accumulates the row-sum of cos^2 ---------
     ctXct_cell = ctc_internals['ctXct_cell']         # (n_ctc, n_cells) sparse
@@ -967,53 +1469,61 @@ def compute_factorized_pvalues(
     say(f"  - co-localization pass A over {len(ctc_names)} cell-type pairs...")
     S = np.zeros((U, U), dtype=np.float64)
 
-    # Masked numerator as two dense BLAS matmuls. A sparse decomposition
-    # via Pnz = P - Q has ~20x fewer flops but benchmarks 10x SLOWER on
-    # real data: scipy's sparse kernels are single-threaded while the
-    # dense products use threaded BLAS (measured on tonsil, U=4,718,
-    # 5,695 cells, Pnz density 4.8%: dense 0.70 s/column, sparse chain
-    # 7.4 s/column). Dense wins until a threaded sparse backend exists;
-    # that backend (Rust/MKL) is the natural home for a revisit.
-    Q = bg.Q
     _rust = _rust_kernels()
+    if _rust is not None and not hasattr(_rust, 'assembly_sweep'):
+        warnings.warn(
+            "The compiled LARIS kernels (laris._laris) predate this version "
+            "of the Python code; using the slower NumPy path. Reinstall LARIS "
+            "(or rebuild the extension) to restore them.",
+            RuntimeWarning, stacklevel=2)
+        _rust = None
     if _rust is not None:
         # threaded sparse decomposition (see src/lib.rs): flops scale
-        # with the raw data's sparsity; measured 2.1x over threaded BLAS
-        # at tonsil's 4.8% density, growing as density falls
-        # P is already cells x genes, which is exactly what the kernel
-        # wants - the ascontiguousarray(P.T) copy this used to make is
-        # gone. Pnz must still be presented genes x cells: csc of the
-        # cells-major difference transposes to csr for free, sharing
-        # the same index and data arrays.
-        _Pnz = sp.csc_matrix(P - Q).T.tocsr()
-        _Pnz_csc = _Pnz.tocsc()
+        # with the raw data's sparsity. The kernel reads P (cells x genes,
+        # as stored) and Pnz = P - Q = P_det per cell (each cell's detected
+        # genes, ascending).
+        if not P_det.has_sorted_indices:
+            P_det = P_det.sorted_indices()
         _rust_args = (P,
-                      _Pnz.indptr.astype(np.int64),
-                      _Pnz.indices.astype(np.int32),
-                      _Pnz.data.astype(np.float32),
-                      _Pnz_csc.indptr.astype(np.int64),
-                      _Pnz_csc.indices.astype(np.int32),
-                      _Pnz_csc.data.astype(np.float32))
+                      P_det.indptr.astype(np.int64),
+                      P_det.indices.astype(np.int32),
+                      P_det.data.astype(np.float32))
+        # the numerator's A and B, refilled for every cell-type pair; the
+        # pass A/B kernels read N = A + A' - B from them directly
+        _A = np.empty((U, U), dtype=np.float32)
+        _B = np.empty((U, U), dtype=np.float32)
+        Q = None
+    else:
+        # NumPy reference path: the masked numerator as two dense products
+        # over the co-locating cells, which needs the dense Q
+        Q = bg.Q
+
+    def _ctc_y(idx):
+        return np.asarray(ctXct_cell[idx].todense()).ravel().astype(np.float32)
+
+    def _ctc_numerator(idx):
+        """Fill _A, _B for cell-type pair ``idx``; False if y is all zero."""
+        y = _ctc_y(idx)
+        if not y.any():
+            return False
+        # the kernel skips zero-y cells internally (see src/lib.rs)
+        _rust.ctc_numerator_ab(*_rust_args, y, _A, _B)
+        return True
 
     def _ctc_cos(idx):
-        y = np.asarray(ctXct_cell[idx].todense()).ravel().astype(np.float32)
-        # y = o_s * o_r is exactly zero wherever the two cell types do not
-        # both have neighbours. At fine annotation the median pair
-        # co-locates in under 1% of cells, so the zeros are the work.
+        # NumPy path. y = o_s * o_r is exactly zero wherever the two cell
+        # types do not both have neighbours. At fine annotation the median
+        # pair co-locates in under 1% of cells, so the zeros are the work.
+        y = _ctc_y(idx)
         nz = np.flatnonzero(y)
         if nz.size == 0:
             return np.zeros((U, U), dtype=np.float64)
-        if _rust is not None:
-            # the kernel skips zero-y cells internally (see src/lib.rs)
-            N = _rust.ctc_cos_numerator(*_rust_args, y)
-        else:
-            # same restriction for the pure-NumPy path. Equivalent
-            # arithmetic, not bitwise: restricting the product changes
-            # the dgemm's internal blocking. P is cells-major, so P[nz]
-            # is a contiguous row gather.
-            yc = y[nz][:, None]
-            Pn, Qn = P[nz], Q[nz]
-            N = (Pn * yc).T @ Pn - (Qn * yc).T @ Qn
+        # Equivalent arithmetic to the Rust numerator, not bitwise:
+        # restricting the product changes the dgemm's internal blocking.
+        # P is cells-major, so P[nz] is a contiguous row gather.
+        yc = y[nz][:, None]
+        Pn, Qn = P[nz], Q[nz]
+        N = (Pn * yc).T @ Pn - (Qn * yc).T @ Qn
         den = v_norm * y_norms[idx]
         out = np.zeros_like(N, dtype=np.float64)
         np.divide(N, den, out=out, where=den > 0)
@@ -1029,11 +1539,21 @@ def compute_factorized_pvalues(
             continue
         a, b = name.split('::')
         mirror = _ctc_pos.get(f"{b}::{a}")
-        c = _ctc_cos(idx)
-        S += c * c
+        with_mirror = (mirror is not None and mirror != idx
+                       and mirror not in done)
+        if _rust is not None:
+            # S += c * c (+ c.T * c.T), fused and threaded, bitwise the
+            # NumPy statements below; an all-zero y adds exactly nothing
+            if _ctc_numerator(idx):
+                _rust.cos_sq_accumulate(_A, _B, v_norm, float(y_norms[idx]),
+                                        S, with_mirror)
+        else:
+            c = _ctc_cos(idx)
+            S += c * c
+            if with_mirror:
+                S += c.T * c.T
         done.add(idx)
-        if mirror is not None and mirror != idx and mirror not in done:
-            S += c.T * c.T
+        if with_mirror:
             done.add(mirror)
 
     # --- delta blocks are (s, r)-independent: cache per pair --------------
@@ -1081,43 +1601,260 @@ def compute_factorized_pvalues(
                                flat, rowmap, colmap)
         return pair_cache[key]
 
-    # concatenated per-pair arrays for the fused Rust assembly kernel
-    _cat = None
-    _pair_index = {}
-
-    def _pair_id(lig, rec):
-        return _pair_index[(lig, rec)]
-
+    # Fused (Rust) path: no per-pair blocks. The delta weight depends on the
+    # gene pair only, so one dense U x U table serves every LR pair, with
+    # NaN on database pairs (a NaN score is never counted). Each pair is
+    # then just its two matched sets: the ligand side as, per table row,
+    # the pairs whose matched set holds that gene (row_ptr/row_pair), and
+    # the receptor side as a sorted gene list (col_ptr/col_gene). At
+    # k = 200 this replaces ~4 GB of flattened per-pair arrays (tonsil).
     if _rust is not None:
+        dwx = _dense_delta_weight(bg, mu_gsp, spatial_weight)
+        if _db_rows:
+            dwx[np.asarray(_db_rows), np.asarray(_db_cols)] = np.nan
         uniq = list(dict.fromkeys(zip(res_laris['ligand'],
                                       res_laris['receptor'])))
-        flats, rgs, cgs, dws, offs = [], [], [], [], [0]
-        for lig, rec in uniq:
-            ii, jj, dw_flat, flat, rowmap, colmap = _delta_block(lig, rec)
-            _pair_index[(lig, rec)] = len(offs) - 1
-            flats.append(flat)
-            rgs.append(ii[rowmap].astype(np.int32))
-            cgs.append(jj[colmap].astype(np.int32))
-            dws.append(dw_flat)
-            offs.append(offs[-1] + len(flat))
-        _cat = dict(
-            flat=np.concatenate(flats).astype(np.int64)
-            if flats else np.empty(0, np.int64),
-            row_gene=np.concatenate(rgs).astype(np.int32)
-            if rgs else np.empty(0, np.int32),
-            col_gene=np.concatenate(cgs).astype(np.int32)
-            if cgs else np.empty(0, np.int32),
-            dw=np.concatenate(dws).astype(np.float64)
-            if dws else np.empty(0, np.float64),
-            offsets=np.asarray(offs, dtype=np.int64),
-        )
+        _pair_index = {pr: q for q, pr in enumerate(uniq)}
+        n_pairs = len(uniq)
+        lig_sets = [np.asarray(bg.matched_ligand[l_], dtype=np.int64)
+                    for l_, _ in uniq]
+        rec_sets = [np.sort(np.asarray(bg.matched_receptor[r_], np.int64))
+                    for _, r_ in uniq]
+        col_ptr = np.zeros(n_pairs + 1, dtype=np.int64)
+        col_ptr[1:] = np.cumsum([len(c_) for c_ in rec_sets])
+        col_gene = (np.concatenate(rec_sets).astype(np.int32)
+                    if n_pairs else np.empty(0, np.int32))
+        lig_rows = (np.concatenate(lig_sets) if n_pairs
+                    else np.empty(0, np.int64))
+        lig_pair = np.repeat(np.arange(n_pairs, dtype=np.int32),
+                             [len(i_) for i_ in lig_sets])
+        _order = np.argsort(lig_rows, kind='stable')
+        row_pair = np.ascontiguousarray(lig_pair[_order])
+        row_ptr = np.zeros(U + 1, dtype=np.int64)
+        row_ptr[1:] = np.cumsum(np.bincount(lig_rows, minlength=U))
+        # valid (non-database) pseudo-pairs per LR pair: the denominator
+        sizes = np.array(
+            [len(i_) * len(j_) - _db_bool[i_][:, j_].count_nonzero()
+             for i_, j_ in zip(lig_sets, rec_sets)], dtype=np.int64)
+        del lig_rows, lig_pair, _order
+        _threads = _n_threads()
+
+    # --- the observed pairs, scored through the same tables --------------
+    # Same formula as _delta_block, element by element, so an observed pair
+    # and its pseudo-pairs share their arithmetic exactly.
+    _obs_pairs = list(dict.fromkeys(zip(res_laris['ligand'],
+                                        res_laris['receptor'])))
+    _li = bg.positions([l_ for l_, _ in _obs_pairs])
+    _ri = bg.positions([r_ for _, r_ in _obs_pairs])
+    _gsq = bg.G_sq[_li, _ri]
+    _den = np.sqrt(_gsq * bg.G_W2[_li, _ri])
+    _cos = np.zeros_like(_den)
+    np.divide(bg.G_W[_li, _ri], _den, out=_cos, where=_den > 0)
+    _d = _cos - mu_gsp * _analytic_random_gsp(
+        bg.G_dot[_li, _ri] / bg.n_cells, _gsq / bg.n_cells, bg.n_cells, bg.R)
+    if spatial_weight == 0:
+        _dw_obs = np.ones_like(_d)
+    else:
+        _dw_obs = np.clip(_d, 0.0, None) ** spatial_weight
+    _obs_of = {pr: (i_, j_, w_) for pr, i_, j_, w_ in
+               zip(_obs_pairs, _li, _ri, _dw_obs)}
+    thr = float(score_threshold)
+    _zero_tol = max(thr, 1e-12) * (1 + 1e-4)
+
+    def _observed_through_tables(gdf, spec_s, spec_r, m_at):
+        """Observed scores from the tables, cleaned like the pipeline's.
+
+        ``m_at(flat)`` returns the group's combined table M at flat indices.
+        Raises if the scores disagree with the pipeline's interaction_score:
+        the background and the observed scores were then built differently.
+        """
+        trip = [_obs_of[pr] for pr in zip(gdf['ligand'], gdf['receptor'])]
+        i_ = np.fromiter((t[0] for t in trip), np.int64, len(trip))
+        j_ = np.fromiter((t[1] for t in trip), np.int64, len(trip))
+        w_ = np.fromiter((t[2] for t in trip), np.float64, len(trip))
+        table = spec_s[i_] * spec_r[j_] * w_ * m_at(i_ * U + j_)  # kernel order
+        if thr > 0:
+            table = np.where(table < thr, 0.0, table)
+        pipe = gdf['interaction_score'].to_numpy(np.float64)
+        bad = _table_score_mismatch(table, pipe, _zero_tol)
+        if bad.any():
+            k_ = np.flatnonzero(bad)[:3]
+            ex = [f"{gdf['ligand'].iloc[q]}::{gdf['receptor'].iloc[q]} "
+                  f"pipeline {pipe[q]:.6g} vs tables {table[q]:.6g}"
+                  for q in k_]
+            raise ValueError(
+                f"{int(bad.sum())} observed interaction score(s) in "
+                f"{gdf['sender'].iloc[0]} -> {gdf['receiver'].iloc[0]} "
+                f"differ by more than {_TABLE_REL_TOL:.0%} from the same pair "
+                f"scored through the background tables (e.g. "
+                f"{'; '.join(ex)}). The background was built from different "
+                f"data or settings than the observed scores: pass the same "
+                f"expression object (and layer) to prepareLRInteraction and "
+                f"prepareLRBackground, and the same graph settings "
+                f"(number_nearest_neighbors, use_rep_spatial, sigma, "
+                f"section_key).")
+        return table
 
     # --- pass B: one ctc at a time, all its rows scored -------------------
     p_vals = np.full(len(res_laris), np.nan)
     n_pos = np.zeros(len(res_laris), dtype=np.int64)
+    n_size = np.zeros(len(res_laris), dtype=np.int64)
     pos_of = {ix: i for i, ix in enumerate(res_laris.index)}
     grouped = res_laris.groupby(['sender', 'receiver'], observed=True)
     lam_mu = mu_celltype
+
+    def _same_colocation(i1, i2):
+        # the mirror (r, s) of (s, r) has the same co-location vector, norm
+        # and IQR, so the same coloc table - checked bitwise, not assumed
+        return (y_norms[i1] == y_norms[i2]
+                and iqr[ctc_names[i1]] == iqr[ctc_names[i2]]
+                and np.array_equal(ctXct_cell[i1].toarray(),
+                                   ctXct_cell[i2].toarray()))
+
+    def _store(gdf, ex, npos):
+        pid = np.fromiter((_pair_index[pr] for pr in
+                           zip(gdf['ligand'], gdf['receptor'])),
+                          dtype=np.int64, count=len(gdf))
+        ex, npos, size = ex[pid], npos[pid], sizes[pid]
+        degenerate = (size == 0) | (npos == 0) | (npos < min_null_support)
+        rows = np.fromiter((pos_of[ix] for ix in gdf.index),
+                           dtype=np.int64, count=len(gdf))
+        p_vals[rows] = np.where(degenerate, 1.0, (ex + 1) / (size + 1))
+        n_pos[rows] = npos
+        n_size[rows] = size
+
+    def _per_pair(gdf, obs):
+        out = np.full(n_pairs, np.inf)      # pairs without a row: never count
+        out[[_pair_index[pr] for pr in
+             zip(gdf['ligand'], gdf['receptor'])]] = obs
+        return out
+
+    # --- partner ranks (descriptive) --------------------------------------
+    # The cross design compares the observed pair with pseudo-pairs that
+    # share neither of its genes. These two columns look at the pairs that
+    # share one: the observed receptor with each of the ligand's matched
+    # genes (ligand_rank), and the observed ligand with each of the
+    # receptor's (receptor_rank). (1 + #{peer pair >= observed}) /
+    # (1 + #{valid peer pairs}), so 1/(k + 1) means the gene beats all its
+    # peers given its partner; a call that leans on one partner has a
+    # small rank on that side only. Resolution 1/(k + 1): descriptive, not
+    # a test. Rows whose observed score is 0 keep 1.0.
+    lig_rank = np.ones(len(res_laris))
+    rec_rank = np.ones(len(res_laris))
+
+    def _dw_dense(gi, gj):
+        return dwx[gi, gj]
+
+    def _dw_elementwise(gi, gj):
+        # the same arithmetic as _dense_delta_weight, entry by entry, with
+        # database pairs excluded (NaN), as in the fused path's dense table
+        num = bg.G_W[gi, gj]
+        den = np.sqrt(bg.G_sq[gi, gj] * bg.G_W2[gi, gj])
+        gsp = np.zeros_like(num)
+        np.divide(num, den, out=gsp, where=den > 0)
+        d = gsp - mu_gsp * _analytic_random_gsp(
+            bg.G_dot[gi, gj] / bg.n_cells, bg.G_sq[gi, gj] / bg.n_cells,
+            bg.n_cells, bg.R)
+        if spatial_weight == 0:
+            dw = np.ones_like(d)
+        else:
+            dw = np.clip(d, 0.0, None) ** spatial_weight
+        dw[np.asarray(_db_bool[gi, gj]).ravel().astype(bool)] = np.nan
+        return dw
+
+    def _partner_ranks(gdf, obs_rows, spec_l, spec_r, m_at, dw_at):
+        obs_rows = np.asarray(obs_rows, dtype=np.float64)
+        sel = np.flatnonzero(obs_rows > 0)
+        if sel.size == 0:
+            return
+        rows = np.fromiter((pos_of[ix] for ix in gdf.index[sel]),
+                           dtype=np.int64, count=sel.size)
+        ligs = gdf['ligand'].to_numpy()[sel]
+        recs = gdf['receptor'].to_numpy()[sel]
+        o = obs_rows[sel]
+        trip = [_obs_of[pr] for pr in zip(ligs, recs)]
+        iL = np.fromiter((t[0] for t in trip), np.int64, sel.size)
+        iR = np.fromiter((t[1] for t in trip), np.int64, sel.size)
+        for sets, out, ligand_side in (
+                ([bg.matched_ligand[l_] for l_ in ligs], lig_rank, True),
+                ([bg.matched_receptor[r_] for r_ in recs], rec_rank, False)):
+            lens = np.fromiter((len(s_) for s_ in sets), np.int64, sel.size)
+            n_valid = np.zeros(sel.size)
+            n_ge = np.zeros(sel.size)
+            if lens.sum():
+                owner = np.repeat(np.arange(sel.size), lens)
+                peers = np.concatenate(
+                    [np.asarray(s_, dtype=np.int64) for s_ in sets])
+                gi, gj = ((peers, iR[owner]) if ligand_side
+                          else (iL[owner], peers))
+                # kernel order: ((spec * spec) * delta weight) * M
+                v = ((spec_l[gi] * spec_r[gj]) * dw_at(gi, gj)) * m_at(
+                    gi * U + gj)
+                valid = ~np.isnan(v)
+                n_valid = np.bincount(owner, weights=valid,
+                                      minlength=sel.size)
+                n_ge = np.bincount(owner, weights=valid & (v >= o[owner]),
+                                   minlength=sel.size)
+            out[rows] = (1.0 + n_ge) / (1.0 + n_valid)
+
+    if _rust is not None:
+        # One cell-type pair and its mirror at a time: they share the
+        # numerator, the coloc table and frac_s * frac_r (symmetric in s
+        # and r), so M is built once and one sweep counts both directions.
+        groups = {key: gdf for key, gdf in grouped}
+        handled = set()
+        x = np.empty((U, U), dtype=np.float64)     # the coloc table, reused
+        with ThreadPoolExecutor(max_workers=_threads) as pool:
+            for (sender, receiver), gdf in groups.items():
+                if (sender, receiver) in handled:
+                    continue
+                handled.add((sender, receiver))
+                idx = _ctc_pos.get(f"{sender}::{receiver}")
+                if idx is None:
+                    continue
+                mirror = None
+                if sender != receiver and (receiver, sender) in groups:
+                    midx = _ctc_pos.get(f"{receiver}::{sender}")
+                    if midx is not None and _same_colocation(idx, midx):
+                        mirror = groups[(receiver, sender)]
+                        handled.add((receiver, sender))
+                if _ctc_numerator(idx):
+                    # lam * c / iqr fused; log1p in NumPy (see src/lib.rs)
+                    _rust.coloc_x(_A, _B, v_norm, float(y_norms[idx]), S,
+                                  float(lam_mu), float(iqr[ctc_names[idx]]),
+                                  x)
+                    _log1p_inplace(x, pool, _threads)
+                else:                            # y all zero: coloc = 0
+                    x.fill(0.0)
+                fs, fr = frac[sender], frac[receiver]
+                x_flat, fs_flat, fr_flat = x.ravel(), fs.ravel(), fr.ravel()
+
+                def m_at(f):
+                    # M = coloc * (frac_s * frac_r) * scale at flat indices
+                    return ((x_flat[f] * (fs_flat[f].astype(np.float64)
+                                          * fr_flat[f])) * scale_factor)
+
+                spec_a = np.ascontiguousarray(spec_tab[:, group_col[sender]])
+                spec_b = np.ascontiguousarray(spec_tab[:, group_col[receiver]])
+                obs_rows1 = _observed_through_tables(gdf, spec_a, spec_b, m_at)
+                obs1 = _per_pair(gdf, obs_rows1)
+                if mirror is None:
+                    obs_rows2, obs2 = None, np.empty(0)
+                else:
+                    obs_rows2 = _observed_through_tables(
+                        mirror, spec_b, spec_a, m_at)
+                    obs2 = _per_pair(mirror, obs_rows2)
+                ex1, np1, ex2, np2 = _rust.assembly_sweep(
+                    x, fs, fr, float(scale_factor), dwx, spec_a, spec_b,
+                    row_ptr, row_pair, col_ptr, col_gene, obs1, obs2, thr)
+                _store(gdf, ex1, np1)
+                _partner_ranks(gdf, obs_rows1, spec_a, spec_b, m_at,
+                               _dw_dense)
+                if mirror is not None:
+                    _store(mirror, ex2, np2)
+                    _partner_ranks(mirror, obs_rows2, spec_b, spec_a, m_at,
+                                   _dw_dense)
+        grouped = ()                    # every group was handled above
 
     for (sender, receiver), gdf in grouped:
         ctc = f"{sender}::{receiver}"
@@ -1139,40 +1876,25 @@ def compute_factorized_pvalues(
              * scale_factor).ravel()
         spec_s = spec_tab[:, s_col]
         spec_r = spec_tab[:, r_col]
-        if _rust is not None:
-            pair_ids = np.fromiter(
-                (_pair_id(lig, rec) for lig, rec in
-                 zip(gdf['ligand'], gdf['receptor'])),
-                dtype=np.int64, count=len(gdf))
-            exceed, npos_grp = _rust.assembly_counts(
-                M, np.ascontiguousarray(spec_s),
-                np.ascontiguousarray(spec_r),
-                _cat['flat'], _cat['row_gene'], _cat['col_gene'],
-                _cat['dw'], _cat['offsets'], pair_ids,
-                gdf['interaction_score'].to_numpy(np.float64))
-            sizes = (_cat['offsets'][pair_ids + 1]
-                     - _cat['offsets'][pair_ids])
-            degenerate = ((sizes == 0) | (npos_grp == 0)
-                          | (npos_grp < min_null_support))
-            p_grp = np.where(degenerate, 1.0, (exceed + 1) / (sizes + 1))
-            for ix, pv, nz in zip(gdf.index, p_grp, npos_grp):
-                p_vals[pos_of[ix]] = pv
-                n_pos[pos_of[ix]] = nz
-            continue
-        for row in gdf.itertuples():
+        obs = _observed_through_tables(gdf, spec_s, spec_r, M.__getitem__)
+        _partner_ranks(gdf, obs, spec_s, spec_r, M.__getitem__,
+                       _dw_elementwise)
+        for row, o in zip(gdf.itertuples(), obs):
             ii, jj, dw_flat, flat, rowmap, colmap = _delta_block(
                 row.ligand, row.receptor)
+            n_size[pos_of[row.Index]] = len(flat)
             if len(flat) == 0:
                 p_vals[pos_of[row.Index]] = 1.0
                 continue
             null = (spec_s[ii][rowmap] * spec_r[jj][colmap]
                     * dw_flat * M[flat])
-            npos_row = int(np.count_nonzero(null > 0))
+            npos_row = int(np.count_nonzero(
+                (null >= thr) if thr > 0 else (null > 0)))
             n_pos[pos_of[row.Index]] = npos_row
             if npos_row == 0 or npos_row < min_null_support:
                 p_vals[pos_of[row.Index]] = 1.0
                 continue
-            exceed = int(np.count_nonzero(null >= row.interaction_score))
+            exceed = int(np.count_nonzero(null >= o))
             p_vals[pos_of[row.Index]] = (exceed + 1) / (len(flat) + 1)
 
     if len(p_vals) and not np.isfinite(p_vals).any():
@@ -1190,22 +1912,25 @@ def compute_factorized_pvalues(
             "dropped as too small. Check that the groupby column is the "
             "same in both calls and has at least two non-empty groups.")
 
-    n_tested = int(np.count_nonzero(n_pos > 0))
+    floor = max(1, int(min_null_support))
+    tested = n_pos >= floor
+    n_tested = int(np.count_nonzero(tested))
     if n_tested:
-        thin = int(np.count_nonzero((n_pos > 0) & (n_pos < 100)))
+        thin = int(np.count_nonzero(tested & (n_pos < 100)))
         if thin > 0.05 * n_tested:
             warnings.warn(
                 f"{thin:,} of {n_tested:,} tested interactions "
                 f"({100 * thin / n_tested:.1f}%) have a null with fewer "
                 "than 100 non-zero pseudo-pairs. Their p-values are "
                 "reported against a denominator of "
-                f"{int(np.median(n_pos[n_pos > 0])):,} but can only "
+                f"{int(np.median(n_size[tested])):,} but can only "
                 "resolve about 1/(effective support). Inspect the "
-                "'null_support' column, and consider "
-                "min_null_support= to drop them.",
+                "'null_support' column; the default min_null_support='auto' "
+                "leaves out rows below 2 x n_matched_genes.",
                 UserWarning, stacklevel=2)
-    return pd.DataFrame({'p_value': p_vals, 'null_support': n_pos},
-                        index=res_laris.index)
+    return pd.DataFrame({'p_value': p_vals, 'null_support': n_pos,
+                         'null_size': n_size, 'ligand_rank': lig_rank,
+                         'receptor_rank': rec_rank}, index=res_laris.index)
 
 
 # ---------------------------------------------------------------------------
@@ -1224,7 +1949,7 @@ def _prepare_background_from_cytome(
     exclude_self, number_nearest_neighbors,
     use_rep_spatial, use_rep_gsp, n_nearest_neighbors_gsp, sigma_gsp,
     layer, section_key, block_size, verbosity,
-    stats_block_genes: int = 2048,
+    stats_block_genes: int = 2048, sigma='adaptive',
 ) -> "LRBackground":
     """Cytome path: the in-memory definition, computed out of core.
 
@@ -1258,21 +1983,27 @@ def _prepare_background_from_cytome(
         cy_layer = _resolve_x_layer(ds, modality) if layer is None else layer
         all_genes = _cytome_gene_names(ds)
         n_genes = len(all_genes)
+        n_matched_genes = _resolve_n_matched_genes(n_matched_genes, lr_df,
+                                                   all_genes, n_pool)
         say(f"  - cytome stats pass over {n_genes:,} genes "
             f"(sparse gene blocks, stored dtype)...")
         m = v = None
+        detected = np.zeros(n_genes, dtype=bool)
         for start in range(0, n_genes, stats_block_genes):
             cols = np.arange(start, min(start + stats_block_genes, n_genes))
-            mb, vb = _gene_moments(
-                _read_cytome_columns(ds, modality, cy_layer, cols))
+            block = _read_cytome_columns(ds, modality, cy_layer, cols)
+            mb, vb = _gene_moments(block)
             if m is None:            # the dtype the in-memory path would get
                 m = np.empty(n_genes, dtype=mb.dtype)
                 v = np.empty(n_genes, dtype=vb.dtype)
             m[cols] = mb
             v[cols] = vb
+            detected[cols] = _gene_detected(block)
+            del block
 
         sel = _select_matching(all_genes, m, v, lr_df, n_pool, augment_pool,
-                               n_matched_genes, matching, exclude_self, say)
+                               n_matched_genes, matching, exclude_self, say,
+                               detected=detected)
 
         say(f"  - loading {len(sel.gene_index):,} table genes "
             f"(pool + LR) from cytome...")
@@ -1290,13 +2021,14 @@ def _prepare_background_from_cytome(
     tables = _build_tables(
         sub, sub.X, n_cells, number_nearest_neighbors, use_rep_spatial,
         use_rep_gsp, n_nearest_neighbors_gsp, sigma_gsp, section_key,
-        block_size, say)
+        block_size, say, sigma=sigma)
     return _assemble_background(
         sel, tables, n_cells, lr_df, n_matched_genes,
         dict(n_pool=n_pool, n_matched_genes=n_matched_genes,
              matching=matching, exclude_self=exclude_self,
              number_nearest_neighbors=number_nearest_neighbors,
-             use_rep_spatial=use_rep_spatial, use_rep_gsp=use_rep_gsp,
+             use_rep_spatial=use_rep_spatial, sigma=sigma,
+             use_rep_gsp=use_rep_gsp,
              n_nearest_neighbors_gsp=n_nearest_neighbors_gsp,
              sigma_gsp=sigma_gsp, section_key=section_key, layer=cy_layer),
         say)
@@ -1522,10 +2254,10 @@ def decoyFDR(
     The factorized p-value certifies that a pair's expression is arranged
     with respect to the tested cell types beyond expression-matched
     chance. It does not certify the *pairing*: a degree-preserving
-    rewiring of the database scores almost as well (tonsil: 947 vs 1,195
-    calls at FDR<0.05), because for marker-structured pairs the pairing
-    is unidentifiable from expression and coordinates alone. See
-    tutorial 07 and the discussion record.
+    rewiring of the database reproduces part of the calls (tonsil,
+    v0.15.0: 50 against the real database's 95 at FDR < 0.05), because
+    for marker-structured pairs the pairing is unidentifiable from
+    expression and coordinates alone. See tutorial 07.
 
     This function measures that error rate empirically, the way
     proteomics has done for two decades (target-decoy search, Elias &
@@ -1616,6 +2348,39 @@ def computeDecoyFDR(
     target run (``use_rep_spatial``, ``groupby``, ...); they are passed
     through verbatim.
 
+    Parameters
+    ----------
+    data : AnnData, str or cytome dataset
+        The expression data of the target run.
+    lr_df : pandas.DataFrame
+        The real LR database of the target run ('ligand'/'receptor'
+        columns); it is rewired into the decoy.
+    target_res : pandas.DataFrame
+        The target run's results (``runLARIS``'s cell-type table), whose
+        raw ``p_value`` the q-values are computed for.
+    background : LRBackground
+        The target run's background. The decoy keeps every gene and degree,
+        so the same matched sets and tables apply.
+    random_seed : int, default=0
+        Seed of the rewiring.
+    prepare_kwargs : dict, optional
+        Keyword arguments for ``prepareLRInteraction`` on the decoy
+        database; repeat the target run's settings.
+    run_kwargs : dict, optional
+        Keyword arguments for ``runLARIS`` on the decoy database; repeat the
+        target run's settings.
+    verbosity : int, default=1
+        1 prints the decoy's size; 0 is silent.
+
+    Returns
+    -------
+    q_decoy : pandas.Series
+        The target-decoy q-value of every target row
+        (:func:`decoyFDR`), aligned to ``target_res.index``.
+    decoy_res : pandas.DataFrame
+        The decoy run's results, without rows whose pair coincides with a
+        real database pair.
+
     Examples
     --------
     >>> q, dec = la.tl.computeDecoyFDR(
@@ -1681,6 +2446,10 @@ def decoyReport(
         :func:`computeDecoyFDR`, which produces ``decoy_res``.
     thresholds : tuple of float, default=(0.05, 0.01)
         FDR thresholds to report.
+    p_col : str, default='p_value'
+        Column holding the raw p-values (for the q-values).
+    fdr_col : str, default='p_value_fdr'
+        Column holding each run's own FDR (for the call counts).
     verbosity : int, default=1
         1 prints the report; 0 returns it silently.
 

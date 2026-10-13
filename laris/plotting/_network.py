@@ -143,11 +143,13 @@ def plotCCCNetwork(
         - 'sending' : Show outgoing interactions from cell_type_of_interest
         - 'receiving' : Show incoming interactions to cell_type_of_interest
         
-    adata : anndata.AnnData, optional
-        AnnData object containing cell type information for coloring nodes
+    data : AnnData, str or cytome dataset, optional
+        Expression object whose cell-type colours (``uns['<groupby>_colors']``)
+        colour the nodes.
         
     n_top : int, default=3000
-        Number of top interactions if no filters applied
+        Number of top-scoring interactions (by ``interaction_score``) if no
+        filters are applied
         
     edge_width_scale : float, default=30
         Scaling factor for edge thickness based on interaction score
@@ -194,11 +196,6 @@ def plotCCCNetwork(
     filter_significant : bool, default=True
         If True, apply significance filtering
         
-    include_self_interactions : bool, default=True
-        Draw interactions where the sender and the receiver are the same
-        cell type, as a loop on that node. Autocrine and within-cell-type
-        signalling is common, so these are shown by default; set False to
-        restrict the plot to interactions between different cell types.
     label_border : bool, default=True
         If True, add border/outline to cell type labels for better visibility
         
@@ -215,12 +212,19 @@ def plotCCCNetwork(
         Verbosity level
         
     return_fig : bool, default=False
-        If True, return the figure and axes objects
-    
+        If True, return the figure and axes objects.
+    adata : deprecated
+        Former name of ``data``.
+    include_self_interactions : bool, default=True
+        Draw interactions where the sender and the receiver are the same
+        cell type, as a loop on that node. Autocrine and within-cell-type
+        signalling is common, so these are shown by default; set False to
+        restrict the plot to interactions between different cell types.
+
     Returns
     -------
     tuple or None
-        (fig, ax) if return_fig=True, otherwise None
+        (fig, ax) if return_fig=True, otherwise None.
     
     Examples
     --------
@@ -278,7 +282,9 @@ def plotCCCNetwork(
             f"No filters applied. Using top {n_top} interactions.",
             2, verbosity, 'info'
         )
-        laris_results_subset = laris_results_subset.iloc[:n_top]
+        laris_results_subset = laris_results_subset.sort_values(
+            'interaction_score', ascending=False, kind='mergesort'
+        ).iloc[:n_top]
 
     df_subset = laris_results_subset
 
@@ -469,14 +475,16 @@ def plotCCCNetworkCumulative(
     laris_results : pd.DataFrame
         DataFrame containing LARIS interaction results
         
-    adata : anndata.AnnData
-        AnnData object with cell type information
+    data : AnnData, str or cytome dataset, optional
+        Expression object whose cell-type colours (``uns['<groupby>_colors']``)
+        colour the nodes.
         
     cutoff : float, default=0
         Minimum threshold for including an edge
         
     n_top : int, default=3000
-        Number of top interactions if no filters applied
+        Number of top-scoring interactions (by ``interaction_score``) if no
+        filters are applied
         
     groupby : str, default='cell_type'
         Column in adata.obs containing cell type labels
@@ -542,12 +550,19 @@ def plotCCCNetworkCumulative(
         Verbosity level
         
     return_fig : bool, default=False
-        If True, return the figure and axes objects
-    
+        If True, return the figure and axes objects.
+    adata : deprecated
+        Former name of ``data``.
+    include_self_interactions : bool, default=True
+        Draw interactions where the sender and the receiver are the same
+        cell type, as a loop on that node. Autocrine and within-cell-type
+        signalling is common, so these are shown by default; set False to
+        restrict the plot to interactions between different cell types.
+
     Returns
     -------
     tuple or None
-        (fig, ax) if return_fig=True, otherwise None
+        (fig, ax) if return_fig=True, otherwise None.
     
     Examples
     --------
@@ -604,7 +619,9 @@ def plotCCCNetworkCumulative(
             f"No filters applied. Using top {n_top} interactions.",
             2, verbosity, 'info'
         )
-        laris_results_subset = laris_results_subset.iloc[:n_top]
+        laris_results_subset = laris_results_subset.sort_values(
+            'interaction_score', ascending=False, kind='mergesort'
+        ).iloc[:n_top]
 
     df_subset = laris_results_subset
 

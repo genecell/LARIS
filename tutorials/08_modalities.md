@@ -2,7 +2,7 @@
 
 One pipeline, three spatial technologies at very different resolutions
 and scales. Every number and figure below was produced by the code
-shown, with LARIS v0.13.0.
+shown, with LARIS v0.15.0.
 
 | | Slide-tags tonsil | Visium HD 16 µm | Stereo-seq |
 |---|---|---|---|
@@ -11,8 +11,9 @@ shown, with LARIS v0.13.0.
 | spots | 5,695 | 68,616 | 121,767 |
 | genes | 25,583 | 19,059 | 28,204 |
 | groups | 14 cell types | 16 clusters | 25 annotations |
-| interactions, FDR < 0.05 | 968 | 683 | 7,251 |
-| distinct LR pairs called | 327 | 151 | 744 |
+| interactions, FDR < 0.05 | 54 | 83 | 573 |
+| interactions, FDR < 0.10 | 129 | 173 | 1,709 |
+| distinct LR pairs called (FDR < 0.05) | 49 | 46 | 220 |
 
 ![summary](images/tut08_summary.png)
 
@@ -48,24 +49,31 @@ res[res.p_value_fdr < 0.05].nlargest(3, "interaction_score")
 ```
 
 ```text
- sender  receiver interaction_name  interaction_score  p_value_fdr
-     12        12     Slc1a2::Grm3            0.76872      0.00828
-     12        13   Slc1a2::Grin2c            0.60725      0.00100
-      4         4  Aldh1a2::Crabp2            0.56158      0.01153
+sender receiver interaction_name  interaction_score  p_value_fdr
+     8        8    Slc17a6::Grm1            0.52277      0.01250
+    13        8     Slc1a2::Grm1            0.33686      0.04008
+    13        8  Slc6a11::Gabbr2            0.27927      0.01850
 ```
 
 ![visium hd](images/tut08_hd_spatial.png)
 
-`Slc1a2` is the astrocyte glutamate transporter; `Grm3` and `Grin2c` are
-glutamate receptors. LARIS recovers the astrocyte–neuron glutamate axis
-in the top interactions of a brain section without being told anything
-about brain biology. Note the two directions it distinguishes: within
-cluster 12, and from cluster 12 to cluster 13.
+The top calls are glutamate and GABA axes converging on cluster 8, the
+central domain of this section (the thalamus, by position and by
+`Slc17a6`): `Slc17a6` (VGLUT2, the glutamate transporter of excitatory
+neurons) to the metabotropic glutamate receptor `Grm1` within cluster 8,
+`Slc1a2` (GLT-1, the astrocyte glutamate transporter) from cluster 13 to
+the same receptor, and `Slc6a11` (GAT3, the astrocyte GABA transporter)
+from cluster 13 to the GABA-B receptor `Gabbr2`. In this database, as in
+CellChat's, a neurotransmitter is represented by the genes that make or
+carry it. LARIS recovers neuron-astrocyte neurotransmitter axes in a
+brain section without being told anything about brain biology, and it
+separates the two directions: within cluster 8, and from cluster 13 to
+cluster 8.
 
 `n_pool=2000` is worth a word: the candidate pool sets the size of the
 background's internal tables, which are quadratic in it. At 68,616 bins
-the default 4,000 is affordable but slower; 2,000 keeps the build near 40
-minutes with no measurable change in the results.
+the default 4,000 is affordable but slower; 2,000 halves the pool (the
+LR genes and the pool repair add the rest, 3,552 table genes here).
 
 ## 2. Stereo-seq (cell bins, whole mouse embryo)
 
@@ -87,21 +95,23 @@ bg      = la.tl.prepareLRBackground(adata, lr_df, n_pool=2000,
 laris_lr, res = la.tl.runLARIS(lr_data, adata, use_rep="X_spatial",
                                use_rep_spatial="X_spatial",
                                groupby="annotation", background=bg)
+res[res.p_value_fdr < 0.05].nlargest(3, "interaction_score")
 ```
 
 ```text
-              sender      receiver interaction_name  interaction_score  p_value_fdr
-       Adrenal gland Adrenal gland      Dhcr7::Rora            1.79165      0.00305
-                Bone          Bone     Col2a1::Cd44            1.69346      0.00740
-Cartilage primordium          Bone     Col2a1::Cd44            0.98359      0.00325
+              sender receiver interaction_name  interaction_score  p_value_fdr
+                Bone     Bone     Col2a1::Cd44            1.71104      0.04536
+Cartilage primordium     Bone     Col2a1::Cd44            0.58853      0.01047
+           Inner ear     Bone     Col9a2::Cd44            0.55322      0.02962
 ```
 
 ![stereo-seq](images/tut08_mosta_spatial.png)
 
 `Col2a1::Cd44` from cartilage primordium to bone is skeletal development
-reading out of the data directly — type II collagen is the cartilage
-matrix protein, and the interaction appears exactly on the
-cartilage-to-bone axis of an E16.5 embryo.
+reading out of the data directly: type II collagen is the cartilage
+matrix protein, and the interaction appears on the cartilage-to-bone
+axis of an E16.5 embryo, with type IX collagen (`Col9a2`, another
+cartilage collagen) from the inner ear to bone next to it.
 
 ## 3. Reading results from binned data
 
@@ -111,60 +121,63 @@ specificity.
 
 **Check `pair_breadth`.** It reports the fraction of sender-receiver
 combinations in which a pair was called. Genuine cell-type-specific
-results are narrow — the medians here are 1–2% — while a pair called
-across a large fraction of the grid is a tissue-ubiquitous one that
-carries no cell-type information, however real its expression:
+results are narrow, while a pair called across a large fraction of the
+grid is a tissue-ubiquitous one that carries no cell-type information,
+however real its expression:
 
 ```python
 res.loc[res.p_value_fdr < 0.05, ["interaction_name", "pair_breadth"]] \
    .drop_duplicates().nlargest(5, "pair_breadth")
 ```
 
-On these objects the maxima are 0.16
-(Visium HD) and 0.074 (Stereo-seq), so
-nothing is sweeping the grid. Anything above ~0.25 deserves a look
-before it goes in a figure.
+On these objects the maxima are 0.016 (Visium HD) and 0.03
+(Stereo-seq), so nothing is sweeping the grid. Anything above ~0.25
+deserves a look before it goes in a figure.
 
-**Expect a large drop if you are coming from v0.12.0.** On binned data
-the v0.13.0 background fix removes far more calls than it does on
-dissociated data:
+**Check `edge_limited` on very abundant genes.** A gene so abundant that
+fewer than 100 detected genes lie above it gets a smaller, symmetric
+matched set ([tutorial 07](07_significance_and_background.md)). Binned
+data concentrate expression in a few genes, so this happens more often
+than on single cells: 21 LR genes on the Visium HD object (the most
+abundant, such as `App`, `Apoe`, `Slc1a2` and `Thy1`, and nine genes
+detected in no bin) against 6 on tonsil. Their rows are tested as usual,
+with a smaller null (`null_size`) and so a coarser p-value floor.
 
-| object | v0.12.0 | v0.13.0 | change |
-|---|---|---|---|
-| Slide-tags tonsil (single cells) | 1,630 | 1,345 | **−17%** |
-| Visium HD 16 µm | 1,638 | 683 | **−58%** |
-| Stereo-seq (mouse embryo) | 12,421 | 7,251 | **−42%** |
+**Expect far fewer calls if you are coming from an earlier version.**
 
-This is the fix working, not a regression, and the reason is the same
-label impurity as above. v0.12.0's candidate pool under-sampled the most
-abundant genes, which let a class of tissue-ubiquitous pairs beat their
-own null and be called across most of the grid. On binned data those
-pairs made up much of the *real* result too — before the fix, 13 of the
-top 20 calls on Visium HD and 16 of 20 on Stereo-seq were the same pairs
-the shuffled-label arm returned, against 4 of 20 on tonsil. Removing that
-class therefore removes proportionally more from binned objects. What
-remains is more specific: the top Visium HD interaction is now
-`Slc1a2::Grm3` rather than a pair called in 255 of 256 combinations.
+| object | v0.13.0 | v0.15.0 |
+|---|---|---|
+| Slide-tags tonsil | 968 | 54 |
+| Visium HD 16 µm | 683 | 83 |
+| Stereo-seq (mouse embryo) | 7,251 | 573 |
 
-Counter-intuitively this is *not* about binned data having more abundant
-genes — it has fewer (49 genes detected in over half the spots on our
-Visium HD object, against 485 on tonsil). It is about mixed labels
-flattening cell-type specificity, which lets ubiquitous pairs dominate.
+Interactions at FDR < 0.05, both with a matched-gene background. This is
+the FDR becoming valid, not a loss of signal. Up to v0.14.1
+Benjamini-Hochberg covered the rows with a positive score, while each
+p-value counts the pseudo-pairs that score zero; choosing the tested rows
+by the observed score made the adjustment anti-conservative. v0.15.0
+chooses them by the null alone, tests a row only when at least
+`2k` of its pseudo-pairs score above zero, and repairs the matched sets
+of the most and least abundant genes. The scores, and so every
+score-based ranking and figure, are unchanged by this (except for LR
+pairs expressed in fewer than `n_cells_expressed_threshold` cells; see
+the v0.15.0 release notes).
 
 **Check `null_matchability`.** Values near 1.0 mean the pair's matched
 genes were all weaker than the real genes, so its p-value overstates.
-LARIS warns when a significant call is affected; the pool augmentation in
+LARIS warns when a significant call is affected; the pool repair in
 `prepareLRBackground` normally prevents it.
 
 ## 4. Cost
 
-Measured on the machine used for this tutorial (20 cores):
+Measured on the machine used for this tutorial (20 threads, nothing else
+running):
 
-| dataset | spots | `n_pool` | background build | `runLARIS` |
-|---|---|---|---|---|
-| Slide-tags tonsil | 5,695 | 4,000 | ~5 min | ~9 min |
-| Visium HD 16 µm | 68,616 | 2,000 | ~44 min | ~24 min |
-| Stereo-seq | 121,767 | 2,000 | ~55 min | ~103 min |
+| dataset | spots | `n_pool` | table genes | background build | `runLARIS` |
+|---|---|---|---|---|---|
+| Slide-tags tonsil | 5,695 | 4,000 | 5,091 | 22 s | 49 s |
+| Visium HD 16 µm | 68,616 | 2,000 | 3,552 | 115 s | 84 s |
+| Stereo-seq | 121,767 | 2,000 | 3,656 | 4 min | 4 min |
 
 The background depends only on the cells, the spatial graph and the gene
 set — not on `groupby` — so one build serves every annotation and every

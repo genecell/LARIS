@@ -6,7 +6,7 @@ expression AnnData is expected, and for large data the whole pipeline can
 stay on disk: scores are computed in blocks and written to an **LR
 cytome** rather than materialised in memory. Install with
 `pip install laris[cytome]`. All outputs below were produced by exactly
-this code (tonsil data, LARIS v0.13.0).
+this code (tonsil data, LARIS v0.15.0).
 
 ## 1. Convert once
 
@@ -19,7 +19,7 @@ ds.close()
 ```
 
 ```text
-tonsil.cytome: 88 MB on disk
+tonsil.cytome: 60 MB on disk
 ```
 
 ## 2. Prepare LR scores — from the file, to a file
@@ -60,19 +60,40 @@ memory for the AnnData path too.
 
 ## 3. Run LARIS from the files
 
-Both arguments accept paths. Cell-type specificity is computed by
-streaming the expression from disk in chunks (`cosg.run_cosg_cytome`) —
-no cells × genes matrix is built:
+The matched-gene background for the p-values (see
+[tutorial 07](07_significance_and_background.md)) takes the path too. It
+streams the per-gene statistics in one pass over the file and then loads
+only the genes its tables need (the candidate pool and the LR genes):
+
+```python
+bg = la.tl.prepareLRBackground("tonsil.cytome", lr_df,
+                               use_rep_spatial="X_spatial")
+```
+
+```text
+  - cytome stats pass over 25,583 genes (sparse gene blocks, stored dtype)...
+  - pool grown 4,000 -> 4,279 genes so every LR gene has matched peers above it
+  - side repair: pool 4,279 -> 4,383 genes (k/2 detected peers on each side of every LR gene where the transcriptome has them)
+  - candidate pool: 4,383 genes (quantile grid over mean/variance)
+  - loading 5,145 table genes (pool + LR) from cytome...
+  - diffusing 5,145 genes through the 20-NN kernel graph...
+  - building spatial-specificity graph and Gram tables...
+  - done: 5,145 genes, support per pair up to 40,000 (floor 2.50e-05); 6 LR gene(s) with a truncated matched set
+```
+
+Both arguments of `runLARIS` accept paths. Cell-type specificity is
+computed by streaming the expression from disk in chunks
+(`cosg.run_cosg_cytome`) — no cells × genes matrix is built:
 
 ```python
 laris_lr, res = la.tl.runLARIS(
     lr_path, data="tonsil.cytome",
     use_rep="X_spatial", use_rep_spatial="X_spatial",
-    groupby="cell_type")
+    groupby="cell_type", background=bg)
 ```
 
 ```text
-389,060 sender-receiver-LR rows; 1,345 at FDR<0.05
+389,060 sender-receiver-LR rows; 54 at FDR<0.05, 129 at FDR<0.10
 ```
 
 `cosg_backend='memory'` forces the in-memory path; `'auto'` streams only
@@ -96,7 +117,8 @@ directly as `lr_data=`.
 
 ## 5. The guarantee
 
-The cytome path is not an approximation:
+The cytome path is not an approximation. The LR scores are bit-identical
+to the AnnData path's:
 
 ```python
 lr_mem = la.tl.prepareLRInteraction(adata, lr_df)     # AnnData path
@@ -107,38 +129,73 @@ np.array_equal(lr_back.X.toarray(), lr_mem.X.toarray())
 bit-identical to the AnnData path: True
 ```
 
+So is the background (its matched sets and tables), and so are the
+results when the cell-type specificity is computed in memory:
+
+```python
+bg_mem = la.tl.prepareLRBackground(adata, lr_df, use_rep_spatial="X_spatial")
+_, res_mem = la.tl.runLARIS(lr_mem, adata, use_rep="X_spatial",
+                            use_rep_spatial="X_spatial", groupby="cell_type",
+                            background=bg_mem)
+_, res_cy = la.tl.runLARIS(lr_path, data="tonsil.cytome", use_rep="X_spatial",
+                           use_rep_spatial="X_spatial", groupby="cell_type",
+                           background=bg, cosg_backend="memory")
+```
+
+```text
+interaction_score, p_value, p_value_fdr, null_support: bitwise equal (389,060 rows)
+```
+
+With the default `cosg_backend='auto'`, a cytome source streams the
+specificity from disk (`cosg.run_cosg_cytome`), which accumulates in
+float32. The scores then agree to float32 precision (here at most
+1.6e-7, relative 2e-6), so an exact tail count can move by one step:
+8 of 389,060 p-values differ by one step (2.5e-5). The FDR column and the calls,
+at FDR < 0.05 and < 0.10, are identical.
+
 ## 6. What it costs, measured
 
-Both paths were run in separate processes so the peak memory is the
-process's own, not whatever was already resident:
+Each path was run in its own process, so the peak memory is the process's
+own, not whatever was already resident:
 
 ```python
 # in memory
-adata = sc.read_h5ad("adata_tonsil.h5ad")
-lr_data = la.tl.prepareLRInteraction(adata, lr_df, use_rep_spatial="X_spatial")
+adata = sc.read_h5ad("adata.h5ad")
+lr_data = la.tl.prepareLRInteraction(adata, lr_df, use_rep_spatial="spatial")
 
 # streaming, never holding the full matrix
-la.tl.prepareLRInteraction("tonsil.cytome", lr_df, use_rep_spatial="X_spatial",
-                           return_type="cytome", output="tonsil_lr.cytome",
+la.tl.prepareLRInteraction("adata.cytome", lr_df, use_rep_spatial="spatial",
+                           return_type="cytome", output="adata_lr.cytome",
                            block_size=512)
 ```
 
-![paths](images/tut04_paths.png)
+On this 5,695-cell tonsil the two are equivalent:
 
 ```text
-h5ad 240.6 MB -> cytome 87.7 MB (conversion 2.5 s)
-in memory : 0.78 GB peak, 0.5 s
-streaming : 0.54 GB peak, 0.9 s
+h5ad 240.6 MB -> cytome 60.4 MB (conversion 10.6 s)
+in memory : 0.81 GB peak, 0.5 s
+streaming : 0.81 GB peak, 1.0 s
 ```
 
-On a 5,695-cell tonsil the difference is small and the streaming path is
-slightly slower - the honest summary is that at this size the two are
-equivalent and you should use whichever is convenient. What the figure
-shows is the *shape* of the trade: peak memory is bounded by the block
-size rather than by the matrix, so it stays flat as the dataset grows,
-while the in-memory bar grows with the data. That is why the on-disk
-path matters at Visium HD, Stereo-seq and atlas scale, and why the file
-is also 2.7x smaller on disk.
+Of the 0.81 GB, 0.36 GB is Python with scanpy and LARIS imported; the
+matrix is small at this size, so use whichever path is convenient. The
+difference appears as the data grow. On the Xenium data of the runtime
+benchmark (subsets of 5,000 to 500,000 cells, 5,101 genes), measured the
+same way:
+
+![paths](images/tut04_paths.png)
+
+| cells | in memory | streaming |
+|---|---|---|
+| 5,000 | 0.41 GB, 0.1 s | 0.38 GB, 0.3 s |
+| 100,000 | 1.13 GB, 1.4 s | 0.58 GB, 3.6 s |
+| 500,000 | 3.83 GB, 8.3 s | 1.39 GB, 23.2 s |
+
+The in-memory path holds the expression matrix and all the scores; the
+streaming path holds blocks of them, so its peak grows far more slowly -
+2.8x lower at 500,000 cells - for about three times the time. That is
+why the on-disk path matters at Visium HD, Stereo-seq and atlas scale,
+and the file is also 4x smaller on disk.
 
 ## Notes
 
@@ -148,4 +205,4 @@ is also 2.7x smaller on disk.
   cytome 0.3.0 layer-naming change (`{modality}_counts` reserved for raw
   integer counts) both resolve automatically; pass `layer=` to override.
 - On-disk mode matters most at Visium HD / Stereo-seq / atlas scale; on
-  a 5,695-cell tonsil it is simply equivalent.
+  a 5,695-cell tonsil it is simply equivalent (section 6).

@@ -324,6 +324,10 @@ class TestFactorizedPvalues:
         rec_cells = blob & (ct == "B")
         X[np.flatnonzero(lig_cells), 0] = 30      # G000 ligand in A-blob
         X[np.flatnonzero(rec_cells), 1] = 30      # G001 receptor in B-blob
+        # dense non-LR genes above the planted pair, so both planted genes
+        # have matched peers on each side (v0.15.0 truncates the matched
+        # set of a gene with none above it, down to an empty null)
+        X[:, 50:] = rng.poisson(6, (n, 10)) + 1
         A_ = ad.AnnData(X=X.tocsr(), var=pd.DataFrame(index=genes))
         A_.obsm["X_spatial"] = coords
         A_.obs["ct"] = pd.Categorical(ct)
@@ -388,12 +392,11 @@ class TestRustBackend:
         P, Q = bg.P, bg.Q
         y = np.random.default_rng(5).random(P.shape[1]).astype(np.float32)
         N_dense = (P * y) @ P.T - (Q * y) @ Q.T
-        Pnz = sp.csr_matrix(P - Q)
-        Pnz_csc = Pnz.tocsc()
+        # roles swapped (P.T as the cells x genes input): per row of P.T,
+        # its non-zero entries of (P - Q).T, i.e. the CSC of P - Q
+        Pnz_csc = sp.csc_matrix(P - Q)
         N_rust = laris_core.ctc_cos_numerator(
             np.ascontiguousarray(P.T),
-            Pnz.indptr.astype(np.int64), Pnz.indices.astype(np.int32),
-            Pnz.data.astype(np.float32),
             Pnz_csc.indptr.astype(np.int64),
             Pnz_csc.indices.astype(np.int32),
             Pnz_csc.data.astype(np.float32), y)
@@ -896,7 +899,9 @@ class TestPoolCoverageAndFlags:
             assert np.allclose(sub.pair_breadth, expect)
 
     def test_saturation_warning_fires_when_pool_cannot_reach(self):
-        """With the repair disabled and an unreachable gene, warn."""
+        """With the repair disabled and an unreachable gene, warn. Balanced
+        matching truncates such a gene's set symmetrically (v0.15.0), so
+        only the deprecated plain k-NN matching can still saturate."""
         rng = np.random.default_rng(3)
         n, g = 500, 300
         genes = [f"G{i:03d}" for i in range(g)]
@@ -910,11 +915,13 @@ class TestPoolCoverageAndFlags:
         A.obs["ct"] = pd.Categorical(np.where(t < .5, "A", "B"))
         lr_df = pd.DataFrame({"ligand": ["G000"], "receptor": ["G001"]})
         with contextlib.redirect_stdout(io.StringIO()):
-            bg = la.tl.prepareLRBackground(A, lr_df, n_pool=50,
-                                           augment_pool=False,
-                                           n_matched_genes=6,
-                                           use_rep_spatial="X_spatial",
-                                           verbosity=0)
+            with pytest.warns(FutureWarning, match="matching='knn'"):
+                bg = la.tl.prepareLRBackground(A, lr_df, n_pool=50,
+                                               augment_pool=False,
+                                               matching="knn",
+                                               n_matched_genes=6,
+                                               use_rep_spatial="X_spatial",
+                                               verbosity=0)
             assert bg.match_frac_below["G000"] == 1.0
             lrd = la.tl.prepareLRInteraction(A, lr_df,
                                              use_rep_spatial="X_spatial")
@@ -1257,14 +1264,10 @@ class TestZeroProfileSkip:
     def _args(rng, n=140, u=9, density=0.35):
         P = rng.random((n, u)).astype(np.float32)          # cells x genes
         Q = np.where(rng.random((n, u)) < 0.5, P, 0.0).astype(np.float32)
-        Pnz = sp.csc_matrix(P - Q).T.tocsr()
-        Pnz_csc = Pnz.tocsc()
+        Pnz = sp.csr_matrix(P - Q)               # per cell, detected genes
         return P, Q, (P, Pnz.indptr.astype(np.int64),
                       Pnz.indices.astype(np.int32),
-                      Pnz.data.astype(np.float32),
-                      Pnz_csc.indptr.astype(np.int64),
-                      Pnz_csc.indices.astype(np.int32),
-                      Pnz_csc.data.astype(np.float32))
+                      Pnz.data.astype(np.float32))
 
     def test_zero_profile_cells_are_genuinely_ignored(self):
         """BITWISE: perturbing the data in cells where y == 0 must not
@@ -1290,13 +1293,9 @@ class TestZeroProfileSkip:
         Q2 = np.where(rng.random((n, u)) < 0.5, P2, 0.0).astype(np.float32)
         Q2[live] = Q[live]
         P2[live] = P[live]
-        Pnz2 = sp.csc_matrix(P2 - Q2).T.tocsr()
-        Pnz2_csc = Pnz2.tocsc()
+        Pnz2 = sp.csr_matrix(P2 - Q2)
         args2 = (P2, Pnz2.indptr.astype(np.int64),
-                 Pnz2.indices.astype(np.int32), Pnz2.data.astype(np.float32),
-                 Pnz2_csc.indptr.astype(np.int64),
-                 Pnz2_csc.indices.astype(np.int32),
-                 Pnz2_csc.data.astype(np.float32))
+                 Pnz2.indices.astype(np.int32), Pnz2.data.astype(np.float32))
         other = rust.ctc_cos_numerator(*args2, y)
         assert np.array_equal(base, other), (
             "cells with a zero co-location profile influenced the result")

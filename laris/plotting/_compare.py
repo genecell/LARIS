@@ -160,9 +160,6 @@ def plotCompareLARIS(
         Name these interactions explicitly instead of choosing by rank.
     label_col : str, default='interaction_name'
         Column supplying the label text.
-    leader_lines : bool, default=True
-        Draw a hairline from each label to the point it names. Worth
-        keeping: displaced labels are otherwise ambiguous in dense regions.
     sender, receiver : str, optional
         Restrict a per-triple table to one sender-receiver pair.
     condition_labels : (str, str), optional
@@ -174,6 +171,11 @@ def plotCompareLARIS(
         red-green, which a volcano cannot afford.
     point_size, highlight_size : float
         Marker areas for unchanged and significant interactions.
+    label_fontsize : float, default=8
+        Font size of the interaction labels.
+    leader_lines : bool, default=True
+        Draw a hairline from each label to the point it names. Worth
+        keeping: displaced labels are otherwise ambiguous in dense regions.
     figsize : (float, float), default=(5.4, 4.6)
         Figure size in inches; ignored when `ax` is given.
     title : str, optional
@@ -190,12 +192,15 @@ def plotCompareLARIS(
     save : str, optional
         Path to save to. Use a ``.pdf`` or ``.svg`` extension for vector
         output suitable for a manuscript figure.
+    verbosity : int, default=2
+        Verbosity level.
     return_fig : bool, default=False
         Return the figure instead of showing it.
 
     Returns
     -------
     matplotlib.figure.Figure or None
+        The figure with ``return_fig=True``, otherwise None.
 
     Examples
     --------

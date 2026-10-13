@@ -58,7 +58,8 @@ def plotCCCDotPlot(
     figsize: Optional[Tuple[float, float]] = None,
     save: Optional[str] = None,
     verbosity: int = 2,
-    return_fig: bool = False
+    return_fig: bool = False,
+    score_max: Optional[float] = None
 ) -> Optional[Tuple[plt.Figure, plt.Axes]]:
     """
     Create a bubble plot for selected cell type pairs and interactions.
@@ -89,7 +90,8 @@ def plotCCCDotPlot(
         Delimiter used in sender_receiver_pairs to separate sender and receiver
         
     n_top : int, default=3000
-        Number of top interactions if no filters applied
+        Number of top-scoring interactions (by ``interaction_score``) if no
+        filters are applied
         
     cmap : colormap, optional
         Colormap for bubble colors. If None, uses pos_cmap
@@ -132,12 +134,25 @@ def plotCCCDotPlot(
         
     return_fig : bool, default=False
         If True, return the figure and axes objects
-    
+
+    score_max : float, optional
+        Upper end of the colour scale. By default the largest plotted score,
+        so two plots of different rows are coloured on different scales;
+        pass the same value to both (for example the same view at
+        ``threshold=0.05`` and ``threshold=0.10``) to make their colours
+        comparable.
+
     Returns
     -------
     tuple or None
         (fig, ax) if return_fig=True, otherwise None
     
+    Notes
+    -----
+    Bubble sizes are scaled by -log10(p_value), providing continuous scaling
+    that better represents the range of significance values. The minimum
+    possible p-value is determined by 1/(n_permutations + 1).
+
     Examples
     --------
     >>> # Using senders and receivers
@@ -164,12 +179,6 @@ def plotCCCDotPlot(
     ...     sender_receiver_pairs=pairs,
     ...     save='dotplot.pdf'
     ... )
-    
-    Notes
-    -----
-    Bubble sizes are scaled by -log10(p_value), providing continuous scaling
-    that better represents the range of significance values. The minimum
-    possible p-value is determined by 1/(n_permutations + 1).
     """
     if cmap is None:
         cmap = pos_cmap
@@ -202,6 +211,15 @@ def plotCCCDotPlot(
             f"element-wise. To plot every sender-receiver combination "
             f"(Cartesian product), use plotCCCDotPlotFacet instead."
         )
+
+    # A repeated interaction, or a repeated sender-receiver pair, is one row
+    # or one column. Repeats are natural when the lists are written side by
+    # side (the same interaction for two sender-receiver pairs) and used to
+    # raise "Categorical categories must be unique".
+    interactions_to_plot = list(dict.fromkeys(interactions_to_plot))
+    _pairs = list(dict.fromkeys(zip(senders, receivers)))
+    senders = [s for s, _ in _pairs]
+    receivers = [r for _, r in _pairs]
 
     # Apply filters
     laris_results_subset = laris_results.copy()
@@ -371,8 +389,10 @@ def plotCCCDotPlot(
 
     # Add colorbar with doubled width and label on left side
     if scatter is not None:
-        # Get the actual max score for colorbar
-        if not df_nonzero.empty:
+        # Get the actual max score for colorbar, unless a shared scale is given
+        if score_max is not None:
+            max_score = float(score_max)
+        elif not df_nonzero.empty:
             max_score = df_nonzero['interaction_score'].max()
         else:
             max_score = 1.0
@@ -463,7 +483,8 @@ def plotCCCDotPlotFacet(
         Extra space on y-axis
         
     n_top : int, optional
-        Number of top interactions if no filters applied
+        Number of top-scoring interactions (by ``interaction_score``) if no
+        filters are applied
         
     senders : list of str, optional
         Specific sending cell types. If None, all are included
@@ -598,7 +619,9 @@ def plotCCCDotPlotFacet(
                 f"No filters applied. Using top {n_top} interactions.",
                 2, verbosity, 'info'
             )
-            laris_results_subset = laris_results_subset.iloc[:n_top]
+            laris_results_subset = laris_results_subset.sort_values(
+                'interaction_score', ascending=False, kind='mergesort'
+            ).iloc[:n_top]
 
     data = laris_results_subset
 
@@ -817,11 +840,11 @@ def plotCCCDotPlotFacet(
                 size = bubble_size * (0.1 + 0.9 * normalized)
                 
                 if p < 0.001:
-                    label = f'$\it{{P}}$ ≤ {p:.0e}'
+                    label = rf'$\it{{P}}$ ≤ {p:.0e}'
                 elif p < 0.01:
-                    label = f'$\it{{P}}$ = {p:.3f}'
+                    label = rf'$\it{{P}}$ = {p:.3f}'
                 else:
-                    label = f'$\it{{P}}$ = {p:.2f}'
+                    label = rf'$\it{{P}}$ = {p:.2f}'
                 
                 handle = Line2D([0], [0], marker='o', color='w', label=label,
                                markerfacecolor='gray', markersize=np.sqrt(size),
@@ -830,7 +853,7 @@ def plotCCCDotPlotFacet(
             
             legend = legend_ax.legend(
                 handles=legend_handles, 
-                title="$\it{P}$ value",
+                title=r"$\it{P}$ value",
                 loc='center left',
                 frameon=False,
                 labelspacing=1.2,
@@ -872,11 +895,11 @@ def plotCCCDotPlotFacet(
                 size = bubble_size * (0.1 + 0.9 * normalized)
                 
                 if p < 0.001:
-                    label = f'$\it{{P}}$ ≤ {p:.0e}'
+                    label = rf'$\it{{P}}$ ≤ {p:.0e}'
                 elif p < 0.01:
-                    label = f'$\it{{P}}$ = {p:.3f}'
+                    label = rf'$\it{{P}}$ = {p:.3f}'
                 else:
-                    label = f'$\it{{P}}$ = {p:.2f}'
+                    label = rf'$\it{{P}}$ = {p:.2f}'
                 
                 handle = Line2D([0], [0], marker='o', color='w', label=label,
                                markerfacecolor='gray', markersize=np.sqrt(size),
@@ -885,7 +908,7 @@ def plotCCCDotPlotFacet(
             
             legend = legend_ax.legend(
                 handles=legend_handles, 
-                title="$\it{P}$ value",
+                title=r"$\it{P}$ value",
                 loc='upper left',
                 frameon=False,
                 labelspacing=1.2,

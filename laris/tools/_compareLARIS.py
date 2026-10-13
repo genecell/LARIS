@@ -45,22 +45,20 @@ def compareLARIS(
       :func:`prepareLRInteraction` outputs concatenated, with a joint
       embedding in ``.obsm``) -> the **matched estimator**.
 
-    Which estimator, when
-    ---------------------
-    They answer different questions and neither subsumes the other:
+    **Which estimator, when.** They answer different questions and
+    neither subsumes the other:
 
-    =====================  ==============================  ==============================
-    \                      aggregate (dict input)          matched (AnnData input)
-    =====================  ==============================  ==============================
-    input needed           results tables only             cell-level scores + embedding
-    estimand               change in the subject's         change in LR score at
-                           interaction profile,            *matched cell states*
-                           composition included
-    resolution             per (sender, receiver, LR)      per LR pair
-                           triple - directional claims
-    composition shifts     part of the effect              controlled away
-    typical power          conservative at small n         higher (cell-level information)
-    =====================  ==============================  ==============================
+    - *Input needed*: aggregate - results tables only; matched -
+      cell-level scores and a joint embedding.
+    - *Estimand*: aggregate - change in the subject's interaction profile,
+      composition included; matched - change in LR score at *matched cell
+      states*.
+    - *Resolution*: aggregate - per (sender, receiver, LR) triple, so
+      directional claims; matched - per LR pair.
+    - *Composition shifts*: aggregate - part of the effect; matched -
+      controlled away.
+    - *Typical power*: aggregate - conservative at small n; matched -
+      higher (cell-level information).
 
     Use the **aggregate** estimator when only result tables are available
     (e.g. shared by a collaborator), when you need sender-to-receiver
@@ -123,10 +121,12 @@ def compareLARIS(
         hypotheses: pass the same universe to both. Interactions in the
         universe but absent from the data are simply not testable;
         interactions outside it are dropped before any test.
-    conditionKey, sampleKey, subjectKey, use_rep, n_anchors, k_anchor, random_seed
+    conditionKey, sampleKey, subjectKey, use_rep, n_anchors, k_anchor, random_seed : see compareLARISMatched
         Matched input only; see :func:`compareLARISMatched` for their
         meaning. `conditionKey` and `sampleKey` are required for AnnData
         input.
+    results : deprecated
+        Former name of ``data``.
 
     Returns
     -------

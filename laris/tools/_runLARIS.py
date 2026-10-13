@@ -21,6 +21,73 @@ from ..preprocessing._io import (
     _is_cytome_source,
 )
 
+
+def _check_background_graph(background, use_rep, n_nearest_neighbors, sigma,
+                            section_key, diffusion=None) -> None:
+    """The background must be built on the graphs the observed scores use,
+    so the check fails here, before any work:
+
+    * the spatial-specificity graph runLARIS builds (``use_rep``,
+      ``n_nearest_neighbors``, ``sigma``, ``section_key``): the
+      pseudo-pairs' spatial scores come from its Gram tables, the observed
+      pairs' from runLARIS's own;
+    * the diffusion graph of ``prepareLRInteraction``
+      (``number_nearest_neighbors``, ``use_rep_spatial``, ``sigma``,
+      ``section_key``), which LR objects record from v0.15.0
+      (``diffusion``). Older LR objects carry no record; a mismatch there
+      is still caught later, by scoring each observed pair through the
+      background tables.
+
+    A mismatch makes every P value compare unlike quantities."""
+    p = getattr(background, 'params', None) or {}
+
+    def same(a, b):
+        if isinstance(a, str) or isinstance(b, str) or a is None or b is None:
+            return a == b
+        return bool(np.isclose(float(a), float(b), rtol=1e-12, atol=0.0))
+
+    checks = (
+        ('use_rep', use_rep, 'use_rep_gsp',
+         p.get('use_rep_gsp') or p.get('use_rep_spatial')),
+        ('n_nearest_neighbors', n_nearest_neighbors, 'n_nearest_neighbors_gsp',
+         p.get('n_nearest_neighbors_gsp')),
+        ('sigma', sigma, 'sigma_gsp', p.get('sigma_gsp')),
+        ('section_key', section_key, 'section_key', p.get('section_key')),
+    )
+    bad = [(a, v, b, bv) for a, v, b, bv in checks
+           if (b in p or (b == 'use_rep_gsp' and 'use_rep_spatial' in p))
+           and not same(v, bv)]
+    if bad:
+        raise ValueError(
+            "The background was built for a different spatial-specificity "
+            "graph than runLARIS uses: "
+            + "; ".join(f"runLARIS({a}={v!r}) vs "
+                        f"prepareLRBackground({b}={bv!r})"
+                        for a, v, b, bv in bad)
+            + ". Pass matching values; otherwise the null's spatial scores "
+            "come from another graph and every P value is wrong.")
+    if not diffusion or 'number_nearest_neighbors' not in p:
+        return
+    # backgrounds before v0.15.0's ``sigma`` parameter always used 'adaptive'
+    dchecks = (
+        ('number_nearest_neighbors', diffusion.get('number_nearest_neighbors'),
+         p.get('number_nearest_neighbors')),
+        ('use_rep_spatial', diffusion.get('use_rep_spatial'),
+         p.get('use_rep_spatial')),
+        ('sigma', diffusion.get('sigma', 'adaptive'), p.get('sigma', 'adaptive')),
+        ('section_key', diffusion.get('section_key'), p.get('section_key')),
+    )
+    dbad = [(k, a, b) for k, a, b in dchecks if not same(a, b)]
+    if dbad:
+        raise ValueError(
+            "The background was built for a different diffusion graph than "
+            "the LR scores: "
+            + "; ".join(f"prepareLRInteraction({k}={a!r}) vs "
+                        f"prepareLRBackground({k}={b!r})" for k, a, b in dbad)
+            + ". Pass the same values to both; otherwise the null's profiles "
+            "are diffused differently from the observed scores and every P "
+            "value is wrong.")
+
 def runLARIS(
     lr_data=_UNSET,
     data=_UNSET,
@@ -53,59 +120,62 @@ def runLARIS(
     prefilter_threshold: float = 0.0,
     score_threshold: float = 1e-6,
     spatial_weight: float = 3.0,
-    use_conditional_pvalue: bool = False,
+    use_conditional_pvalue: Optional[bool] = None,
     rescale: bool = True,
     cosg_backend: str = 'auto',
     specificity_reference: str = 'lr',
     section_key: Optional[str] = None,
     background=None,
-    min_null_support: int = 0,
+    min_null_support: Union[int, str] = 'auto',
+    sort_by: str = 'interaction_score',
     lr_adata=_UNSET,
     adata=_UNSET
 ) -> Union[pd.DataFrame, Tuple[pd.DataFrame, pd.DataFrame]]:
     """
     Identify spatially-specific ligand-receptor interactions using LARIS algorithm.
-    
+
     LARIS (Ligand And Receptor Interaction in Spatial transcriptomics) identifies LR pairs
     that show spatial specificity by comparing observed spatial correlation patterns
     with randomized null distributions. When `by_celltype=True`, the function also
     computes cell type-specific interaction scores with optional statistical testing.
-    
+
     This is the main analytical function of the LARIS package, providing:
-    
+
     1. **Spatial Specificity Analysis**: Identifies LR pairs that show non-random
        spatial co-localization patterns (higher scores = stronger spatial organization)
-       
+
     2. **Cell type-specific Scores**: Integrates spatial specificity with cell type
        expression specificity and spatial co-localization to identify which sender-
        receiver cell type pairs are communicating via which LR pairs
-       
+
     3. **Statistical Testing**: Optional permutation-based P values with FDR correction
        to identify statistically significant interactions
-    
+
     Parameters
     ----------
-    lr_adata : AnnData
-        AnnData object containing LR interaction scores from `prepareLRInteraction()`.
-        
+    lr_data : AnnData, str or cytome dataset
+        LR interaction scores from `prepareLRInteraction()`: an AnnData, or
+        an LR-score cytome (path or open dataset).
+
         Required contents:
         - `.X`: Diffused LR scores (cells × LR pairs)
         - `.var_names`: LR pair names ("ligand::receptor")
         - `.obsm[use_rep]`: Spatial coordinates or other representation
-        
-    adata : AnnData, optional
-        Original annotated data matrix with gene expression and spatial information.
+
+    data : AnnData, str or cytome dataset, optional
+        The expression data the LR scores were computed from, with spatial
+        information (an AnnData, or a cytome path or open dataset).
         **Required when `by_celltype=True`**.
-        
+
         Required contents (when by_celltype=True):
         - `.obs[groupby]`: Cell type annotations
         - `.obsm[use_rep_spatial]`: Spatial coordinates
         - `.X` or `.layers[layer_celltype]`: Gene expression
-        
+
     use_rep : str, default='X_spatial'
         Key in `lr_adata.obsm` for coordinates to use in spatial specificity analysis.
         Typically spatial coordinates, but could be other representations.
-        
+
     n_nearest_neighbors : int, default=20
         Number of spatial neighbors for building the adjacency matrix in the
         spatial specificity analysis. Larger values capture broader spatial
@@ -115,14 +185,14 @@ def runLARIS(
         k = 3-50, but top-hit identity shifts at very small k.
         (Changed from 10 to 20 in v0.10.0 to match the published analyses;
         pass n_nearest_neighbors=10 to reproduce pre-0.10 results.)
-        
+
     random_seed : int, default=27
         Random seed for reproducibility of permutation tests.
-        
+
     n_repeats : int, default=3
         Number of random permutations to generate the null distribution for
         spatial specificity scoring. More repeats give more stable estimates.
-        
+
     mu : float, default=0.25
         Strength of the null subtraction in the spatial specificity score:
         ``score = cos_observed - mu * cos_shuffled``. Larger values subtract
@@ -147,13 +217,13 @@ def runLARIS(
         (Changed from a fixed 100 to 'adaptive' in v0.10.0; pass sigma=100 to
         reproduce pre-0.10 results, which assumed roughly-micrometre
         coordinates.)
-        
+
     remove_lowly_expressed : bool, default=True
         Whether to filter out LR pairs with low expression before ranking.
-        
+
     expressed_pct : float, default=0.1
         Minimum fraction of cells expressing an LR pair (if remove_lowly_expressed=True).
-        
+
     n_cells_expressed_threshold : int or float, default=100
         Minimum number of cells expressing an LR pair for it to be ranked.
         Pairs below this threshold receive a penalty in ranking.
@@ -161,61 +231,154 @@ def runLARIS(
         interpreted as a fraction of the total number of cells
         (e.g. 0.001 = 0.1% of cells), which scales better across platforms
         with very different cell/bin counts (e.g. 8 um Visium HD bins).
-        
+        The penalty affects the ranking only. The cell-type interaction
+        score always uses the pair's actual spatial specificity (v0.15.0;
+        earlier versions also fed the penalised ranking value into the
+        score, which zeroed every pair below the threshold).
+
     n_top_lr : int, default=4000
         Number of top-ranked spatially-specific LR pairs to return.
-        
+        With ``background=`` and ``calculate_pvalues=True`` every LR pair is
+        still *tested*: the cell-type analysis and the FDR run over all
+        pairs, and only the returned tables are restricted to the top
+        ``n_top_lr``. Selecting pairs by their own spatial specificity
+        before testing would bias the p-values (the selection would be on
+        the outcome), so ``n_top_lr`` only limits what is reported.
+
     by_celltype : bool, default=True
         Whether to compute cell type-specific interaction scores. If False,
         only returns spatial specificity results (much faster). If True,
-        `adata` must be provided.
-    
-    Cell Type Analysis Parameters (only used if by_celltype=True)
-    -------------------------------------------------------------
+        `data` must be provided. The Other Parameters configure this
+        cell-type analysis and its P values; they are used only when
+        ``by_celltype=True``.
+
+    Returns
+    -------
+    pd.DataFrame or Tuple[pd.DataFrame, pd.DataFrame]
+        If `by_celltype=False`:
+            Single DataFrame with spatial specificity results:
+
+            Columns:
+            - 'ligand': Ligand gene name
+            - 'receptor': Receptor gene name  
+            - 'score': LARIS spatial specificity score
+            - 'Rank': Rank (0 = highest scoring)
+
+            Index: LR pair names ("ligand::receptor")
+            Sorted by score (descending)
+
+        If `by_celltype=True`:
+            Tuple of (laris_lr, celltype_results) where:
+
+            - **laris_lr**: DataFrame as described above
+
+            - **celltype_results**: DataFrame with cell type-specific scores:
+
+              Columns:
+              - 'sender': Cell type sending the ligand
+              - 'receiver': Cell type receiving the signal
+              - 'ligand': Ligand gene name
+              - 'receptor': Receptor gene name
+              - 'interaction_name': "ligand::receptor"
+              - 'interaction_score': Integrated LARIS score
+              - 'p_value': P value (if calculate_pvalues=True). With
+                ``background=``, the exact tail of the row's score among
+                its expression-matched pseudo-pairs in the same
+                sender-receiver pair.
+              - 'p_value_fdr': Benjamini-Hochberg FDR within each
+                sender-receiver pair (if calculate_pvalues=True). With
+                ``background=``, a row with ``p_value_fdr < 0.05`` is an
+                interaction whose score exceeds that of expression-matched
+                gene pairs in the same sender-receiver context, at an FDR
+                of 5% within that context. Pairs of the two cell types'
+                marker genes are part of that null, so a call certifies
+                specificity beyond cell-type identity; it does not test
+                whether the two proteins bind (the pairing comes from the
+                database).
+              - 'nlog10_p_value_fdr': -log10(FDR) for visualization
+
+              With ``background=``, these diagnostic columns are added:
+
+              - 'null_support': how many of the row's pseudo-pairs scored
+                above zero. This is the null's *effective* resolution: a
+                row backed by 100 non-zero pseudo-pairs cannot really
+                resolve the 1e-4 its p-value may report. See
+                ``min_null_support``.
+              - 'null_size': how many pseudo-pairs the row's null has: k**2
+                minus the database pairs inside it, fewer when a gene's
+                matched set is truncated. The p-value floor is
+                1/(null_size + 1).
+              - 'edge_limited': True when the ligand or the receptor has a
+                truncated matched set (one of the few most or least
+                abundant genes, without k/2 peers on one side; see
+                ``prepareLRBackground(matching=)``). The set still
+                straddles the gene, so the row is tested as usual.
+              - 'ligand_rank', 'receptor_rank': descriptive partner ranks.
+                ``ligand_rank`` is the observed pair's rank among the
+                ligand's matched genes, each paired with the observed
+                receptor: (1 + number of those pairs scoring at least as
+                high) / (1 + number of valid pairs). ``receptor_rank`` is
+                the same with the receptor's matched genes and the observed
+                ligand. 1/(k + 1) means the gene beats all of its peers
+                given its partner; a call that leans on one partner (a
+                specific ligand acting through a broadly expressed
+                receptor) has a small rank on that side only. Resolution
+                1/(k + 1), so not a test; 1.0 for a row whose score is 0.
+              - 'null_matchability': the larger of the two genes'
+                saturation values - the fraction of a gene's matched set
+                whose mean lies below the gene itself. 0.5 is ideal; 1.0
+                means every matched gene is weaker, so every pseudo-pair
+                is weaker than the real pair and the p-value overstates.
+                The pool augmentation in ``prepareLRBackground`` normally
+                prevents this; values near 1 among called rows mean it was
+                disabled or could not reach that gene.
+              - 'pair_breadth': the fraction of tested sender-receiver
+                combinations in which this pair is called at FDR < 0.05.
+                Genuine cell-type-specific results are narrow (medians of
+                1-2% measured across four datasets); a pair called across
+                more than ~25% of the grid carries no cell-type
+                information, however real its expression - typically a
+                tissue-ubiquitous pair.
+
+              Sorted by ``interaction_score`` (descending) by default; with
+              ``sort_by='p_value'``, by ``p_value`` (ascending), ties by
+              ``interaction_score`` (descending).
+
+    Other Parameters
+    ----------------
     groupby : str, default='CellTypes'
         Column in `adata.obs` defining cell type groups.
-        
     use_rep_spatial : str, default='X_spatial'
         Key in `adata.obsm` for spatial coordinates (for cell type analysis).
-        
     number_nearest_neighbors : int, default=20
         Number of spatial neighbors for cell type co-localization analysis.
         (Changed from 10 to 20 in v0.10.0 for consistency with
         n_nearest_neighbors; pass number_nearest_neighbors=10 to reproduce
         pre-0.10 results.)
-
     mu_celltype : float, default=100
         Regularization parameter for COSG cell type specificity calculation.
         Higher values more strongly penalize broadly expressed genes.
         This is COSG's lambda-style regularizer and is unrelated to ``mu``
         (the null-subtraction strength in the spatial specificity step).
-
     sigma_celltype : float or 'adaptive', default='adaptive'
         Kernel bandwidth for the cell-type co-localization spatial graph,
         with the same semantics as ``sigma``. 'adaptive' reproduces the
         pre-0.10 behaviour of this step.
-        
     expressed_pct_celltype : float, default=0.1
         Minimum expression fraction for cell type analysis.
-        
     remove_lowly_expressed_celltype : bool, default=True
         Whether to filter lowly expressed genes in cell type analysis.
-        
     mask_threshold : float, default=1e-6
         Numerical threshold for masking near-zero values.
-        
     calculate_pvalues : bool, default=True
         Whether to perform permutation testing for statistical significance.
         Set to False for faster exploratory analysis.
-        
     layer_celltype : str, optional
         Layer in `adata.layers` to use for expression data. If None, uses `adata.X`.
-        
     n_neighbors_permutation : int, default=30
         Number of similar interactions to use as background controls for
         permutation testing. These are selected based on similarity of
         diffused score profiles.
-        
     n_permutations : int, default=1000
         **Legacy path only, and ignored when ``background=`` is given.**
 
@@ -231,22 +394,27 @@ def runLARIS(
         ``n_matched_genes`` is the only knob that moves it. Passing this
         parameter together with ``background=`` raises a
         ``FutureWarning``.
-        
     chunk_size : int, default=50000
         Number of interactions to process simultaneously during permutation.
         Larger values are faster but use more memory.
-        
     prefilter_fdr : bool, default=True
-        If True, only test interactions with scores > prefilter_threshold for
-        significance. Others get FDR p-value = 1.0. This reduces multiple
-        testing burden and focuses power on high-scoring interactions.
-        
+        **Legacy (no-background) path only.** With ``background=`` the
+        interactions that Benjamini-Hochberg covers are fixed by the null
+        (see ``min_null_support``) and this parameter is ignored.
+
+        In the legacy path, True restricts BH to rows whose score exceeds
+        ``prefilter_threshold``. Restricting the tested rows by the observed
+        score is only valid with a p-value that conditions on the same
+        event, so the legacy path then uses the conditional p-value
+        (``use_conditional_pvalue``).
     prefilter_threshold : float, default=0.0
-        Minimum interaction score for FDR testing (if prefilter_fdr=True).
-        
+        Minimum interaction score for FDR testing in the legacy path
+        (if prefilter_fdr=True). Ignored with ``background=``.
     score_threshold : float, default=1e-6
-        Numerical precision threshold. Scores below this are set to exactly 0.0.
-        
+        Scores below this are set to exactly 0.0. With ``background=`` the
+        same rule is applied to every pseudo-pair, so a pseudo-pair counts
+        as non-zero (``null_support``) under exactly the condition an
+        observed score does.
     spatial_weight : float, default=3.0
         Exponent applied to the (non-negative-clamped) spatial specificity
         score before it multiplies the cell-type interaction score:
@@ -268,22 +436,24 @@ def runLARIS(
         weights).
         (Changed from 1.0 to 3.0 in v0.10.0; pass spatial_weight=1.0 to
         reproduce pre-0.10 results.)
-        
-    use_conditional_pvalue : bool, default=False
-        Use conditional p-value calculation for zero-inflated data. **Recommended
-        for sparse datasets**. When True:
+    use_conditional_pvalue : bool or None, default=None
+        **Legacy (no-background) path only.** When True:
         - Interactions with score=0 get p-value=1.0
-        - Non-zero scores compared only to non-zero background
-
-    section_key : str, optional
-        Column in ``.obs`` identifying which tissue section each cell
-        belongs to. Several sections tiled into one coordinate system
-        otherwise share a spatial k-NN, so cells near a tile edge acquire
-        neighbours from the adjacent section. With ``section_key`` every
-        neighbour graph in the pipeline - the spatial specificity step, its
-        randomised background, and the cell-type co-localization step - is
-        built independently within each section (GitHub issue #8). Pass the
-        same column to :func:`prepareLRInteraction`.
+        - Non-zero scores are compared only to non-zero background scores
+        None (default) uses the conditional p-value exactly when
+        ``prefilter_fdr=True``, which is the combination that keeps the FDR
+        valid: a test restricted to non-zero scores needs a p-value that
+        conditions on the score being non-zero. Passing False together with
+        ``prefilter_fdr=True`` warns and uses the conditional p-value.
+    rescale : bool, default=True
+        Rescale interaction scores so that the mean of the top-100 scores is
+        0.1. The applied factor is dataset-dependent and is recorded in
+        ``lr_adata.uns['laris_scale_factor']`` and
+        ``celltype_results.attrs['laris_scale_factor']`` (1.0 when
+        rescale=False), so separate runs can be put back on a common scale
+        by dividing scores by their respective factors. Because the factor
+        varies between runs (and with subsampling), never compare or subtract
+        rescaled ``interaction_score`` values across runs directly.
     cosg_backend : {'auto', 'memory', 'stream'}, default='auto'
         How to compute cell type specificity. 'stream' reads the expression
         in chunks from a cytome via ``cosg.run_cosg_cytome``, so no
@@ -306,104 +476,71 @@ def runLARIS(
         published results; prefer 'all' when very few database genes are
         present, as on targeted panels, where the spread over a handful of
         LR genes is unstable (a warning fires below 100).
-    rescale : bool, default=True
-        Rescale interaction scores so that the mean of the top-100 scores is
-        0.1. The applied factor is dataset-dependent and is recorded in
-        ``lr_adata.uns['laris_scale_factor']`` and
-        ``celltype_results.attrs['laris_scale_factor']`` (1.0 when
-        rescale=False), so separate runs can be put back on a common scale
-        by dividing scores by their respective factors. Because the factor
-        varies between runs (and with subsampling), never compare or subtract
-        rescaled ``interaction_score`` values across runs directly.
-        - Prevents spurious significance from sparse null distributions
-    min_null_support : int, default=0
-        Drop interactions whose matched-gene null has fewer than this many
-        *non-zero* pseudo-pairs, by setting their p-value to 1.0.
+    section_key : str, optional
+        Column in ``.obs`` identifying which tissue section each cell
+        belongs to. Several sections tiled into one coordinate system
+        otherwise share a spatial k-NN, so cells near a tile edge acquire
+        neighbours from the adjacent section. With ``section_key`` every
+        neighbour graph in the pipeline - the spatial specificity step, its
+        randomised background, and the cell-type co-localization step - is
+        built independently within each section (GitHub issue #8). Pass the
+        same column to :func:`prepareLRInteraction`.
+    background : LRBackground, optional
+        From :func:`prepareLRBackground`, built on the same cells and graph
+        settings. With ``calculate_pvalues=True`` it gives every LR pair
+        an exact P value against its expression-matched null (the
+        factorized matched-gene test): ``p_value``, ``p_value_fdr`` and the
+        diagnostic columns described under Returns. Its diffusion and
+        spatial-specificity graphs must be the ones the LR scores and this
+        call use; a mismatch raises before any work. Without it, P values
+        come from the legacy permutation path.
+    min_null_support : int or 'auto', default='auto'
+        With ``background=``: within each sender-receiver pair,
+        Benjamini-Hochberg covers every LR pair whose matched-gene null has
+        at least ``max(1, min_null_support)`` non-zero pseudo-pairs
+        (``null_support``). Rows below that get p-value 1.0 and are not
+        tested. 'auto' (v0.15.0) is 2 x ``n_matched_genes`` of the
+        background (400 at k = 200): below that, the non-zero part of the
+        null can come from a single matched gene's row or column of the
+        k x k cross, and a tiny score beats an otherwise all-zero null - the
+        test would measure whether the pair clears the 10% detection gate,
+        not its strength. Pass 0 to test every row with a non-zero null.
 
-        The null for a row has ``n_matched_genes ** 2`` entries, but many
-        of them score exactly zero because the matched genes are not
-        co-detected in the sender and receiver groups. Zeros never exceed
-        a positive observed score, so they inflate the denominator without
-        adding resolution: a row backed by 100 non-zero pseudo-pairs can
-        still report ``p = 1e-4`` when its null only resolves ``1e-2``.
-        The count is reported per row in the ``null_support`` column, and a
-        warning fires when more than 5% of tested rows fall below 100.
+        The p-value is the exact tail ``(exceed + 1) / (n_valid + 1)`` over
+        all valid pseudo-pairs, zeros included. That is a valid p-value
+        only if the set of tested rows is not chosen by the observed score,
+        so that set is defined by the null alone: a row whose null is
+        identically zero cannot reach significance and is left out, every
+        other row is in, whatever its own score (v0.15.0; earlier versions
+        tested only the rows with a positive score, which inflated the FDR).
+        ``min_null_support`` is a property of the null, fixed in advance,
+        so any value keeps the FDR valid.
+    sort_by : {'interaction_score', 'p_value'}, default='interaction_score'
+        Order of the cell-type results. 'interaction_score' ranks by the
+        score, descending, as in earlier versions. 'p_value' ranks by the
+        p-value, ascending, ties by the score, so the head of the table is
+        the strongest evidence; it needs ``calculate_pvalues=True``. The
+        order changes no value.
+    lr_adata, adata : deprecated
+        Former names of ``lr_data`` and ``data``.
 
-        The default of 0 disables the filter and reproduces v0.12.0
-        p-values exactly. Sparse panels with many small groups are where
-        this matters most.
-
-    Returns
-    -------
-    pd.DataFrame or Tuple[pd.DataFrame, pd.DataFrame]
-        If `by_celltype=False`:
-            Single DataFrame with spatial specificity results:
-            
-            Columns:
-            - 'ligand': Ligand gene name
-            - 'receptor': Receptor gene name  
-            - 'score': LARIS spatial specificity score
-            - 'Rank': Rank (0 = highest scoring)
-            
-            Index: LR pair names ("ligand::receptor")
-            Sorted by score (descending)
-        
-        If `by_celltype=True`:
-            Tuple of (laris_lr, celltype_results) where:
-            
-            - **laris_lr**: DataFrame as described above
-            
-            - **celltype_results**: DataFrame with cell type-specific scores:
-              
-              Columns:
-              - 'sender': Cell type sending the ligand
-              - 'receiver': Cell type receiving the signal
-              - 'ligand': Ligand gene name
-              - 'receptor': Receptor gene name
-              - 'interaction_name': "ligand::receptor"
-              - 'interaction_score': Integrated LARIS score
-              - 'p_value': Raw permutation p-value (if calculate_pvalues=True)
-              - 'p_value_fdr': FDR-corrected p-value (if calculate_pvalues=True)
-              - 'nlog10_p_value_fdr': -log10(FDR) for visualization
-
-              With ``background=``, three diagnostic columns are added:
-
-              - 'null_support': how many of the k**2 pseudo-pairs scored
-                above zero. This is the null's *effective* resolution: a
-                row backed by 100 non-zero pseudo-pairs cannot really
-                resolve the 1e-4 its p-value may report. See
-                ``min_null_support``.
-              - 'null_matchability': the larger of the two genes'
-                saturation values - the fraction of a gene's matched set
-                whose mean lies below the gene itself. 0.5 is ideal; 1.0
-                means every matched gene is weaker, so every pseudo-pair
-                is weaker than the real pair and the p-value overstates.
-                The pool augmentation in ``prepareLRBackground`` normally
-                prevents this; values near 1 among called rows mean it was
-                disabled or could not reach that gene.
-              - 'pair_breadth': the fraction of tested sender-receiver
-                combinations in which this pair is called at FDR < 0.05.
-                Genuine cell-type-specific results are narrow (medians of
-                1-2% measured across four datasets); a pair called across
-                more than ~25% of the grid carries no cell-type
-                information, however real its expression - typically a
-                tissue-ubiquitous pair.
-
-              Sorted by interaction_score (descending)
-    
     Raises
     ------
     ValueError
         If by_celltype=True but adata is not provided, or if required data
         is missing from adata or lr_adata.
-        
+
     ImportError
         If required helper functions are not available.
-    
+
+    See Also
+    --------
+    prepareLRInteraction : Prepare LR scores (prerequisite for this function)
+
     Examples
     --------
     **Example 1: Quick spatial specificity analysis (no cell types)**
-    
+
     >>> import laris as la
     >>> 
     >>> # Prepare LR scores
@@ -417,9 +554,9 @@ def runLARIS(
     ... )
     >>> 
     >>> print(laris_lr.head())
-    
+
     **Example 2: Full analysis with cell type-specific scores**
-    
+
     >>> # Full LARIS analysis with cell types
     >>> laris_lr, celltype_results = la.tl.runLARIS(
     ...     lr_adata,
@@ -436,18 +573,18 @@ def runLARIS(
     ... ]
     >>> 
     >>> print(f"Found {len(sig_results)} significant interactions")
-    
+
     **Example 3: Fast exploratory analysis (no p-values)**
-    
+
     >>> laris_lr, celltype_results = la.tl.runLARIS(
     ...     lr_adata,
     ...     adata,
     ...     by_celltype=True,
     ...     calculate_pvalues=False  # Much faster!
     ... )
-    
+
     **Example 4: Conservative testing for sparse data**
-    
+
     >>> laris_lr, celltype_results = la.tl.runLARIS(
     ...     lr_adata,
     ...     adata,
@@ -457,21 +594,15 @@ def runLARIS(
     ...     prefilter_fdr=True,
     ...     prefilter_threshold=0.01  # Only test score > 0.01
     ... )
-    
+
     **Example 5: Emphasize spatial specificity**
-    
+
     >>> laris_lr, celltype_results = la.tl.runLARIS(
     ...     lr_adata,
     ...     adata,
     ...     by_celltype=True,
     ...     spatial_weight=2.0  # Square the spatial scores
     ... )
-    
-    
-    See Also
-    --------
-    prepareLRInteraction : Prepare LR scores (prerequisite for this function)
-    
     """
     # Validate inputs
     lr_data = resolve_data_arg(lr_data, 'runLARIS', canonical='lr_data',
@@ -559,9 +690,21 @@ def runLARIS(
             "dependencies are properly installed."
         )
     
+    if background is not None and calculate_pvalues:
+        _check_background_graph(background, use_rep=use_rep,
+                                n_nearest_neighbors=n_nearest_neighbors,
+                                sigma=sigma, section_key=section_key,
+                                diffusion=lr_adata.uns.get('laris_diffusion'))
+
     # =========================================================================
     # STEP 1: Calculate LARIS Spatial Specificity Scores
     # =========================================================================
+    if sort_by not in ('interaction_score', 'p_value'):
+        raise ValueError(
+            f"sort_by must be 'interaction_score' or 'p_value', got {sort_by!r}")
+    if sort_by == 'p_value' and by_celltype and not calculate_pvalues:
+        raise ValueError("sort_by='p_value' needs calculate_pvalues=True")
+
     print("\n--- Step 1: Calculating spatial specificity scores ---")
     print(f"  - Using {n_nearest_neighbors} nearest neighbors")
     print(f"  - Regularization parameter μ = {mu}")
@@ -660,11 +803,12 @@ def runLARIS(
     ).copy()
     
     n_cells_expressed = lr_var['n_cells_by_counts'].values.copy()
-    gsp_score_for_ranking = lr_var['LR_SpatialSpecificity'].values.copy()
-    
-    # Penalize LR pairs with low cell counts. A float threshold in (0, 1) is
-    # interpreted as a fraction of the number of cells (sklearn-style),
-    # a value >= 1 as an absolute cell count.
+    spatial_specificity = lr_var['LR_SpatialSpecificity'].values.copy()
+    gsp_score_for_ranking = spatial_specificity.copy()
+
+    # Penalize LR pairs with low cell counts IN THE RANKING. A float
+    # threshold in (0, 1) is interpreted as a fraction of the number of
+    # cells (sklearn-style), a value >= 1 as an absolute cell count.
     if 0 < n_cells_expressed_threshold < 1:
         cells_expressed_cutoff = int(np.ceil(
             n_cells_expressed_threshold * lr_adata.shape[0]
@@ -674,26 +818,42 @@ def runLARIS(
     min_score = np.min(gsp_score_for_ranking)
     low_count_mask = n_cells_expressed < cells_expressed_cutoff
     gsp_score_for_ranking[low_count_mask] = min_score - 0.001
-    
-    # Select top N LR pairs
+
+    def _lr_table(indices):
+        names = lr_var.index.values[indices]
+        table = pd.DataFrame({
+            'ligand': [name.split('::')[0] for name in names],
+            'receptor': [name.split('::')[1] for name in names],
+            # the pair's actual spatial specificity. Up to v0.14.1 this held
+            # the penalised ranking value, and the cell-type score used it
+            # as its spatial factor: every pair below the cell-count
+            # threshold scored 0 everywhere (1,325 of 1,985 pairs on the
+            # tonsil) although the penalty is documented as a ranking one.
+            'score': spatial_specificity[indices],
+            'n_cells_expressed': n_cells_expressed[indices],
+        })
+        table.index = [f"{l}::{r}" for l, r in zip(table.ligand, table.receptor)]
+        table['Rank'] = np.arange(len(table))
+        return table
+
+    # Select top N LR pairs (what is returned)
     top_indices = _utils._select_top_n(gsp_score_for_ranking, n_top_lr)
-    spag_list = lr_var.index.values[top_indices]
-    spag_list_ligand = [name.split('::')[0] for name in spag_list]
-    spag_list_receptor = [name.split('::')[1] for name in spag_list]
-    spag_list_score = gsp_score_for_ranking[top_indices]
-    
-    # Create results DataFrame
-    laris_lr = pd.DataFrame({
-        'ligand': spag_list_ligand,
-        'receptor': spag_list_receptor,
-        'score': spag_list_score
-    })
-    laris_lr.index = [f"{l}::{r}" for l, r in zip(spag_list_ligand, spag_list_receptor)]
-    laris_lr['Rank'] = np.arange(len(laris_lr))
-    
+    laris_lr = _lr_table(top_indices)
+    # With p-values every pair is tested, whatever n_top_lr: choosing pairs
+    # by their own spatial specificity before testing selects on the
+    # outcome. n_top_lr then only restricts the returned tables.
+    if calculate_pvalues and len(top_indices) < len(gsp_score_for_ranking):
+        laris_lr_tested = _lr_table(_utils._select_top_n(
+            gsp_score_for_ranking, len(gsp_score_for_ranking)))
+    else:
+        laris_lr_tested = laris_lr
+
     print(f"  ✓ Identified {len(laris_lr)} top spatially-specific LR pairs")
     print(f"  - Score range: [{laris_lr['score'].min():.4f}, "
           f"{laris_lr['score'].max():.4f}]")
+    if len(laris_lr_tested) > len(laris_lr):
+        print(f"  - Testing all {len(laris_lr_tested):,} pairs; results are "
+              f"restricted to the top {len(laris_lr):,} afterwards")
     
     # =========================================================================
     # STEP 2: Calculate Cell Type-Specific Interactions (Optional)
@@ -735,7 +895,7 @@ def runLARIS(
             specificity_reference=specificity_reference,
             section_key=section_key,
             lr_adata=lr_adata,
-            laris_lr=laris_lr,
+            laris_lr=laris_lr_tested,
             groupby=groupby,
             use_rep_spatial=use_rep_spatial,
             number_nearest_neighbors=number_nearest_neighbors,
@@ -758,8 +918,16 @@ def runLARIS(
             background=background,
             mu_gsp=mu,
             min_null_support=min_null_support,
+            sort_by=sort_by,
         )
-        
+        if len(laris_lr_tested) > len(laris_lr):
+            # tested (and FDR-adjusted) over every pair; report the top ones
+            _attrs = dict(celltype_results.attrs)
+            celltype_results = celltype_results[
+                celltype_results['interaction_name'].isin(laris_lr.index)
+            ].reset_index(drop=True)
+            celltype_results.attrs.update(_attrs)
+
         print("\n" + "="*70)
         print("ANALYSIS COMPLETE")
         print("="*70)

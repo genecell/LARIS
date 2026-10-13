@@ -501,7 +501,7 @@ class _LRCytomeWriter:
     """
 
     def __init__(self, output, lr_names, obs, obs_names, obsm,
-                 spatial_uns=None, overwrite=False):
+                 spatial_uns=None, overwrite=False, diffusion=None):
         cytome = _import_cytome()
         output = str(output)
         if Path(output).exists():
@@ -518,6 +518,7 @@ class _LRCytomeWriter:
         self._rows_written = 0
         self._obsm = obsm
         self._spatial_uns = spatial_uns or {}
+        self._diffusion = diffusion
 
         self.ds = cytome.create(output)
         self.ds.set_entity('cells', _obs_for_cytome(obs, obs_names))
@@ -557,8 +558,38 @@ class _LRCytomeWriter:
         if self._spatial_uns:
             _copy_spatial_images(self._spatial_uns, self.ds)
 
+        _write_diffusion_record(self.ds, self._diffusion)
         self.ds.close()
         return self.path
+
+
+DIFFUSION_KEY = 'laris_diffusion'
+
+
+def _write_diffusion_record(ds, record) -> None:
+    """Store prepareLRInteraction's diffusion settings in the cytome's
+    metadata (best effort: a cytome without a metadata store just lacks the
+    record, and runLARIS then skips the early check)."""
+    if not record:
+        return
+    store = getattr(ds, 'metadata', None)
+    if store is None:
+        return
+    try:
+        store[DIFFUSION_KEY] = dict(record)
+    except Exception:
+        pass
+
+
+def _read_diffusion_record(ds):
+    store = getattr(ds, 'metadata', None)
+    if store is None:
+        return None
+    try:
+        rec = store.get(DIFFUSION_KEY)
+    except Exception:
+        return None
+    return dict(rec) if rec else None
 
 
 def _copy_spatial_images(spatial_uns: dict, ds) -> None:
@@ -654,6 +685,9 @@ def readLRCytome(source, obs_name_column: str = 'barcode') -> ad.AnnData:
         spatial_uns = _spatial_uns_from(ds)
         if spatial_uns:
             lr_adata.uns['spatial'] = spatial_uns
+        record = _read_diffusion_record(ds)
+        if record:
+            lr_adata.uns[DIFFUSION_KEY] = record
         return lr_adata
     finally:
         if opened_here:

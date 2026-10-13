@@ -179,6 +179,36 @@ class TestDotPlotValidation:
                 sender_receiver_pairs=["A=>B"],
             )
 
+    def test_repeated_interactions_and_pairs_are_one_row_and_column(
+            self, fake_results):
+        """Lists written side by side repeat entries (the same interaction
+        for two sender-receiver pairs); that used to raise 'Categorical
+        categories must be unique'."""
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        fig, ax = la.pl.plotCCCDotPlot(
+            fake_results,
+            interactions_to_plot=["G1::G2", "G3::G4", "G1::G2"],
+            senders=["A", "B", "A"], receivers=["B", "A", "B"],
+            return_fig=True, verbosity=0)
+        assert [t.get_text() for t in ax.get_yticklabels()] == ["G1::G2", "G3::G4"]
+        assert len(ax.get_xticklabels()) == 2
+        plt.close(fig)
+
+    def test_score_max_sets_a_shared_colour_scale(self, fake_results):
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        kw = dict(interactions_to_plot=["G1::G2", "G3::G4"], senders=["A", "B"],
+                  receivers=["B", "A"], return_fig=True, verbosity=0)
+        fig, ax = la.pl.plotCCCDotPlot(fake_results, **kw)
+        assert ax.collections[0].get_clim() == (0, 0.5)
+        plt.close(fig)
+        fig, ax = la.pl.plotCCCDotPlot(fake_results, score_max=2.0, **kw)
+        assert ax.collections[0].get_clim() == (0, 2.0)
+        plt.close(fig)
+
 
 # ---------------------------------------------------------------------------
 # 8. network plot color-key resolution

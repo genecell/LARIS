@@ -74,6 +74,13 @@ def buildJointEmbedding(
         ``.obsm`` key written on `data` (modified in place; also
         returned).
     random_seed : int, default=0
+        Seed of the PCA solver (``method='pca'`` and the PCA that harmony
+        corrects). Pass harmony's or GDR's own seeds through
+        ``method_kwargs``.
+    verbosity : int, default=1
+        1 prints progress; 0 is silent.
+    adata : deprecated
+        Former name of ``data``.
     **method_kwargs
         Passed to ``harmonypy.run_harmony`` or ``piaso.tl.runGDR``.
 

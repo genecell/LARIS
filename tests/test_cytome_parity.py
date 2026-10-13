@@ -53,6 +53,9 @@ def _make(dtype, reverse_genes, n=900, g=80):
     ct = np.where(rng.random(n) < 0.5, "A", "B")
     X[np.flatnonzero(blob & (ct == "A")), 0] = 30
     X[np.flatnonzero(blob & (ct == "B")), 1] = 30
+    # dense non-LR genes above the planted pair: every LR gene then has
+    # matched peers on both sides (no truncated set for the planted pair)
+    X[:, g - 10:] = rng.poisson(6, (n, 10)) + 1
     X = X.tocsr()
     X.data = np.log1p(X.data * 1.7)
     order = list(range(g))[::-1] if reverse_genes else list(range(g))
@@ -98,7 +101,9 @@ def _assert_same_background(a, b):
         np.testing.assert_array_equal(getattr(a, table), getattr(b, table),
                                       err_msg=table)
     assert a.R == b.R
-    assert a.match_frac_below == b.match_frac_below
+    assert list(a.match_frac_below) == list(b.match_frac_below)
+    np.testing.assert_array_equal(list(a.match_frac_below.values()),
+                                  list(b.match_frac_below.values()))
     assert a.edge_limited == b.edge_limited
     assert a.db_pairs == b.db_pairs
 
